@@ -1,0 +1,263 @@
+:root { 
+    --p: #007bff; --s: #28a745; --d: #1a1d20; --l: #f8f9fa; 
+    --danger: #dc3545; --warning: #ffc107; --info: #17a2b8; --kit: #6f42c1; --orange: #fd7e14; --promo: #e83e8c;
+}
+
+body { 
+    font-family: 'Segoe UI', system-ui, sans-serif; 
+    margin: 0; 
+    background: #ced4da; 
+    height: 100vh; 
+    overflow: hidden; 
+    transition: background 0.3s; 
+}
+
+/* ======================================================= */
+/* 🎨 ESTRUCTURA PRINCIPAL Y PANELES                       */
+/* ======================================================= */
+
+.tab {
+    display: flex;
+    flex-wrap: wrap;
+    background-color: #1a1d20; 
+    width: 100%;
+    margin: 0;
+    padding: 0;
+    border-bottom: 2px solid #ccc;
+}
+
+.tab button {
+    background-color: transparent;
+    color: white;
+    border: none;
+    outline: none;
+    cursor: pointer;
+    padding: 12px 18px;
+    font-size: 13px;
+    font-weight: bold;
+    transition: 0.3s;
+    display: none; /* Se muestran desde JS según permisos */
+}
+
+.tab button:hover { background-color: rgba(255, 255, 255, 0.1); }
+.tab button.active { background-color: var(--p); color: white; }
+
+.tabcontent { 
+    height: calc(100vh - 50px); 
+    background: rgba(238, 238, 238, 0.85); 
+    backdrop-filter: blur(8px); 
+    display: none; 
+    overflow-y: auto; 
+    padding-bottom: 180px !important; /* Parche Visual: Colchón limpio */
+}
+
+.split-container { display: grid; grid-template-columns: 1fr 380px; height: 100%; }
+
+.panel-izq { 
+    padding: 25px; 
+    background: rgba(255, 255, 255, 0.85); 
+    border-right: 2px solid rgba(0,0,0,0.1); 
+    overflow-y: auto; 
+}
+
+.panel-der { 
+    background: linear-gradient(rgba(0, 0, 0, 0.75), rgba(0, 0, 0, 0.75)), url('fondo2.jpg') center/cover no-repeat; 
+    color: white; 
+    padding: 40px 20px; 
+    display: flex; 
+    flex-direction: column; 
+    justify-content: center; 
+    align-items: flex-end; 
+    transition: background 0.3s;
+}
+
+/* ======================================================= */
+/* 📝 TIPOGRAFÍA, INPUTS Y BOTONES                         */
+/* ======================================================= */
+
+.total-big { font-size: 55px; font-weight: 900; color: var(--s); line-height: 1; text-align: right; }
+.sub-total { font-size: 11px; color: #888; text-transform: uppercase; letter-spacing: 1px; }
+
+input, select, textarea { 
+    width: 100%; padding: 10px; font-size: 15px; border: 2px solid #ddd; 
+    border-radius: 6px; outline: none; box-sizing: border-box; 
+}
+input:focus, textarea:focus { border-color: var(--p); border-width: 3px; background: #fff; }
+select:disabled { background: #444 !important; color: #888 !important; cursor: not-allowed; }
+
+.btn-final { 
+    width: 100%; padding: 15px; background: var(--s); color: white; border: none; 
+    border-radius: 10px; font-size: 16px; font-weight: bold; cursor: pointer; 
+    margin-top: 10px; transition: 0.2s; 
+}
+.btn-final:hover { filter: brightness(1.1); }
+.btn-final:disabled { background: #999 !important; cursor: not-allowed; }
+
+.btn-search { 
+    background: var(--p); color: white; border: none; padding: 0 20px; 
+    border-radius: 6px; cursor: pointer; font-weight: bold; transition: 0.2s; white-space: nowrap; 
+}
+.btn-search:hover { filter: brightness(1.1); }
+
+.badge-kit { background: var(--kit); color: white; font-size: 10px; padding: 3px 6px; border-radius: 4px; font-weight: bold; margin-left: 5px; }
+
+/* ======================================================= */
+/* 📊 TABLAS Y CUADRÍCULAS (GRIDS)                         */
+/* ======================================================= */
+
+.tabla-pos { width: 100%; border-collapse: collapse; margin-top: 15px; background: white; }
+.tabla-pos th { 
+    text-align: left; padding: 10px; border-bottom: 2px solid #eee; 
+    color: #888; font-size: 11px; text-transform: uppercase; 
+    position: sticky; top: 0; background: white; z-index: 10;
+}
+.tabla-pos td { padding: 12px 10px; border-bottom: 1px solid #eee; font-size: 14px; }
+
+/* Parche Modo Compacto (Originalmente en JS) */
+#v_lista td, #c_lista_tab td { padding: 4px 8px !important; vertical-align: middle !important; }
+#v_lista td input, #c_lista_tab td input { padding: 2px 5px !important; height: 26px !important; font-size: 13px !important; margin: 0 !important; }
+#v_lista td button, #c_lista_tab td button { padding: 2px 8px !important; height: 26px !important; font-size: 12px !important; line-height: 1 !important; margin: 0 !important; }
+#v_lista tr, #c_lista_tab tr { height: auto !important; scroll-margin-top: 45px !important; }
+
+/* Evitar que las tablas y contenedores se estiren (Parche Colchón) */
+.table-responsive, div[style*="overflow"] { margin-bottom: 80px !important; }
+table { height: auto !important; margin-bottom: 50px !important; }
+tbody tr { height: auto !important; }
+
+.c-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin: 15px 0; background: #fdfdfd; padding: 15px; border-radius: 12px; border: 2px solid #eee; }
+.c-grid label { font-size: 10px; font-weight: bold; color: var(--p); text-transform: uppercase; }
+
+.check-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; background: #f1f1f1; padding: 15px; border-radius: 8px; text-align: left;}
+.check-grid label { display: flex; align-items: center; gap: 5px; font-size: 13px; font-weight: bold; cursor: pointer; color: #333; text-transform: none;}
+
+/* ======================================================= */
+/* 🧩 MODALES Y COMPONENTES ESPECIALES                     */
+/* ======================================================= */
+
+.modal { display: none; position: fixed; z-index: 1000; left: 0; top: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.85); backdrop-filter: blur(4px); overflow-y: auto; padding: 5vh 0; box-sizing: border-box; }
+.modal-content { background: #fff; margin: 0 auto; padding: 25px; border-radius: 15px; width: 500px; max-width: 95% !important; border-top: 8px solid var(--p); box-shadow: 0 20px 40px rgba(0,0,0,0.4); max-height: 85vh; display: flex; flex-direction: column; overflow-y: auto; box-sizing: border-box; }
+
+#login-screen { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: linear-gradient(rgba(0,0,0,0.6), rgba(0,0,0,0.6)), url('fondo.jpg') center/cover no-repeat; z-index: 9999; display: flex; flex-direction: column; justify-content: center; align-items: center; color: white; transition: 0.3s; }
+.dash-card { background: white; padding: 15px; border-radius: 10px; box-shadow: 0 4px 6px rgba(0,0,0,0.05); }
+.anulada-row { text-decoration: line-through; color: #dc3545; background: #fff5f5; }
+
+/* ======================================================= */
+/* 🖨️ ESTILOS PARA IMPRESIÓN DEL TICKET                    */
+/* ======================================================= */
+
+@media print {
+    body * { visibility: hidden !important; }
+    .no-print { display: none !important; }
+    @page { margin: 0; padding: 0; }
+
+    .print-active, .print-active * {
+        visibility: visible !important;
+        color: #000000 !important;
+        font-family: 'Courier New', Courier, monospace !important;
+        font-weight: 900 !important; 
+        font-size: var(--ticket-font, 14px) !important; 
+        line-height: 1.2 !important;
+        -webkit-print-color-adjust: exact !important;
+        print-color-adjust: exact !important;
+    }
+
+    .print-active {
+        position: absolute !important;
+        left: 0 !important;
+        top: 0 !important;
+        width: 56mm !important;
+        max-width: 56mm !important;
+        margin: 0 !important;
+        padding: 0 !important;
+        background: #fff !important;
+        border: none !important;
+    }
+
+    .print-active table { 
+        width: 100% !important; 
+        table-layout: fixed !important; 
+        border-collapse: collapse !important;
+    }
+    
+    .print-active th:nth-child(1), .print-active td:nth-child(1) { width: 15% !important; }
+    .print-active th:nth-child(2), .print-active td:nth-child(2) { width: 50% !important; }
+    .print-active th:nth-child(3), .print-active td:nth-child(3) { width: 35% !important; text-align: right !important; }
+
+    .print-active th, .print-active td { 
+        padding: 5px 0 !important; 
+        word-wrap: break-word !important; 
+        border-bottom: 2px solid #000 !important; 
+    }
+    
+  .print-active h2, .print-active .total-gigante {
+        font-size: calc(var(--ticket-font, 14px) + 6px) !important;
+    }
+}
+
+/* ======================================================= */
+/* 💻 AJUSTES PARA COMPUTADORA (Crio-genico)               */
+/* ======================================================= */
+@media (min-width: 769px) {
+    body.bloquear-scroll { overflow: hidden !important; }
+}
+
+/* ======================================================= */
+/* 📱 AJUSTES RESPONSIVOS (TABLETS Y CELULARES)            */
+/* ======================================================= */
+
+@media (max-width: 850px) {
+    .kpi-grid { grid-template-columns: 1fr 1fr !important; gap: 10px !important; }
+    .chart-grid { grid-template-columns: 1fr !important; }
+    .chart-grid > div, .kpi-grid > div { width: 100% !important; box-sizing: border-box !important; }
+}
+
+@media (max-width: 768px) {
+    /* Menú deslizable */
+    .tab { flex-wrap: nowrap !important; overflow-x: auto; -webkit-overflow-scrolling: touch; }
+    .tab button { white-space: nowrap; flex-shrink: 0; padding: 12px 15px; }
+
+    /* Acomodo de los paneles principales */
+    .tabcontent > div { display: flex !important; flex-direction: column !important; }
+    .split-container { display: flex !important; flex-direction: column !important; height: auto !important; }
+    .panel-izq, .panel-der { width: 100% !important; box-sizing: border-box; border-right: none !important; }
+    .panel-izq { max-height: none !important; height: auto !important; border-bottom: 2px solid #ccc; padding: 15px 10px !important; }
+    .panel-der { height: auto !important; padding: 20px 10px !important; align-items: stretch !important; }
+
+    /* Hacemos que la página pueda hacer scroll normal con el dedo */
+    body { height: auto !important; overflow-y: auto !important; }
+    .tabcontent { height: auto !important; min-height: 100vh; overflow-y: visible !important; padding-bottom: 20px; }
+
+    /* Dashboard grids */
+    .kpi-grid, .chart-grid, .flujo-grid, .trans-grid { grid-template-columns: 1fr !important; }
+    .corte-grid { grid-template-columns: 1fr 1fr !important; }
+    .corte-grid > div:last-child { grid-column: span 2 !important; }
+
+    /* Evitar que las tablas estiren la pantalla */
+    .table-responsive { width: 100%; overflow-x: auto; -webkit-overflow-scrolling: touch; }
+    table.tabla-pos { min-width: 500px; }
+
+    /* Inventario en celular */
+    #i-tab > div { padding: 10px !important; }
+    #i-tab > div > div:nth-child(1) { flex-direction: column !important; align-items: stretch !important; gap: 15px !important; }
+    #i-tab > div > div:nth-child(1) > div:last-child { display: grid !important; grid-template-columns: 1fr 1fr !important; gap: 10px !important; }
+    #i-tab > div > div:nth-child(1) button { width: 100% !important; font-size: 11px !important; padding: 10px 5px !important; margin: 0 !important; white-space: normal !important; }
+    #i-tab > div > div:nth-child(2) { flex-direction: column !important; gap: 10px !important; }
+    #i-tab input#buscar_inv, #i-tab select#filtro_dep, #i-tab select#filtro_tipo { width: 100% !important; flex: none !important; }
+    #i-tab > div > div:nth-child(3) { overflow-x: auto !important; -webkit-overflow-scrolling: touch !important; }
+    #i-tab table.tabla-pos { min-width: 850px !important; }
+
+    /* Tablas grandes en celular (Clientes, Promos, Provs, Kits) */
+    #cli-tab > div > div:last-child, #pro-tab > div > div:last-child, #prov-tab > div > div:last-child, #k-tab > div > div:last-child { overflow-x: auto !important; -webkit-overflow-scrolling: touch !important; }
+    #cli-tab table.tabla-pos, #pro-tab table.tabla-pos, #prov-tab table.tabla-pos, #k-tab table.tabla-pos { min-width: 600px !important; }
+
+    /* Ajustes de Modales en celular */
+    .modal-content { padding: 15px !important; max-height: 90vh !important; }
+    .modal-content input, .modal-content select { font-size: 16px !important; padding: 12px 8px !important; }
+    .modal-content .c-grid { grid-template-columns: 1fr !important; }
+    .modal-content > div[style*="display: flex; gap: 10px;"] { flex-direction: column; }
+    .modal-content > div[style*="display: flex; gap: 10px;"] button { width: 100% !important; margin-bottom: 5px; }
+}
+
+@media (max-width: 480px) {
+    .kpi-grid { grid-template-columns: 1fr !important; }
+}
