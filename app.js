@@ -883,19 +883,32 @@ function getVirtualStock(p) {
 }
 
 function descontarStock(cod, cant) { 
+    // 🔥 MAGIA: Redirige la resta de inventario al Maestro si pertenece a un grupo
     let item = obtenerProductoMaestro(cod); 
     let codMaestro = item === inv[cod] ? cod : inv[cod].grupo;
+    
     if(!item) return; 
     if(!item.stock) item.stock = {}; 
     if(!item.sold_without_stock) item.sold_without_stock = {}; 
     
     let disp = Math.max(0, item.stock[sucursalActual] || 0); 
-    if(disp >= cant) { item.stock[sucursalActual] = disp - cant; } 
-    else { 
-        let fal = cant - disp; item.stock[sucursalActual] = 0; 
+    if(disp >= cant) { 
+        item.stock[sucursalActual] = disp - cant; 
+    } else { 
+        let fal = cant - disp; 
+        item.stock[sucursalActual] = 0; 
         item.sold_without_stock[sucursalActual] = (item.sold_without_stock[sucursalActual] || 0) + fal; 
     } 
-    db.collection("inventario").doc(codMaestro).set(item).catch(e=>console.log(e));
+    
+    // 🛡️ ACTUALIZACIÓN CRÍTICA: Nos aseguramos de mantener el tipo correcto (granel/pieza) en la memoria local
+    if(inv[codMaestro]) {
+        item.tipo = inv[codMaestro].tipo || item.tipo || 'pieza';
+        item.nom = inv[codMaestro].nom || item.nom;
+        item.dep = inv[codMaestro].dep || item.dep;
+    }
+    
+    // Subir el stock actualizado a la nube SIN perder las propiedades esenciales
+    if(typeof db !== 'undefined') db.collection("inventario").doc(codMaestro).set(item);
 }
 
 // Funciones de Ajuste Manual de Stock
@@ -1347,23 +1360,66 @@ window.confirmarVenta = function(cambioFinal = 0) {
             if(pO.tipo === 'kit') { if(pO.comp) pO.comp.forEach(c => descontarStock(c.cod, (c.can || 1) * (x.can || 1))); } 
             else { descontarStock(x.cod, x.can || 1); }
             
-            // 2. Calculamos los precios y subtotales reales
+            // 2. Precios base
             let minM = pO.md || 10; 
             let precioVentaReal = pO.pv || 0;
             if (pO.pre_sucursales && pO.pre_sucursales[sucursalActual] !== undefined) precioVentaReal = pO.pre_sucursales[sucursalActual];
             let p = (typeof forceWholesale !== 'undefined' && forceWholesale && (x.can||1) >= minM) ? (pO.pm || precioVentaReal) : precioVentaReal; 
-            if (x.precioManual !== undefined) p = x.precioManual;
-            if (x.esGranelMontoExacto !== undefined) p = parseFloat(x.esGranelMontoExacto) / (x.can || 1);
-
-            let sub = (x.can||1) * p; 
             
-            // 3. 📊 KARDEX BLINDADO: Ahora sí, ya con el 'sub' calculado, disparamos el Kardex (y quitamos el let duplicado)
+            let sub = (x.can||1) * p; 
+
+            // 🔥 3. LÓGICA DE PROMOCIONES INCORPORADA Y CONTEO 🔥
+            let promoActiva = null;
+            if(Array.isArray(promociones)) {
+                promoActiva = promociones.find(pr => pr && pr.cod === x.cod && (!pr.sucursal || pr.sucursal === 'Todas' || pr.sucursal === sucursalActual) && pr.fecha_ini <= hoy && (!pr.fecha_fin || pr.fecha_fin >= hoy) && (pr.limite === 0 || (pr.usadas||0) < pr.limite));
+            }
+
+            if (promoActiva && x.esGranelMontoExacto === undefined && x.precioManual === undefined) {
+                let subtotalPromo = sub;
+                let usosAAgregar = 0;
+                
+                if (promoActiva.tipo === 'desc') {
+                    let cantA = x.can||1; 
+                    if((promoActiva.limite||0) > 0) { 
+                        let disp = promoActiva.limite - (promoActiva.usadas||0); 
+                        if(cantA > disp) cantA = disp; 
+                    } 
+                    subtotalPromo = (cantA * (precioVentaReal * (1 - (promoActiva.desc||0)/100))) + (((x.can||1) - cantA) * precioVentaReal); 
+                    usosAAgregar = cantA; // Suma 1 uso por cada pieza vendida con descuento
+                } else if (promoActiva.tipo === 'nxm') {
+                    let nVal = promoActiva.n || 1; 
+                    let grupos = Math.floor((x.can||1) / nVal); 
+                    let sueltos = (x.can||1) % nVal; 
+                    if((promoActiva.limite||0) > 0) { 
+                        let disp = promoActiva.limite - (promoActiva.usadas||0); 
+                        if(grupos > disp) { sueltos += (grupos - disp) * nVal; grupos = disp; } 
+                    } 
+                    subtotalPromo = (grupos * (promoActiva.m||0) * precioVentaReal) + (sueltos * precioVentaReal); 
+                    usosAAgregar = grupos; // Suma 1 uso por cada "Grupo" de promoción aplicado
+                }
+
+                if (subtotalPromo < sub) { 
+                    sub = subtotalPromo; 
+                    // 📈 SUMAMOS EL CONTADOR A LA BASE DE DATOS
+                    promoActiva.usadas = (promoActiva.usadas || 0) + usosAAgregar;
+                    if (typeof db !== 'undefined') db.collection("promociones").doc(String(promoActiva.id)).set(promoActiva);
+                }
+            }
+
+            // Si se editó el precio manualmente, sobreescribe la promo
+            if (x.precioManual !== undefined) sub = (x.can||1) * x.precioManual;
+            if (x.esGranelMontoExacto !== undefined) sub = parseFloat(x.esGranelMontoExacto);
+
+            // 4. Congelamos el Costo Promedio en el ticket
+            let costoAUsar = pO.cos_promedio !== undefined ? parseFloat(pO.cos_promedio) : parseFloat(pO.cos);
+            let costoCongelado = (costoAUsar || 0) * (1 + (parseFloat(pO.iva) || 0)/100);
+            
             registrarEnKardex(x.cod, x.nom, "VENTA", -(x.can || 1), (sub / (x.can || 1)), pO.cos || 0);
             
-            // 4. Preparamos ticket y guardamos
             let printName = (x.nom || 'Producto').substring(0,15); 
             itemsTicketHtml += `<tr><td>${x.can||1}</td><td>${printName}</td><td style="text-align:right">$${sub.toFixed(2)}</td></tr>`;
-            detallesParaGuardar.push({ cod: x.cod, nom: x.nom || 'Producto', can: x.can || 1, subtotal: sub, dep: pO.dep || "General" });
+            
+            detallesParaGuardar.push({ cod: x.cod, nom: x.nom || 'Producto', can: x.can || 1, subtotal: sub, costo: costoCongelado, dep: pO.dep || "General" });
             
             if (typeof db !== 'undefined' && x.cod) {
                 db.collection("inventario").doc(x.cod).set(inv[x.cod] || {nom: x.nom}).catch(e => console.warn("Inventario a mochila."));
@@ -1638,10 +1694,10 @@ function renderC() {
 let isGuardandoCompra = false; // 🛡️ CANDADO ANTI-DOBLE CLIC
 
 async function finalizarCompra() { 
-    if (isGuardandoCompra) return; // Si ya está trabajando, ignora los clics extra
+    if (isGuardandoCompra) return; 
     if (carC.length === 0) return; 
 
-    isGuardandoCompra = true; // 🔒 Cerramos el candado
+    isGuardandoCompra = true; 
 
     try {
         let totalCompra = carC.reduce((acc, x) => acc + ((x.can * x.cos) * (1 - (x.desc||0)/100)), 0); 
@@ -1650,7 +1706,7 @@ async function finalizarCompra() {
 
         if(met === 'Por Pagar') {
             if(!prov) {
-                isGuardandoCompra = false; // 🔓 Abrimos candado
+                isGuardandoCompra = false; 
                 return alert("❌ Debes ingresar el nombre del Proveedor para guardar la deuda.");
             }
             if(!proveedores[prov]) proveedores[prov] = { saldo: 0, historial: [], sucursal: sucursalActual };
@@ -1664,7 +1720,7 @@ async function finalizarCompra() {
         if(met === 'Efectivo') {
             let efectivoActual = calcularEfectivoEnCaja();
             if(efectivoActual < totalCompra) {
-                isGuardandoCompra = false; // 🔓 Abrimos candado porque se canceló la acción
+                isGuardandoCompra = false; 
                 if(confirm(`⚠️ No hay suficiente efectivo en caja.\nEfectivo: $${efectivoActual.toFixed(2)}\nTotal: $${totalCompra.toFixed(2)}\n\n¿Registrar un Ingreso extra en la caja ahora?`)) {
                     abrirModalMovimiento(); 
                     document.getElementById('mov_tipo').value = 'Ingreso'; 
@@ -1697,11 +1753,37 @@ async function finalizarCompra() {
                 } else if (prod) {
                     let maestro = obtenerProductoMaestro(x.cod);
                     if(!maestro.stock) maestro.stock = {}; 
-                    maestro.stock[sucursalActual] = (maestro.stock[sucursalActual] || 0) + x.can; 
-                    // Almacena el ingreso en el Kardex
+                    
+                    let stockAnterior = maestro.stock[sucursalActual] || 0;
+                    if (stockAnterior < 0) stockAnterior = 0;
+
+                    maestro.stock[sucursalActual] = stockAnterior + x.can; 
                     registrarEnKardex(x.cod, prod.nom, "COMPRA", x.can, x.pre || prod.pv, x.cos || prod.cos);
-                    if (x.cos_base !== undefined) { prod.cos = x.cos_base; if (x.iva !== undefined) prod.iva = x.iva; } 
-                    else if (x.cos !== undefined) { prod.cos = parseFloat((x.cos / (1 + ((prod.iva||0) / 100))).toFixed(2)); }
+
+                    // 🧮 3. SEPARACIÓN DE COSTOS (Último vs Promedio)
+                    let costoCompraUnitarioBase = 0;
+                    if (x.cos_base !== undefined) { 
+                        costoCompraUnitarioBase = parseFloat(x.cos_base); 
+                        if (x.iva !== undefined) prod.iva = x.iva; 
+                    } else if (x.cos !== undefined) { 
+                        costoCompraUnitarioBase = parseFloat(x.cos / (1 + ((prod.iva||0) / 100))); 
+                    }
+
+                    if (costoCompraUnitarioBase > 0) {
+                        // Usamos el Promedio Histórico para la matemática (o el último costo si es nuevo)
+                        let costoHistorico = prod.cos_promedio !== undefined ? parseFloat(prod.cos_promedio) : (parseFloat(prod.cos) || 0);
+                        
+                        let valorViejo = stockAnterior * costoHistorico;
+                        let valorNuevo = x.can * costoCompraUnitarioBase;
+                        let piezasTotales = stockAnterior + x.can;
+
+                        let costoPromedio = (valorViejo + valorNuevo) / piezasTotales;
+                        
+                        // 🔥 Guardamos el Promedio oculto para las ganancias
+                        prod.cos_promedio = parseFloat(costoPromedio.toFixed(2));
+                        // 🔥 Guardamos el Último Costo a la vista (Catálogo/Compras)
+                        prod.cos = parseFloat(costoCompraUnitarioBase.toFixed(2));
+                    }
 
                     if (x.pre !== undefined) {
                         if (x.solo_sucursal) {
@@ -1711,12 +1793,9 @@ async function finalizarCompra() {
                             prod.pv = parseFloat(x.pre); 
                             if (prod.pre_sucursales && prod.pre_sucursales[sucursalActual] !== undefined) delete prod.pre_sucursales[sucursalActual];
                         }
-                        
-                        // 🌟 LA CLAVE: Marcamos la actualización local del precio
                         prod.updatedAt = Date.now(); 
                     }
                     
-                    // 🌟 SOLUCIÓN AL PRECIO FANTASMA: Sincronización limpia con PocketBase
                     if(typeof db !== 'undefined') {
                         await db.collection("inventario").doc(x.cod).set(prod);
                         if (maestro !== prod) {
@@ -1742,9 +1821,10 @@ async function finalizarCompra() {
         console.error("Error procesando la compra:", errorGeneral);
         alert("Hubo un problema al guardar la compra, revisa tu conexión.");
     } finally {
-        isGuardandoCompra = false; // 🔓 Siempre abre el candado al final
+        isGuardandoCompra = false; 
     }
 }
+
 
 function pausarCompraActual() {
     if(carC.length === 0) return alert("❌ Lista vacía.");
@@ -1773,39 +1853,200 @@ function abrirComprasPausadas() {
     actualizarBadgeComprasPausadas(); renderC();
 }
 
-// Calculadora de Cajas
-function abrirCalculadoraCajaGlobal() {
-    document.getElementById('caja_codigo').value = ''; document.getElementById('caja_nombre_prod').innerText = '';
-    document.getElementById('caja_cantidad').value = '1'; document.getElementById('caja_costo_total').value = '';
-    document.getElementById('caja_piezas').value = ''; document.getElementById('caja_impuesto').value = '0';
-    document.getElementById('lbl_caja_total_piezas').innerText = '0'; document.getElementById('lbl_caja_costo_base').innerText = '$0.00'; document.getElementById('lbl_caja_costo_real').innerText = '$0.00';
-    document.getElementById('modalCaja').style.display = 'flex'; setTimeout(() => document.getElementById('caja_codigo').focus(), 100); 
-}
-function buscarProdCaja() {
-    let cod = document.getElementById('caja_codigo').value.trim();
-    if(inv[cod]) { document.getElementById('caja_nombre_prod').innerText = "✅ " + inv[cod].nom; document.getElementById('caja_cantidad').focus(); document.getElementById('caja_cantidad').select(); } 
-    else document.getElementById('caja_nombre_prod').innerText = "❌ Producto no encontrado";
-}
-function calcularCaja() {
-    let cantCajas = parseFloat(document.getElementById('caja_cantidad').value) || 1; let costoUnaCaja = parseFloat(document.getElementById('caja_costo_total').value) || 0;
-    let piezasPorCaja = parseFloat(document.getElementById('caja_piezas').value) || 1; let impuesto = parseFloat(document.getElementById('caja_impuesto').value) || 0;
-    if (piezasPorCaja <= 0) piezasPorCaja = 1;
-    let piezasTotales = cantCajas * piezasPorCaja; let costoBaseUnidad = costoUnaCaja / piezasPorCaja; let costoRealUnidad = costoBaseUnidad * (1 + (impuesto / 100));
-    document.getElementById('lbl_caja_total_piezas').innerText = piezasTotales; document.getElementById('lbl_caja_costo_base').innerText = '$' + costoBaseUnidad.toFixed(2); document.getElementById('lbl_caja_costo_real').innerText = '$' + costoRealUnidad.toFixed(2);
-}
-function agregarCajaACarrito() {
-    let cod = document.getElementById('caja_codigo').value.trim(); if(!inv[cod]) return alert("⚠️ Código.");
-    let cantCajas = parseFloat(document.getElementById('caja_cantidad').value) || 1; let costoUnaCaja = parseFloat(document.getElementById('caja_costo_total').value) || 0;
-    let piezasPorCaja = parseFloat(document.getElementById('caja_piezas').value) || 1; let impuesto = parseFloat(document.getElementById('caja_impuesto').value) || 0;
-    let piezasTotales = cantCajas * piezasPorCaja; let costoBaseUnidad = (costoUnaCaja / piezasPorCaja); let costoRealUnidad = costoBaseUnidad * (1 + (impuesto / 100));
-    let itemIndex = carC.findIndex(x => x.cod === cod);
-    if (itemIndex > -1) { carC[itemIndex].can += piezasTotales; carC[itemIndex].cos = parseFloat(costoRealUnidad.toFixed(2)); carC[itemIndex].cos_base = parseFloat(costoBaseUnidad.toFixed(2)); carC[itemIndex].iva = impuesto; } 
-    else { carC.push({ cod: cod, nom: inv[cod].nom, can: piezasTotales, cos: parseFloat(costoRealUnidad.toFixed(2)), cos_base: parseFloat(costoBaseUnidad.toFixed(2)), iva: impuesto, desc: 0, pre: inv[cod].pv || 0, solo_sucursal: false }); }
-    renderC(); cerrarCaja();
-}
-function cerrarCaja() { document.getElementById('modalCaja').style.display = 'none'; let i = document.getElementById('c_cod'); if(i) { i.value=''; i.focus(); } }
-function abrirCalculadoraCaja(index) { let item = carC[index]; abrirCalculadoraCajaGlobal(); document.getElementById('caja_codigo').value = item.cod; buscarProdCaja(); }
+// ====================================================================
+// === CALCULADORA DE COMPRA POR CAJA / LOTE 📦 ===
+// ====================================================================
 
+// ====================================================================
+// === CALCULADORA DE COMPRA POR CAJA / LOTE 📦 ===
+// ====================================================================
+
+// ====================================================================
+// === CALCULADORA DE COMPRA POR CAJA / LOTE 📦 ===
+// ====================================================================
+
+window.abrirCalculadoraCajaGlobal = function() {
+    try {
+        document.getElementById('caja_codigo').value = ''; 
+        document.getElementById('caja_nombre_prod').innerText = '';
+        document.getElementById('caja_cantidad').value = '1'; 
+        document.getElementById('caja_costo_total').value = '';
+        document.getElementById('caja_piezas').value = ''; 
+        document.getElementById('caja_impuesto').value = '0';
+        
+        let descInput = document.getElementById('caja_desc');
+        if(descInput) descInput.value = '0';
+        
+        document.getElementById('caja_pv').value = ''; 
+        document.getElementById('caja_gan').value = '30';
+        document.getElementById('lbl_caja_total_piezas').innerText = '0'; 
+        document.getElementById('lbl_caja_costo_base').innerText = '$0.00'; 
+        document.getElementById('lbl_caja_costo_real').innerText = '$0.00';
+        
+        document.getElementById('modalCaja').style.display = 'block'; 
+        setTimeout(() => document.getElementById('caja_codigo').focus(), 100); 
+    } catch(e) {
+        console.error("Error al abrir calculadora vacía:", e);
+    }
+};
+
+window.buscarProdCaja = function() {
+    let cod = document.getElementById('caja_codigo').value.trim();
+    if(inv[cod]) { 
+        document.getElementById('caja_nombre_prod').innerText = "✅ " + inv[cod].nom; 
+        document.getElementById('caja_impuesto').value = inv[cod].iva || 0;
+        document.getElementById('caja_pv').value = parseFloat(inv[cod].pv || 0).toFixed(2);
+        document.getElementById('caja_gan').value = inv[cod].gan || 30;
+        
+        document.getElementById('caja_cantidad').focus(); 
+        document.getElementById('caja_cantidad').select(); 
+    } 
+    else document.getElementById('caja_nombre_prod').innerText = "❌ Producto no encontrado";
+};
+
+window.seleccionarProductoCaja = function(codigo, nombre, piezas, impuesto) {
+    let p = inv[codigo] || {}; 
+    
+    document.getElementById('caja_codigo').value = codigo;
+    document.getElementById('caja_nombre_prod').innerText = "✅ " + nombre;
+    document.getElementById('caja_piezas').value = piezas;
+    document.getElementById('caja_impuesto').value = impuesto;
+    document.getElementById('caja_sugerencias').style.display = 'none';
+    
+    document.getElementById('caja_pv').value = parseFloat(p.pv || 0).toFixed(2);
+    document.getElementById('caja_gan').value = p.gan || 30;
+    
+    document.getElementById('caja_cantidad').focus();
+    document.getElementById('caja_cantidad').select();
+    
+    window.calcularCaja();
+};
+
+window.recalcCajaVentaDesdeGanancia = function() {
+    let costoRealUnidad = parseFloat(document.getElementById('lbl_caja_costo_real').innerText.replace('$','')) || 0;
+    let gan = parseFloat(document.getElementById('caja_gan').value) || 0;
+    let pv = costoRealUnidad * (1 + (gan / 100));
+    document.getElementById('caja_pv').value = (Math.round(pv * 2) / 2).toFixed(2); 
+};
+
+window.recalcCajaGananciaDesdeVenta = function() {
+    let costoRealUnidad = parseFloat(document.getElementById('lbl_caja_costo_real').innerText.replace('$','')) || 0;
+    let pv = parseFloat(document.getElementById('caja_pv').value) || 0;
+    if(costoRealUnidad > 0) {
+        document.getElementById('caja_gan').value = (((pv / costoRealUnidad) - 1) * 100).toFixed(2);
+    }
+};
+
+window.calcularCaja = function() {
+    let cantCajas = parseFloat(document.getElementById('caja_cantidad').value) || 1; 
+    let costoUnaCaja = parseFloat(document.getElementById('caja_costo_total').value) || 0;
+    let piezasPorCaja = parseFloat(document.getElementById('caja_piezas').value) || 1; 
+    let impuesto = parseFloat(document.getElementById('caja_impuesto').value) || 0;
+    
+    let descInput = document.getElementById('caja_desc');
+    let descuento = descInput ? (parseFloat(descInput.value) || 0) : 0; 
+    
+    if (piezasPorCaja <= 0) piezasPorCaja = 1;
+    let piezasTotales = cantCajas * piezasPorCaja; 
+    
+    let costoCajaConDesc = costoUnaCaja * (1 - (descuento / 100));
+    let costoBasePuro = costoUnaCaja / piezasPorCaja; 
+    let costoRealUnidad = (costoCajaConDesc / piezasPorCaja) * (1 + (impuesto / 100)); 
+    
+    document.getElementById('lbl_caja_total_piezas').innerText = piezasTotales; 
+    document.getElementById('lbl_caja_costo_base').innerText = '$' + costoBasePuro.toFixed(2); 
+    document.getElementById('lbl_caja_costo_real').innerText = '$' + costoRealUnidad.toFixed(2);
+
+    window.recalcCajaGananciaDesdeVenta();
+};
+
+window.agregarCajaACarrito = function() {
+    let cod = document.getElementById('caja_codigo').value.trim(); 
+    if(!inv[cod]) return alert("⚠️ Código no válido.");
+    
+    let cantCajas = parseFloat(document.getElementById('caja_cantidad').value) || 1; 
+    let costoUnaCaja = parseFloat(document.getElementById('caja_costo_total').value) || 0;
+    let piezasPorCaja = parseFloat(document.getElementById('caja_piezas').value) || 1; 
+    let impuesto = parseFloat(document.getElementById('caja_impuesto').value) || 0;
+    
+    let descInput = document.getElementById('caja_desc');
+    let descuento = descInput ? (parseFloat(descInput.value) || 0) : 0; 
+    
+    let precioVenta = parseFloat(document.getElementById('caja_pv').value) || 0;
+    let gananciaNueva = parseFloat(document.getElementById('caja_gan').value) || 0;
+
+    let piezasTotales = cantCajas * piezasPorCaja; 
+    let costoBaseUnidadPura = (costoUnaCaja / piezasPorCaja); 
+    let costoRealUnidadPura = costoBaseUnidadPura * (1 + (impuesto / 100));
+    
+    let itemIndex = carC.findIndex(x => x.cod === cod);
+    
+    if (itemIndex > -1) { 
+        carC[itemIndex].can += piezasTotales; 
+        carC[itemIndex].cos = parseFloat(costoRealUnidadPura.toFixed(2)); 
+        carC[itemIndex].cos_base = parseFloat(costoBaseUnidadPura.toFixed(2)); 
+        carC[itemIndex].iva = impuesto; 
+        carC[itemIndex].desc = descuento; 
+        carC[itemIndex].pre = precioVenta; 
+    } else { 
+        carC.push({ 
+            cod: cod, nom: inv[cod].nom, can: piezasTotales, 
+            cos: parseFloat(costoRealUnidadPura.toFixed(2)), cos_base: parseFloat(costoBaseUnidadPura.toFixed(2)), 
+            iva: impuesto, desc: descuento, pre: precioVenta, solo_sucursal: false 
+        }); 
+    }
+    
+    inv[cod].gan = gananciaNueva;
+
+    renderC(); 
+    window.cerrarCaja();
+};
+
+window.cerrarCaja = function() { 
+    document.getElementById('modalCaja').style.display = 'none'; 
+    let i = document.getElementById('c_cod'); 
+    if(i) { i.value=''; i.focus(); } 
+};
+
+window.abrirCalculadoraCaja = function(index) { 
+    try {
+        let item = carC[index]; 
+        if (!item) return alert("❌ Error: No se encontró el producto en esa fila.");
+
+        window.abrirCalculadoraCajaGlobal(); 
+        
+        let inputCod = document.getElementById('caja_codigo');
+        if (inputCod) {
+            inputCod.value = item.cod; 
+            
+            let p = inv[item.cod] || {};
+            let nombreProd = document.getElementById('caja_nombre_prod');
+            if (nombreProd) nombreProd.innerText = "✅ " + (item.nom || p.nom || "Producto");
+            
+            let imp = document.getElementById('caja_impuesto');
+            if (imp) imp.value = item.iva !== undefined ? item.iva : (p.iva || 0);
+            
+            let pv = document.getElementById('caja_pv');
+            if (pv) pv.value = item.pre !== undefined ? parseFloat(item.pre).toFixed(2) : parseFloat(p.pv || 0).toFixed(2);
+            
+            let gan = document.getElementById('caja_gan');
+            if (gan) gan.value = p.gan || 30;
+            
+            let desc = document.getElementById('caja_desc');
+            if (desc) desc.value = item.desc || 0;
+            
+            let inputCant = document.getElementById('caja_cantidad');
+            if (inputCant) {
+                inputCant.focus();
+                inputCant.select();
+            }
+            
+            window.calcularCaja();
+        }
+    } catch (err) {
+        console.error("Error al abrir calculadora desde fila:", err);
+    }
+};
 // ====================================================================
 // === KITS Y PROMOCIONES ===
 // ====================================================================
@@ -1822,30 +2063,122 @@ function guardarKit() {
 
 function verificarProdPromo() { let cod = document.getElementById('pr_cod').value; document.getElementById('pr_nom').value = inv[cod] ? inv[cod].nom : "No Encontrado"; }
 function togglePromoCampos() { let t = document.getElementById('pr_tipo').value; if(t === 'nxm') { document.getElementById('div_pr_n').style.display = 'block'; document.getElementById('div_pr_m').style.display = 'block'; document.getElementById('div_pr_desc').style.display = 'none'; } else { document.getElementById('div_pr_n').style.display = 'none'; document.getElementById('div_pr_m').style.display = 'none'; document.getElementById('div_pr_desc').style.display = 'block'; } }
+let promoEditandoId = null; // 🛡️ Memoria para saber si estamos editando
+
 function guardarPromo() { 
     let cod = document.getElementById('pr_cod').value; if(!inv[cod]) return alert("Inválido"); 
-    let idPromo = Date.now(); 
-    let promo = { id: idPromo, cod: cod, tipo: document.getElementById('pr_tipo').value, sucursal: document.getElementById('pr_sucursal').value, fecha_ini: document.getElementById('pr_ini').value, fecha_fin: document.getElementById('pr_fin').value, limite: parseInt(document.getElementById('pr_limite').value) || 0, usadas: 0 }; 
+    
+    // Si estamos editando usamos el ID existente, si no, creamos uno nuevo
+    let idPromo = promoEditandoId ? promoEditandoId : Date.now(); 
+    
+    let promo = { 
+        id: idPromo, cod: cod, tipo: document.getElementById('pr_tipo').value, 
+        sucursal: document.getElementById('pr_sucursal').value, 
+        fecha_ini: document.getElementById('pr_ini').value, fecha_fin: document.getElementById('pr_fin').value, 
+        limite: parseInt(document.getElementById('pr_limite').value) || 0, 
+        usadas: promoEditandoId ? (promociones.find(p => p.id === idPromo)?.usadas || 0) : 0 // Protegemos las que ya se usaron
+    }; 
+    
     if(promo.tipo === 'nxm') { promo.n = parseInt(document.getElementById('pr_n').value); promo.m = parseInt(document.getElementById('pr_m').value); if(promo.n <= promo.m) return alert("N > M"); } 
     else { promo.desc = parseFloat(document.getElementById('pr_desc').value); if(promo.desc <= 0 || promo.desc > 100) return alert("Inválido"); } 
-    promociones.push(promo); localStorage.setItem("pos_promociones_v8", JSON.stringify(promociones)); 
+    
+    if (promoEditandoId) {
+        let idx = promociones.findIndex(p => p.id === promoEditandoId);
+        if(idx > -1) promociones[idx] = promo;
+    } else {
+        promociones.push(promo); 
+    }
+    
+    localStorage.setItem("pos_promociones_v8", JSON.stringify(promociones)); 
     if (typeof db !== 'undefined') db.collection("promociones").doc(String(idPromo)).set(promo).catch(e => console.log(e));
-    document.getElementById('pr_cod').value = ''; document.getElementById('pr_nom').value = ''; renderPromos(); alert("✅ Promoción creada."); 
+    
+    document.getElementById('pr_cod').value = ''; document.getElementById('pr_nom').value = ''; 
+    let msg = promoEditandoId ? "✅ Promoción actualizada." : "✅ Promoción creada.";
+    promoEditandoId = null; // Soltamos la memoria
+    renderPromos(); 
+    alert(msg); 
 }
+
+function editarPromo(index) {
+    let p = promociones[index];
+    if(!p) return;
+    promoEditandoId = p.id;
+    document.getElementById('pr_cod').value = p.cod;
+    document.getElementById('pr_nom').value = inv[p.cod] ? inv[p.cod].nom : "Desconocido";
+    document.getElementById('pr_sucursal').value = p.sucursal || 'Todas';
+    document.getElementById('pr_tipo').value = p.tipo;
+    document.getElementById('pr_ini').value = p.fecha_ini || '';
+    document.getElementById('pr_fin').value = p.fecha_fin || '';
+    document.getElementById('pr_limite').value = p.limite || 0;
+    
+    if (p.tipo === 'nxm') {
+        document.getElementById('pr_n').value = p.n || 1;
+        document.getElementById('pr_m').value = p.m || 1;
+    } else {
+        document.getElementById('pr_desc').value = p.desc || 0;
+    }
+    togglePromoCampos();
+    document.getElementById('pr_cod').focus();
+    window.scrollTo({ top: 0, behavior: 'smooth' }); // Sube la pantalla para que veas el formulario
+}
+
 function renderPromos() { 
     let hoy = getFechaLocal(); 
-    let promosFiltradas = promociones.map((p, index) => ({ ...p, originalIndex: index })).filter(p => p.sucursal === 'Todas' || p.sucursal === sucursalActual || (!p.sucursal && sucursalActual === 'Matriz'));
+    let txtBusqueda = document.getElementById('buscar_promo') ? document.getElementById('buscar_promo').value.toLowerCase().trim() : '';
+
+    let promosFiltradas = promociones.map((p, index) => ({ ...p, originalIndex: index }))
+        .filter(p => p.sucursal === 'Todas' || p.sucursal === sucursalActual || (!p.sucursal && sucursalActual === 'Matriz'))
+        .filter(p => {
+            if (txtBusqueda === '') return true;
+            let nombreProd = inv[p.cod] ? inv[p.cod].nom.toLowerCase() : '';
+            return p.cod.toLowerCase().includes(txtBusqueda) || nombreProd.includes(txtBusqueda);
+        });
+
     let html = promosFiltradas.map(p => { 
-        let nombre = inv[p.cod] ? inv[p.cod].nom : 'Desconocido'; let tipo = p.tipo === 'nxm' ? `Lleva ${p.n} Paga ${p.m}` : `-${p.desc}% OFF`; let limiteStr = p.limite === 0 ? `Ilimitado (${p.usadas})` : `${p.usadas} / ${p.limite}`; let estado = "Activa"; let colorEst = "var(--s)"; 
-        if(p.fecha_ini && hoy < p.fecha_ini) { estado = "Programada"; colorEst = "var(--p)"; } else if(p.fecha_fin && hoy > p.fecha_fin) { estado = "Expirada"; colorEst = "var(--danger)"; } else if(p.limite > 0 && p.usadas >= p.limite) { estado = "Agotada"; colorEst = "var(--danger)"; } 
-        return `<tr><td><b>${nombre}</b><br><small>${p.cod}</small></td><td><b>${p.sucursal || 'Todas'}</b></td><td><span class="badge-kit" style="background:var(--promo)">${tipo}</span></td><td>${p.fecha_ini||'---'} al ${p.fecha_fin||'---'}</td><td>${limiteStr}</td><td><b style="color:${colorEst}">${estado}</b></td><td><button style="background:var(--danger); color:white; border:none; padding:5px 10px; border-radius:5px; cursor:pointer;" onclick="eliminarPromo(${p.originalIndex})">✕</button></td></tr>`; 
+        let nombre = inv[p.cod] ? inv[p.cod].nom : 'Desconocido'; 
+        let tipo = p.tipo === 'nxm' ? `Lleva ${p.n} Paga ${p.m}` : `-${p.desc}% OFF`; 
+        let limiteStr = p.limite === 0 ? `Ilimitado (${p.usadas})` : `${p.usadas} / ${p.limite}`; 
+        let estado = "Activa"; let colorEst = "var(--s)"; 
+        
+        if(p.fecha_ini && hoy < p.fecha_ini) { estado = "Programada"; colorEst = "var(--p)"; } 
+        else if(p.fecha_fin && hoy > p.fecha_fin) { estado = "Expirada"; colorEst = "var(--danger)"; } 
+        else if(p.limite > 0 && p.usadas >= p.limite) { estado = "Agotada"; colorEst = "var(--danger)"; } 
+        
+        return `<tr>
+            <td><b>${nombre}</b><br><small>${p.cod}</small></td>
+            <td><b>${p.sucursal || 'Todas'}</b></td>
+            <td><span class="badge-kit" style="background:var(--promo)">${tipo}</span></td>
+            <td>${p.fecha_ini||'---'} al ${p.fecha_fin||'---'}</td>
+            <td>${limiteStr}</td>
+            <td><b style="color:${colorEst}">${estado}</b></td>
+            <td>
+                <button style="background:var(--p); color:white; border:none; padding:5px 10px; border-radius:5px; cursor:pointer; margin-right:5px;" onclick="editarPromo(${p.originalIndex})" title="Editar">✏️</button>
+                <button style="background:var(--danger); color:white; border:none; padding:5px 10px; border-radius:5px; cursor:pointer;" onclick="eliminarPromo(${p.originalIndex})" title="Eliminar">✕</button>
+            </td>
+        </tr>`; 
     }).join('');
-    if(document.getElementById('pr_lista')) document.getElementById('pr_lista').innerHTML = html || `<tr><td colspan="7" style="text-align:center;">No hay promociones.</td></tr>`; 
+    
+    if(document.getElementById('pr_lista')) document.getElementById('pr_lista').innerHTML = html || `<tr><td colspan="7" style="text-align:center;">No se encontraron promociones.</td></tr>`; 
 }
 function eliminarPromo(index) { 
-    if(confirm("¿Seguro?")) { 
-        let p = promociones[index]; if (typeof db !== 'undefined' && p.id) db.collection("promociones").doc(String(p.id)).delete();
-        promociones.splice(index, 1); localStorage.setItem("pos_promociones_v8", JSON.stringify(promociones)); renderPromos(); 
+    if(confirm("¿Seguro que deseas eliminar esta promoción de forma permanente?")) { 
+        let promoAEliminar = promociones[index];
+        
+        // 🔥 MAGIA POCKETBASE: Localizar el ID nativo real en la nube antes de borrar
+        if (typeof pb !== 'undefined' && promoAEliminar.id) {
+            pb.collection("promociones").getFirstListItem(`doc_id="${promoAEliminar.id}"`)
+            .then(record => {
+                // Una vez encontrado el registro con su ID real de PocketBase, lo destruimos
+                return pb.collection("promociones").delete(record.id);
+            })
+            .then(() => console.log("☁️ Promoción eliminada con éxito de la nube."))
+            .catch(err => console.error("Error al borrar promoción en la nube:", err));
+        }
+        
+        // Borrado de la memoria de la computadora local
+        promociones.splice(index, 1); 
+        localStorage.setItem("pos_promociones_v8", JSON.stringify(promociones)); 
+        renderPromos(); 
     } 
 }
 
@@ -2570,16 +2903,20 @@ setInterval(() => {
 
 // 1. FILTRAR LAS SUGERENCIAS EN TIEMPO REAL MIENTRAS ESCRIBES
 function filtrarBusquedaCaja(e) {
+    // Evitamos que las teclas de navegación activen la búsqueda innecesariamente
+    if(e && (e.key === 'ArrowDown' || e.key === 'ArrowUp' || e.key === 'Enter')) return; 
+
     let txt = document.getElementById('caja_codigo').value.trim().toLowerCase();
     let sug = document.getElementById('caja_sugerencias');
     
-    // Si el buscador está vacío, escondemos el panel de sugerencias
+    // Si el buscador está vacío, escondemos el panel
     if (txt.length === 0) {
         sug.style.display = 'none';
         return;
     }
 
-    // Convertimos tu objeto global 'inv' en un array para poder filtrarlo
+    // 🧠 MAGIA: Separamos lo que escribes por espacios para buscar término por término
+    let terminos = txt.split(/%|\s+/).filter(t => t.trim() !== "");
     let llaves = Object.keys(inv);
     let filtrados = [];
 
@@ -2588,11 +2925,16 @@ function filtrarBusquedaCaja(e) {
         let p = inv[cod];
         if (!p) continue;
 
-        // Buscamos coincidencia en el código o en el nombre del producto
-        let match = cod.toLowerCase().includes(txt) || (p.nom && p.nom.toLowerCase().includes(txt));
+        // Juntamos código y nombre en un solo texto para que busque en ambos simultáneamente
+        let searchTarget = String(cod).toLowerCase() + " " + String(p.nom || '').toLowerCase();
+        
+        // Exigimos que TODOS los pedazos de palabras escritos estén en el producto, sin importar el orden
+        let match = terminos.every(t => searchTarget.includes(t));
+        
         if (match) {
             filtrados.push({ codigo: cod, nom: p.nom, piezas: p.md || 12, iva: p.iva || 0 });
-            if (filtrados.length >= 5) break; // Límite de 5 sugerencias para mantener la velocidad
+            // Subimos el límite a 15 sugerencias para que tengas mejor visibilidad
+            if (filtrados.length >= 15) break; 
         }
     }
 
@@ -2602,10 +2944,12 @@ function filtrarBusquedaCaja(e) {
         return;
     }
 
-    // Dibujamos las filas de sugerencias de forma limpia
     let html = '';
     filtrados.forEach(p => {
-        html += `<div onclick="seleccionarProductoCaja('${p.codigo}', '${p.nom.replace(/'/g, "\\'")}', ${p.piezas}, ${p.iva})" 
+        // Escudo de seguridad por si el nombre trae comillas simples (ej. "Gansito 1/2")
+        let nomSeguro = (p.nom || '').replace(/'/g, "\\'"); 
+
+        html += `<div onclick="seleccionarProductoCaja('${p.codigo}', '${nomSeguro}', ${p.piezas}, ${p.iva})" 
                      style="padding:10px; cursor:pointer; border-bottom:1px solid #eee; font-size:14px; color:#333; text-align:left;"
                      onmouseover="this.style.background='#f0f8ff'" 
                      onmouseout="this.style.background='white'">
@@ -2619,17 +2963,23 @@ function filtrarBusquedaCaja(e) {
 
 // 2. AUTOCOMPLETAR LOS CAMPOS CUANDO ELIGES UN PRODUCTO DE LA LISTA
 function seleccionarProductoCaja(codigo, nombre, piezas, impuesto) {
+    let p = inv[codigo] || {}; // 🔥 Rescatamos toda la info del catálogo
+    
     document.getElementById('caja_codigo').value = codigo;
     document.getElementById('caja_nombre_prod').innerText = "✅ " + nombre;
     document.getElementById('caja_piezas').value = piezas;
     document.getElementById('caja_impuesto').value = impuesto;
     document.getElementById('caja_sugerencias').style.display = 'none';
     
-    // Saltamos automáticamente al siguiente input para agilizar el cobro
+    // 🔥 Cargamos su Precio de Venta y Ganancia reales que tenías guardados
+    document.getElementById('caja_pv').value = parseFloat(p.pv || 0).toFixed(2);
+    document.getElementById('caja_gan').value = p.gan || 30;
+    
+    // Saltamos automáticamente a la cantidad
     document.getElementById('caja_cantidad').focus();
     document.getElementById('caja_cantidad').select();
     
-    // Forzamos el recálculo matemático de la ventana
+    // Forzamos el recálculo
     if (typeof calcularCaja === 'function') calcularCaja();
 }
 // ====================================================================
@@ -3016,3 +3366,252 @@ function confirmarRecepcion() {
     alert("✅ Recepción completada. El stock se sumó correctamente a tu inventario."); 
     renderI(); cerrarModales(); actualizarContadorRecepciones(); 
 }
+// ====================================================================
+// === 🛑 MÓDULO DE CIERRE DE CAJA (CORTE Z) ==========================
+// ====================================================================
+
+// Base de datos local para el historial de cortes
+let historialCortesZ = JSON.parse(localStorage.getItem("pos_cortes_z_v1")) || [];
+
+let currentCorteData = {}; // Memoria temporal para guardar los datos al momento del clic
+
+function abrirCorteCaja() {
+    let ultimoCorteTimestamp = 0;
+    let cortesSucursal = historialCortesZ.filter(c => c.sucursal === sucursalActual);
+    if (cortesSucursal.length > 0) {
+        ultimoCorteTimestamp = cortesSucursal[cortesSucursal.length - 1].id;
+    }
+
+    let ef=0, ta=0, trans=0, cr=0, totalVentas=0;
+    
+    ventas.forEach(v => {
+        if(!v.anulada && v.sucursal === sucursalActual && v.id > ultimoCorteTimestamp) {
+            let tVentaTicket = parseFloat(v.total) || 0;
+            totalVentas += tVentaTicket;
+
+            if (v.pagos && Array.isArray(v.pagos) && v.pagos.length > 0) {
+                v.pagos.forEach(p => {
+                    let monto = parseFloat(p.montoAplicado) || 0;
+                    if(p.metodo === 'Efectivo') ef += monto;
+                    else if(p.metodo === 'Tarjeta') ta += monto;
+                    else if(p.metodo === 'Transferencia') trans += monto;
+                    else if(p.metodo === 'Crédito') cr += monto;
+                });
+            } else {
+                let mStr = v.metodo || '';
+                if(mStr.includes('Efectivo')) ef += tVentaTicket;
+                else if(mStr.includes('Tarjeta')) ta += tVentaTicket;
+                else if(mStr.includes('Transferencia')) trans += tVentaTicket;
+                else if(mStr.includes('Crédito')) cr += tVentaTicket;
+            }
+        }
+    });
+    
+
+    let ing_efectivo = 0, ret_efectivo = 0;
+    let listaRetirosGastos = []; // 🔥 MEMORIA PARA EL DESGLOSE DE GASTOS
+
+    movimientos.forEach(m => {
+        if(m.sucursal === sucursalActual && m.id > ultimoCorteTimestamp) {
+            if (m.motivo && m.motivo.includes("RETIRO POR CORTE Z")) return;
+
+            let montoM = parseFloat(m.monto) || 0;
+            if(m.tipo === 'Ingreso') {
+                ing_efectivo += montoM;
+            } else if(m.tipo === 'Retiro') {
+                ret_efectivo += montoM;
+                listaRetirosGastos.push(m); // Lo guardamos en la lista
+            }
+        }
+    });
+
+    let efectivoEsperado = ef + ing_efectivo - ret_efectivo;
+
+    currentCorteData = {
+        ventasTotales: totalVentas,
+        efectivoVentas: ef,
+        tarjeta: ta,
+        transferencia: trans,
+        credito: cr,
+        ingresos: ing_efectivo,
+        retiros: ret_efectivo,
+        esperado: efectivoEsperado
+    };
+
+    // 🖥️ 1. Llenamos el desglose visual de Gastos
+    let htmlGastos = listaRetirosGastos.map(g => `<tr><td>${g.hora}</td><td>${g.motivo}</td><td style="text-align:right; color:red;">-$${parseFloat(g.monto).toFixed(2)}</td></tr>`).join('');
+    document.getElementById('cc_lista_gastos').innerHTML = htmlGastos || '<tr><td colspan="3" style="text-align:center; color:#888;">No hubo retiros</td></tr>';
+    document.getElementById('cc_detalle_gastos').style.display = 'none'; // Se oculta por defecto al abrir
+
+    // 🖥️ 2. Llenamos los textos de la ventana
+    document.getElementById('cc_v_efectivo').innerText = "$" + ef.toFixed(2);
+    document.getElementById('cc_v_ingresos').innerText = "+$" + ing_efectivo.toFixed(2);
+    document.getElementById('cc_v_retiros').innerText = "-$" + ret_efectivo.toFixed(2);
+    document.getElementById('cc_v_esperado').innerText = "$" + efectivoEsperado.toFixed(2);
+
+    // 🖥️ 3. Limpiamos la calculadora y el cajero
+    document.querySelectorAll('.calc-den').forEach(input => input.value = '');
+    document.getElementById('cc_fisico').value = '';
+    document.getElementById('cc_resultado_cuadre').innerText = '';
+    document.getElementById('cc_resultado_cuadre').style.background = 'transparent';
+
+    document.getElementById('modalCorteCaja').style.display = 'block';
+}
+
+// ----------------------------------------------------
+// 🔥 NUEVAS FUNCIONES PARA LA CALCULADORA Y EL DESGLOSE
+// ----------------------------------------------------
+
+// Muestra/Oculta la lista de gastos
+function toggleDetalleGastos() {
+    let div = document.getElementById('cc_detalle_gastos');
+    div.style.display = div.style.display === 'none' ? 'block' : 'none';
+}
+
+// Suma el valor de la calculadora automáticamente
+function sumarDenominaciones() {
+    let totalFisico = 0;
+    
+    // Recorre todos los cuadritos de la calculadora
+    document.querySelectorAll('.calc-den').forEach(input => {
+        let valorBillete = parseFloat(input.getAttribute('data-val'));
+        let cantidad = parseFloat(input.value) || 0;
+        totalFisico += (valorBillete * cantidad);
+    });
+    
+    // Lo empuja al campo principal de "EFECTIVO FÍSICO"
+    let fisicoInput = document.getElementById('cc_fisico');
+    fisicoInput.value = totalFisico > 0 ? totalFisico.toFixed(2) : '';
+    
+    // Ejecuta tu función de cuadre que ya estaba programada
+    calcularDiferenciaCorte();
+}
+
+
+// Calcula el sobrante/faltante conforme el cajero escribe sus billetes
+function calcularDiferenciaCorte() {
+    let fisico = parseFloat(document.getElementById('cc_fisico').value) || 0;
+    let esperado = currentCorteData.esperado;
+    let diferencia = fisico - esperado;
+    
+    let divResultado = document.getElementById('cc_resultado_cuadre');
+
+    if (diferencia === 0) {
+        divResultado.innerText = "✅ CAJA CUADRADA EXACTA ($0.00)";
+        divResultado.style.background = "#d4edda";
+        divResultado.style.color = "#155724";
+    } else if (diferencia > 0) {
+        divResultado.innerText = `⚠️ SOBRANTE DE CAJA: +$${diferencia.toFixed(2)}`;
+        divResultado.style.background = "#fff3cd";
+        divResultado.style.color = "#856404";
+    } else {
+        divResultado.innerText = `🚨 FALTANTE DE CAJA: -$${Math.abs(diferencia).toFixed(2)}`;
+        divResultado.style.background = "#f8d7da";
+        divResultado.style.color = "#721c24";
+    }
+}
+
+// Guarda en la base de datos, resetea la caja e imprime el ticket
+function guardarCorteCaja() {
+    let inputFisico = document.getElementById('cc_fisico').value;
+    if (inputFisico === '') return alert("❌ Debes ingresar cuánto efectivo hay en caja.");
+    
+    let fisico = parseFloat(inputFisico) || 0;
+    let esperado = currentCorteData.esperado;
+    let diferencia = fisico - esperado;
+
+    if (!confirm(`¿Confirmas el Cierre de Caja?\n\nEfectivo Esperado: $${esperado.toFixed(2)}\nEfectivo Real: $${fisico.toFixed(2)}\nDiferencia: $${diferencia.toFixed(2)}\n\n(Se imprimirá el ticket de comprobante)`)) return;
+
+    // 1. Armamos el Ticket para la Impresora
+    document.getElementById('tk_corte_fecha').innerText = getFechaLocal() + " " + new Date().toLocaleTimeString();
+    document.getElementById('tk_corte_cajero').innerText = usuarioActual || 'Admin';
+    
+    document.getElementById('tk_corte_vef').innerText = "$" + currentCorteData.efectivoVentas.toFixed(2);
+    document.getElementById('tk_corte_vtar').innerText = "$" + currentCorteData.tarjeta.toFixed(2);
+    document.getElementById('tk_corte_vtra').innerText = "$" + currentCorteData.transferencia.toFixed(2);
+    document.getElementById('tk_corte_vcre').innerText = "$" + currentCorteData.credito.toFixed(2);
+    document.getElementById('tk_corte_vtot').innerText = "$" + currentCorteData.ventasTotales.toFixed(2);
+
+    document.getElementById('tk_corte_ing').innerText = "$" + currentCorteData.ingresos.toFixed(2);
+    document.getElementById('tk_corte_ret').innerText = "$" + currentCorteData.retiros.toFixed(2);
+
+    document.getElementById('tk_corte_esp').innerText = "$" + esperado.toFixed(2);
+    document.getElementById('tk_corte_fis').innerText = "$" + fisico.toFixed(2);
+
+    let divDif = document.getElementById('tk_corte_dif_caja');
+    if (diferencia === 0) {
+        divDif.innerHTML = `<span>DIFERENCIA:</span> <b>✅ CUADRE PERFECTO</b>`;
+    } else if (diferencia > 0) {
+        divDif.innerHTML = `<span>DIFERENCIA:</span> <b style="color:black;">SOBRANTE +$${diferencia.toFixed(2)}</b>`;
+    } else {
+        divDif.innerHTML = `<span>DIFERENCIA:</span> <b style="color:black;">FALTANTE -$${Math.abs(diferencia).toFixed(2)}</b>`;
+    }
+
+    // 2. Guardamos el Corte en la Base de Datos para Auditoría
+    let idCorte = Date.now();
+    let objetoCorte = {
+        id: idCorte,
+        fecha: getFechaLocal(),
+        hora: new Date().toLocaleTimeString(),
+        cajero: usuarioActual,
+        sucursal: sucursalActual,
+        ventas_totales: currentCorteData.ventasTotales,
+        efectivo_ventas: currentCorteData.efectivoVentas,
+        ingresos: currentCorteData.ingresos,
+        gastos: currentCorteData.retiros,
+        efectivo_esperado: esperado,
+        efectivo_real: fisico,
+        diferencia: diferencia
+    };
+
+    historialCortesZ.push(objetoCorte);
+    localStorage.setItem("pos_cortes_z_v1", JSON.stringify(historialCortesZ));
+
+    // Si quieres guardar los cortes en la nube automáticamente, descomenta esto (y crea la colección 'cortes_caja' en PocketBase):
+    // if (typeof db !== 'undefined') db.collection("cortes_caja").doc(String(idCorte)).set(objetoCorte).catch(e => console.warn(e));
+
+    // 3. Imprimimos el ticket (Oculta la interfaz y manda a impresión)
+    cerrarModales();
+    
+    // Opcional: Como hiciste cierre, podríamos hacer un retiro automático de todo el dinero para que el día de mañana empiece en $0.
+    // Si quieres que el dinero "se vacíe" de la caja registradora, ejecuta un retiro por el "Efectivo Real":
+    procesarRetiroCaja(fisico, `RETIRO POR CORTE Z (Fondo retirado a caja fuerte)`);
+    
+    setTimeout(() => {
+        imprimirTicket('ticket_corte_print_area');
+    }, 500);
+}
+// ====================================================================
+// === 🧮 CÁLCULO DE COSTO PROMEDIO AUTOMÁTICO (PEPS/PROMEDIO) ========
+// ====================================================================
+window.aplicarCostoPromedio = function(cod, cantidadEntrante, costoCompraNuevo) {
+    let item = inv[cod];
+    if (!item) return;
+
+    // 1. Obtenemos cuánto tenemos y a qué costo
+    let stockActual = parseFloat(item.stock[sucursalActual]) || 0;
+    if (stockActual < 0) stockActual = 0; // Si había negativos por errores, partimos de cero para no arruinar la matemática
+
+    let costoActual = parseFloat(item.cos) || 0;
+    let cantNueva = parseFloat(cantidadEntrante) || 0;
+    let costoNuevo = parseFloat(costoCompraNuevo) || 0;
+
+    // 2. Aplicamos la fórmula financiera de Costo Promedio
+    let valorInventarioViejo = stockActual * costoActual;
+    let valorInventarioNuevo = cantNueva * costoNuevo;
+    let piezasTotales = stockActual + cantNueva;
+
+    if (piezasTotales > 0) {
+        let costoPromedio = (valorInventarioViejo + valorInventarioNuevo) / piezasTotales;
+        
+        // 3. Actualizamos el catálogo con el nuevo costo redondeado a 2 decimales
+        item.cos = costoPromedio.toFixed(2);
+        
+        // 4. Lo mandamos a la Nube (PocketBase) para que todas las sucursales tengan el nuevo costo
+        if(typeof db !== 'undefined') {
+            db.collection("inventario").doc(cod).set(item).catch(e => console.warn("Error al subir costo promedio a la nube:", e));
+        }
+        
+        console.log(`📦 Costo Promedio de [${item.nom}] actualizado a $${item.cos}`);
+    }
+};

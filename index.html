@@ -182,21 +182,31 @@
 
 <div id="i-tab" class="tabcontent no-print">
     <div style="padding:25px;">
-        <div style="display:flex; justify-content: space-between; align-items: center; margin-bottom:20px;">
-           <div style="display:flex; align-items:center;">
+        <div style="display:flex; flex-direction:column; gap:15px; margin-bottom:20px;">
+            
+            <div style="display:flex; align-items:center; flex-wrap:wrap; gap:15px;">
                 <h2 style="margin:0;">Catálogo (<span class="lbl-suc-act" style="color:var(--p)">Matriz</span>)</h2>
-                <div id="admin_total_inv_container" style="display:none; background:#1a1d20; color:#ffc107; padding:6px 15px; border-radius:8px; font-weight:bold; border: 1px solid #444; margin-left: 15px; font-size:14px;">
+                <div id="admin_total_inv_container" style="display:none; background:#1a1d20; color:#ffc107; padding:6px 15px; border-radius:8px; font-weight:bold; border: 1px solid #444; font-size:14px;">
                     💰 VALOR TOTAL: $<span id="lbl_total_inv_cost">0.00</span>
                 </div>
             </div>
-            <div style="display:flex; gap:10px;">
-                <button onclick="abrirModalRecepciones()" style="background:var(--orange); color:white; border:none; padding:12px 20px; border-radius:8px; cursor:pointer; font-weight:bold;">📦 RECEPCIONES (<span id="lbl_recepciones_count">0</span>)</button>
-                <button onclick="abrirTransferencia()" style="background:var(--kit); color:white; border:none; padding:12px 20px; border-radius:8px; cursor:pointer; font-weight:bold;">🚚 ENVIAR</button>
-                <button onclick="reiniciarFaltantes()" style="background:var(--danger); color:white; border:none; padding:12px 20px; border-radius:8px; cursor:pointer; font-weight:bold;">🔄 RESET FALTANTES</button>
-                <button onclick="abrirAuthReiniciarInv()" style="background:#343a40; color:white; border:none; padding:12px 20px; border-radius:8px; cursor:pointer; font-weight:bold;">🚨 STOCK A CERO</button>
-                <button onclick="document.getElementById('modalImport').style.display='block'" style="background:var(--p); color:white; border:none; padding:12px 20px; border-radius:8px; cursor:pointer; font-weight:bold;">📥 EXCEL</button>
+
+            <div style="display:flex; gap:10px; flex-wrap: wrap;">
+                <button onclick="abrirModalRecepciones()" style="background:var(--orange); color:white; border:none; padding:10px 15px; border-radius:8px; cursor:pointer; font-weight:bold; position:relative; font-size:13px;">
+                    📦 RECEPCIONES <span id="btn_recepciones_badge" style="background:red; color:white; border-radius:50%; padding:2px 6px; font-size:10px; display:none; margin-left:5px;"></span>
+                </button>
+                <button onclick="abrirTransferencia()" style="background:var(--kit); color:white; border:none; padding:10px 15px; border-radius:8px; cursor:pointer; font-weight:bold; font-size:13px;">🚚 ENVIAR</button>
+                <button onclick="reiniciarFaltantes()" style="background:var(--danger); color:white; border:none; padding:10px 15px; border-radius:8px; cursor:pointer; font-weight:bold; font-size:13px;">🔄 RESET FALTANTES</button>
+                <button onclick="abrirAuthReiniciarInv()" style="background:#343a40; color:white; border:none; padding:10px 15px; border-radius:8px; cursor:pointer; font-weight:bold; font-size:13px;">🚨 STOCK A CERO</button>
+                <button onclick="document.getElementById('modalImport').style.display='block'" style="background:var(--p); color:white; border:none; padding:10px 15px; border-radius:8px; cursor:pointer; font-weight:bold; font-size:13px;">📥 EXCEL</button>
+                
+                <button onclick="abrirCorteCaja()" style="background:#851414; color:white; border:none; padding:10px 15px; border-radius:8px; cursor:pointer; font-weight:bold; border-left: 4px solid red; font-size:13px; box-shadow: 0 4px 6px rgba(0,0,0,0.15);" title="Cierre de Turno / Corte Z">
+                    🛑 CERRAR CAJA
+                </button>
             </div>
+            
         </div>
+        
         <div style="display: flex; gap: 10px; margin-bottom: 15px;">
             <input type="text" id="buscar_inv" placeholder="🔍 Buscar por código o nombre..." onkeyup="filtrarInventario(false, event)" style="flex: 2; font-size:16px; padding:12px;">
             <select id="filtro_dep" onchange="filtrarInventario()" style="flex: 1; font-size:14px; padding:10px;"><option value="">📁 Todos los Deptos</option></select>
@@ -244,6 +254,10 @@
             <button class="btn-final" style="grid-column: span 3; background:var(--promo)" onclick="guardarPromo()">CREAR PROMOCIÓN</button>
         </div>
         <div style="height:calc(100vh - 350px); overflow-y:auto; border: 1px solid #ddd; border-radius:8px; background:white; margin-top:20px;">
+           <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom: 15px; flex-wrap:wrap; gap:10px;">
+    <h3 style="margin:0; color:var(--promo)">Gestión de Promociones</h3>
+    <input type="text" id="buscar_promo" placeholder="🔍 Buscar promoción..." class="input-modern" oninput="renderPromos()" style="width: 100%; max-width: 300px;">
+</div>
             <table class="tabla-pos" style="margin-top:0;"><thead><tr><th>Producto</th><th>Sucursal</th><th>Tipo Promo</th><th>Vigencia</th><th>Límite / Usadas</th><th>Estado</th><th>Acción</th></tr></thead><tbody id="pr_lista"></tbody></table>
         </div>
     </div>
@@ -266,6 +280,11 @@
         <div style="display: flex; gap: 10px; margin-bottom: 20px; flex-wrap: wrap;" class="no-print">
             <button onclick="abrirCancelacionMovimientos()" style="flex:1; background:#dc3545; color:white; border:none; padding:10px; border-radius:5px; font-weight:bold; cursor:pointer;">🗑️ Anular Movimiento</button>
             <button onclick="registrarPrecorte()" style="flex:1; background:#17a2b8; color:white; border:none; padding:10px; border-radius:5px; font-weight:bold; cursor:pointer;">✂️ Hacer Precorte</button>
+        </div>
+        <div style="display: flex; gap: 10px; margin-bottom: 20px; flex-wrap: wrap;" class="no-print">
+            <button onclick="abrirCancelacionMovimientos()" style="flex:1; background:#dc3545; color:white; border:none; padding:10px; border-radius:5px; font-weight:bold; cursor:pointer;">🗑️ Anular Movimiento</button>
+            <button onclick="registrarPrecorte()" style="flex:1; background:#17a2b8; color:white; border:none; padding:10px; border-radius:5px; font-weight:bold; cursor:pointer;">✂️ Hacer Precorte</button>
+            <button onclick="abrirCorteCaja()" style="flex:1; background:var(--danger); color:white; border:none; padding:10px; border-radius:5px; font-weight:bold; cursor:pointer; font-size:16px;">🛑 CERRAR CAJA (Corte Z)</button>
         </div>
 
         <div class="kpi-grid" style="display:grid; grid-template-columns: repeat(4, 1fr); gap:15px; margin-bottom: 20px;">
@@ -1024,59 +1043,45 @@
     </div>
 </div>
 
-<div id="modalCaja" class="modal" style="display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.5); z-index:9999; align-items:center; justify-content:center;">
-    <div style="background:white; padding:25px; border-radius:10px; width:420px; box-shadow: 0 4px 15px rgba(0,0,0,0.3); font-family: sans-serif;">
-        <h3 style="margin-top:0; color:#004085;">📦 Comprar por Caja</h3>
-
-        <label style="display:block; margin-bottom:5px; font-weight:bold; font-size:13px; color:#555;">1. Buscar Producto (Nombre o Código):</label>
-        <div style="display:flex; gap:8px; margin-bottom:5px; position:relative;">
-            <div style="flex:1; position:relative;">
-                <input type="text" id="caja_codigo" onkeydown="focoCajaEnter(event, 'caja_cantidad')" onkeyup="filtrarBusquedaCaja(event)" onchange="buscarProdCaja()" onblur="setTimeout(() => document.getElementById('caja_sugerencias').style.display='none', 200)" placeholder="Ej. Coca Cola..." style="width:100%; padding:10px; border:2px solid #004085; border-radius:5px; box-sizing:border-box; font-size:16px; background:#f0f8ff;">
-                <div id="caja_sugerencias" style="display:none; position:absolute; top:45px; left:0; width:100%; background:white; border:1px solid #004085; border-radius:5px; max-height:160px; overflow-y:auto; z-index:1000; box-shadow: 0 4px 6px rgba(0,0,0,0.2);"></div>
-            </div>
-            <button onclick="abrirEscanerCamara('caja')" style="background:#28a745; color:white; border:none; border-radius:5px; padding:0 15px; cursor:pointer; font-size:20px; box-shadow: 0 2px 4px rgba(0,0,0,0.2);" title="Escanear con celular">📷</button>
+<div id="modalCaja" class="modal" style="display:none; align-items:center; justify-content:center; background:rgba(0,0,0,0.6); position:fixed; top:0; left:0; width:100%; height:100%; z-index:9999;">
+    <div class="modal-content" style="background: #fff; width: 500px !important; max-width: 95% !important; margin: auto; padding: 25px; border-radius: 12px; border-top: 5px solid #17a2b8; max-height: 90vh; overflow-y: auto; display: block; box-sizing: border-box;">
+        
+        <h3 style="margin-top: 0; margin-bottom: 20px; color: #17a2b8; display:flex; align-items:center; gap:8px;">📦 Compra por Caja / Lote</h3>
+        
+        <div style="position:relative; margin-bottom:15px; width: 100%;">
+            <label style="font-weight:bold; font-size:13px; color:#555; display:block; margin-bottom:5px;">Código del Producto:</label>
+            <input type="text" id="caja_codigo" class="input-modern" placeholder="Escanea o escribe..." oninput="window.filtrarBusquedaCaja(event)" onkeydown="focoCajaEnter(event, 'caja_cantidad')" autocomplete="off" style="width: 100%; box-sizing: border-box;">
+            <div id="caja_sugerencias" style="display:none; position:absolute; top:100%; left:0; width:100%; background:white; border:1px solid #ddd; box-shadow:0 4px 6px rgba(0,0,0,0.1); z-index:1000; max-height:200px; overflow-y:auto; border-radius:4px;"></div>
         </div>
 
-        <p id="caja_nombre_prod" style="font-weight:bold; color:#28a745; margin-top:0; margin-bottom:15px; font-size:14px; min-height: 20px;"></p>
-
-        <div style="display:flex; gap:10px; margin-bottom:15px;">
-            <div style="flex:1;">
-                <label style="display:block; margin-bottom:5px; font-weight:bold; font-size:13px; color:#555;">2. Cajas a Comprar:</label>
-                <input type="number" id="caja_cantidad" onkeydown="focoCajaEnter(event, 'caja_costo_total')" onkeyup="calcularCaja()" onchange="calcularCaja()" value="1" min="1" style="width:100%; padding:10px; border:1px solid #ccc; border-radius:5px; box-sizing:border-box; font-size:16px;">
-            </div>
-            <div style="flex:1;">
-                <label style="display:block; margin-bottom:5px; font-weight:bold; font-size:13px; color:#555;">3. Costo de 1 Caja ($):</label>
-                <input type="number" id="caja_costo_total" onkeydown="focoCajaEnter(event, 'caja_piezas')" onkeyup="calcularCaja()" onchange="calcularCaja()" placeholder="Ej. 1200" style="width:100%; padding:10px; border:1px solid #ccc; border-radius:5px; box-sizing:border-box; font-size:16px;">
-            </div>
+        <div id="caja_nombre_prod" style="font-weight: bold; font-size: 16px; color: var(--p); margin-bottom: 15px; text-align:center; width: 100%; min-height: 20px;"></div>
+        
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px; margin-bottom: 15px; width: 100%;">
+            <div><label style="font-size:12px; font-weight:bold; display:block; margin-bottom:5px;">Cant. Cajas (Paquetes):</label><input type="number" id="caja_cantidad" value="1" class="input-modern" oninput="window.calcularCaja()" onkeydown="focoCajaEnter(event, 'caja_costo_total')" style="width: 100%; box-sizing: border-box;"></div>
+            <div><label style="font-size:12px; font-weight:bold; display:block; margin-bottom:5px;">Costo PL (Precio Lista):</label><input type="number" id="caja_costo_total" class="input-modern" oninput="window.calcularCaja()" onkeydown="focoCajaEnter(event, 'caja_piezas')" placeholder="$" style="width: 100%; box-sizing: border-box;"></div>
+            
+            <div><label style="font-size:12px; font-weight:bold; display:block; margin-bottom:5px;">Piezas por Caja:</label><input type="number" id="caja_piezas" class="input-modern" oninput="window.calcularCaja()" onkeydown="focoCajaEnter(event, 'caja_desc')" style="width: 100%; box-sizing: border-box;"></div>
+            <div><label style="font-size:12px; font-weight:bold; color:var(--danger); display:block; margin-bottom:5px;">Descuento (%):</label><input type="number" id="caja_desc" class="input-modern" value="0" oninput="window.calcularCaja()" onkeydown="focoCajaEnter(event, 'caja_impuesto')" style="width: 100%; box-sizing: border-box; border-color:var(--danger);"></div>
+            
+            <div style="grid-column: span 2;"><label style="font-size:12px; font-weight:bold; display:block; margin-bottom:5px;">Impuesto (IVA/IEPS %):</label><input type="number" id="caja_impuesto" class="input-modern" value="0" oninput="window.calcularCaja()" onkeydown="focoCajaEnter(event, 'caja_gan')" style="width: 100%; box-sizing: border-box;"></div>
         </div>
 
-        <div style="display:flex; gap:10px; margin-bottom:15px;">
-            <div style="flex:1;">
-                <label style="display:block; margin-bottom:5px; font-weight:bold; font-size:13px; color:#555;">4. Piezas por Caja:</label>
-                <input type="number" id="caja_piezas" onkeydown="focoCajaEnter(event, 'caja_impuesto')" onkeyup="calcularCaja()" onchange="calcularCaja()" placeholder="Ej. 12" style="width:100%; padding:10px; border:1px solid #ccc; border-radius:5px; box-sizing:border-box; font-size:16px;">
-            </div>
-            <div style="flex:1;">
-                <label style="display:block; margin-bottom:5px; font-weight:bold; font-size:13px; color:#555;">5. Impuesto (%):</label>
-                <input type="number" id="caja_impuesto" onkeydown="focoCajaEnter(event, 'btn_agregar_caja')" onkeyup="calcularCaja()" onchange="calcularCaja()" value="0" style="width:100%; padding:10px; border:1px solid #ccc; border-radius:5px; box-sizing:border-box; font-size:16px;">
-            </div>
+        <div style="background: #f8f9fa; padding: 15px; border-radius: 8px; border: 1px solid #ddd; margin-bottom: 15px; text-align:center; width: 100%; box-sizing: border-box;">
+            <div style="display:flex; justify-content:space-between; margin-bottom:5px;"><span>Piezas a sumar al stock:</span> <b id="lbl_caja_total_piezas" style="color:var(--s); font-size:18px;">0</b></div>
+            <div style="display:flex; justify-content:space-between; margin-bottom:5px; color:#666;"><span>Costo Base PL x Pieza:</span> <b id="lbl_caja_costo_base">$0.00</b></div>
+            <div style="display:flex; justify-content:space-between; font-weight:bold; font-size:16px;"><span>Costo Neto (Con Desc):</span> <b id="lbl_caja_costo_real" style="color:var(--danger);">$0.00</b></div>
         </div>
 
-        <div style="background:#f8f9fa; border-left:4px solid #17a2b8; padding:15px; border-radius:5px; margin-bottom:20px;">
-            <div style="display:flex; justify-content:space-between; margin-bottom:8px; font-size:14px; color:#666;">
-                <span>Total de Piezas (Unidades):</span> <strong id="lbl_caja_total_piezas" style="color:#17a2b8;">0</strong>
-            </div>
-            <div style="display:flex; justify-content:space-between; margin-bottom:8px; font-size:14px; color:#666;">
-                <span>Costo Base Unitario:</span> <strong id="lbl_caja_costo_base">$0.00</strong>
-            </div>
-            <div style="display:flex; justify-content:space-between; font-size:18px; color:#b00;">
-                <span>Costo REAL x Pieza:</span> <strong id="lbl_caja_costo_real">$0.00</strong>
-            </div>
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px; margin-bottom: 20px; background: #e0f0ff; padding: 15px; border-radius: 8px; border: 1px solid #b8daff; width: 100%; box-sizing: border-box;">
+            <div><label style="font-size:12px; font-weight:bold; color:var(--p); display:block; margin-bottom:5px;">Ganancia Esperada (%):</label><input type="number" id="caja_gan" class="input-modern" style="border-color:var(--p); width: 100%; box-sizing: border-box;" oninput="window.recalcCajaVentaDesdeGanancia()" onkeydown="focoCajaEnter(event, 'caja_pv')"></div>
+            <div><label style="font-size:12px; font-weight:bold; color:var(--s); display:block; margin-bottom:5px;">Nuevo Precio Venta ($):</label><input type="number" id="caja_pv" class="input-modern" style="border-color:var(--s); font-weight:bold; font-size:16px; width: 100%; box-sizing: border-box;" oninput="window.recalcCajaGananciaDesdeVenta()" onkeydown="focoCajaEnter(event, 'btn_agregar_caja')"></div>
         </div>
 
-        <div style="display:flex; gap:10px;">
-            <button onclick="cerrarCaja()" style="flex:1; padding:12px; background:#6c757d; color:white; border:none; border-radius:5px; cursor:pointer; font-weight:bold;">Cancelar</button>
-            <button id="btn_agregar_caja" onclick="agregarCajaACarrito()" style="flex:2; padding:12px; background:#28a745; color:white; border:none; border-radius:5px; cursor:pointer; font-weight:bold; font-size:15px;">Añadir a la Compra</button>
+        <div style="display: flex; gap: 15px; width: 100%; box-sizing: border-box;">
+            <button class="btn-final" style="background:#eee; color:#333; flex: 1; padding: 15px; font-weight: bold;" onclick="window.cerrarCaja()">Cancelar</button>
+            <button id="btn_agregar_caja" class="btn-final" style="background:#17a2b8; flex: 1; padding: 15px; font-weight: bold;" onclick="window.agregarCajaACarrito()">📥 Agregar a Compra</button>
         </div>
+        
     </div>
 </div>
 <div id="modalRecepciones" class="modal" style="display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.6); z-index:9999;">
@@ -1102,6 +1107,86 @@
             </table>
         </div>
     </div>
+</div>
+<div id="modalCorteCaja" class="modal">
+    <div class="modal-content" style="width:650px; border-top-color:var(--danger)">
+        <h3 style="margin-top:0; color:var(--danger);">🛑 Cierre de Caja (Corte Z)</h3>
+        <p style="font-size:12px; color:#666;">Se calcularán los totales del turno actual en <b><span class="lbl-suc-act"></span></b>.</p>
+        
+        <div style="background:#f8f9fa; padding:15px; border-radius:8px; border:1px solid #ddd; margin-bottom:15px;">
+            <div style="display:flex; justify-content:space-between; margin-bottom:5px;"><span>Ventas en Efectivo:</span> <b id="cc_v_efectivo">$0.00</b></div>
+            <div style="display:flex; justify-content:space-between; margin-bottom:5px; color:#28a745;"><span>(+) Ingresos Extra:</span> <b id="cc_v_ingresos">$0.00</b></div>
+            
+            <div style="display:flex; justify-content:space-between; margin-bottom:10px; color:var(--danger); cursor:pointer; border-bottom:1px dashed var(--danger); padding-bottom:3px;" onclick="toggleDetalleGastos()" title="Clic para ver detalle">
+                <span>(-) Gastos y Precortes <b style="font-size:10px;">🔍 (Clic aquí)</b> :</span> <b id="cc_v_retiros">$0.00</b>
+            </div>
+            
+            <div id="cc_detalle_gastos" style="display:none; margin-bottom:10px; font-size:12px; background:#fff; padding:10px; border:1px solid #ffc107; border-radius:5px; max-height:100px; overflow-y:auto;">
+                <table style="width:100%; text-align:left; border-collapse:collapse;">
+                    <thead><tr style="border-bottom:1px solid #ccc; color:#666;"><th>Hora</th><th>Motivo / Descripción</th><th style="text-align:right;">Monto</th></tr></thead>
+                    <tbody id="cc_lista_gastos"></tbody>
+                </table>
+            </div>
+
+            <div style="display:flex; justify-content:space-between; border-top:2px dashed #ccc; padding-top:10px; font-size:18px;">
+                <span>Efectivo Esperado:</span> <b style="color:var(--p);" id="cc_v_esperado">$0.00</b>
+            </div>
+        </div>
+
+        <label style="font-weight:bold; color:var(--d); display:block; margin-bottom:8px; font-size:13px;">📊 CALCULADORA DE BILLETES Y MONEDAS (CANTIDAD):</label>
+        <div style="display:grid; grid-template-columns: repeat(4, 1fr); gap:8px; background:#e9ecef; padding:10px; border-radius:8px; margin-bottom:15px; font-size:13px;">
+            <div style="display:flex; align-items:center; gap:5px;"><b style="width:40px; color:#198754">$1000</b><input type="number" class="calc-den" data-val="1000" min="0" oninput="sumarDenominaciones()" style="padding:4px; font-size:14px; text-align:center;"></div>
+            <div style="display:flex; align-items:center; gap:5px;"><b style="width:40px; color:#856404">$500</b><input type="number" class="calc-den" data-val="500" min="0" oninput="sumarDenominaciones()" style="padding:4px; font-size:14px; text-align:center;"></div>
+            <div style="display:flex; align-items:center; gap:5px;"><b style="width:40px; color:#0c63e4">$200</b><input type="number" class="calc-den" data-val="200" min="0" oninput="sumarDenominaciones()" style="padding:4px; font-size:14px; text-align:center;"></div>
+            <div style="display:flex; align-items:center; gap:5px;"><b style="width:40px; color:#dc3545">$100</b><input type="number" class="calc-den" data-val="100" min="0" oninput="sumarDenominaciones()" style="padding:4px; font-size:14px; text-align:center;"></div>
+            <div style="display:flex; align-items:center; gap:5px;"><b style="width:40px; color:#d63384">$50</b><input type="number" class="calc-den" data-val="50" min="0" oninput="sumarDenominaciones()" style="padding:4px; font-size:14px; text-align:center;"></div>
+            <div style="display:flex; align-items:center; gap:5px;"><b style="width:40px; color:#0dcaf0">$20</b><input type="number" class="calc-den" data-val="20" min="0" oninput="sumarDenominaciones()" style="padding:4px; font-size:14px; text-align:center;"></div>
+            <div style="display:flex; align-items:center; gap:5px;"><b style="width:40px; color:#6c757d">$10</b><input type="number" class="calc-den" data-val="10" min="0" oninput="sumarDenominaciones()" style="padding:4px; font-size:14px; text-align:center;"></div>
+            <div style="display:flex; align-items:center; gap:5px;"><b style="width:40px; color:#6c757d">$5</b><input type="number" class="calc-den" data-val="5" min="0" oninput="sumarDenominaciones()" style="padding:4px; font-size:14px; text-align:center;"></div>
+            <div style="display:flex; align-items:center; gap:5px;"><b style="width:40px; color:#6c757d">$2</b><input type="number" class="calc-den" data-val="2" min="0" oninput="sumarDenominaciones()" style="padding:4px; font-size:14px; text-align:center;"></div>
+            <div style="display:flex; align-items:center; gap:5px;"><b style="width:40px; color:#6c757d">$1</b><input type="number" class="calc-den" data-val="1" min="0" oninput="sumarDenominaciones()" style="padding:4px; font-size:14px; text-align:center;"></div>
+            <div style="display:flex; align-items:center; gap:5px; grid-column: span 2;"><b style="width:40px; color:#6c757d">$0.50</b><input type="number" class="calc-den" data-val="0.5" min="0" oninput="sumarDenominaciones()" style="padding:4px; font-size:14px; text-align:center; width:calc(50% - 20px);"></div>
+        </div>
+
+        <label style="font-weight:bold; color:var(--d); text-align:center; display:block;">EFECTIVO FÍSICO CONTADO:</label>
+        <input type="number" id="cc_fisico" placeholder="0.00" oninput="calcularDiferenciaCorte()" style="font-size:26px; text-align:center; font-weight:bold; color:var(--s); margin-top:5px; margin-bottom:10px; background:#f0f8ff;">
+        
+        <div id="cc_resultado_cuadre" style="text-align:center; font-size:16px; font-weight:bold; padding:10px; border-radius:5px;"></div>
+
+        <div style="display: flex; gap: 10px; margin-top: 15px;">
+            <button class="btn-final" style="background:#eee; color:#333; flex: 1;" onclick="cerrarModales()">Cancelar</button>
+            <button class="btn-final" style="background:var(--danger); flex: 1;" onclick="guardarCorteCaja()">💾 Confirmar y Cerrar</button>
+        </div>
+    </div>
+</div>
+
+<div id="ticket_corte_print_area" class="print-active" style="display:none; padding:0; background:#fff; color:#000; font-family:monospace;">
+    <h2 style="margin: 0; text-align: center;">CORTE DE CAJA</h2>
+    <p style="margin:5px 0; text-align: center; border-bottom: 2px dashed #000; padding-bottom: 5px;">
+        <span id="tk_corte_fecha"></span><br>
+        Sucursal: <span class="lbl-suc-act"></span><br>
+        Cajero: <span id="tk_corte_cajero"></span>
+    </p>
+    
+    <div style="margin-bottom:10px; border-bottom: 2px dashed #000; padding-bottom: 5px;">
+        <div style="display:flex; justify-content:space-between;"><span>Ventas Efectivo:</span> <span id="tk_corte_vef"></span></div>
+        <div style="display:flex; justify-content:space-between;"><span>Ventas Tarjeta:</span> <span id="tk_corte_vtar"></span></div>
+        <div style="display:flex; justify-content:space-between;"><span>Ventas Transf:</span> <span id="tk_corte_vtra"></span></div>
+        <div style="display:flex; justify-content:space-between;"><span>Ventas Crédito:</span> <span id="tk_corte_vcre"></span></div>
+        <div style="display:flex; justify-content:space-between; font-weight:bold; margin-top:5px;"><span>TOTAL VENTAS:</span> <span id="tk_corte_vtot"></span></div>
+    </div>
+    
+    <div style="margin-bottom:10px; border-bottom: 2px dashed #000; padding-bottom: 5px;">
+        <div style="display:flex; justify-content:space-between;"><span>Fondo/Ingresos:</span> <span id="tk_corte_ing"></span></div>
+        <div style="display:flex; justify-content:space-between;"><span>Gastos/Precortes:</span> <span id="tk_corte_ret"></span></div>
+    </div>
+    
+    <div style="margin-bottom:15px;">
+        <div style="display:flex; justify-content:space-between; font-size:16px;"><span>ESPERADO:</span> <b id="tk_corte_esp"></b></div>
+        <div style="display:flex; justify-content:space-between; font-size:16px;"><span>FÍSICO (REAL):</span> <b id="tk_corte_fis"></b></div>
+        <div style="display:flex; justify-content:space-between; font-size:16px; margin-top:5px;" id="tk_corte_dif_caja"></div>
+    </div>
+    <p style="text-align:center; font-size:10px;">Firma del Cajero<br><br>_____________________</p>
 </div>
 
 <script src="app.js"></script>
