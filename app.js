@@ -389,16 +389,20 @@ db.collection("promociones").onSnapshot((querySnapshot) => {
     renderPromos(); 
 });
 // 📡 RADAR DE KARDEX EN TIEMPO REAL
-let historialKardex = [];
+let historialKardex = []; // ¡AQUÍ ESTABA EL ERROR! Faltaba declarar esta variable global
 db.collection("kardex").onSnapshot((querySnapshot) => {
     historialKardex = [];
     querySnapshot.forEach((doc) => { 
         historialKardex.push(doc.data()); 
     });
+    
     // Ordenamos para que lo más nuevo salga primero
     historialKardex.sort((a, b) => b.timestamp - a.timestamp);
     console.log("📊 Historial de Kardex sincronizado.");
-    if (tabActual === 'kardex-tab') renderKardex(); 
+    
+    if (tabActual === 'kardex-tab' && typeof window.renderKardex === 'function') {
+        window.renderKardex(); 
+    }
 });
 
 // ====================================================================
@@ -449,31 +453,45 @@ window.onload = () => {
     renderCorte();
 };
 
-function changeTab(e, id) { 
-    tabActual = id; 
-    // 1. Apagamos TODAS las pantallas
-    document.querySelectorAll('.tabcontent').forEach(x => x.style.display = 'none'); 
-    
-    // 2. Apagamos TODOS los botones
-    document.querySelectorAll('.t-btn').forEach(x => x.classList.remove('active')); 
-    
-    // 3. Encendemos el botón que clickeamos y la pantalla que le corresponde
-    let btn = document.getElementById('btn_' + id);
-    if(btn) btn.classList.add('active'); 
-    
-    let pantalla = document.getElementById(id);
-    if(pantalla) pantalla.style.display = 'block'; 
-    
-    // 4. Funciones específicas de cada pantalla al entrar
-    if(id==='v-tab') document.getElementById('v_cod').focus();
-    if(id === 'c-tab') document.getElementById('c_cod').focus(); 
-    if(id==='r-tab') renderCorte(); 
-    if(id==='i-tab') renderI(); 
-    if(id === 'pro-tab') renderPromos(); 
-    if(id === 'cli-tab') renderClientes(); 
-    if(id === 'prov-tab') renderProveedores();
-    if(id === 'kardex-tab') renderKardex(); 
-}
+// ==========================================
+// CAMBIO DE PESTAÑAS (MENÚ PRINCIPAL)
+// ==========================================
+window.changeTab = function(evt, tabName) {
+    try {
+        // 1. Escondemos todas las pestañas
+        let tabcontent = document.getElementsByClassName("tabcontent");
+        for (let i = 0; i < tabcontent.length; i++) {
+            tabcontent[i].style.display = "none";
+        }
+
+        // 2. Le quitamos el color de "activo" a todos los botones
+        let tablinks = document.getElementsByClassName("t-btn");
+        for (let i = 0; i < tablinks.length; i++) {
+            tablinks[i].className = tablinks[i].className.replace(" active", "");
+        }
+
+        // 3. Mostramos la pestaña que el usuario pidió
+        let tabSeleccionada = document.getElementById(tabName);
+        if (tabSeleccionada) {
+            tabSeleccionada.style.display = "block";
+        }
+
+        // 4. Iluminamos el botón presionado
+        if (evt && evt.currentTarget) {
+             evt.currentTarget.className += " active";
+        } else {
+             let btn = document.getElementById('btn_' + tabName);
+             if (btn) btn.className += " active";
+        }
+
+        // 🚀 LA MAGIA: Si el usuario abrió el Kardex, lo dibujamos
+        if (tabName === 'kardex-tab' && typeof window.renderKardex === 'function') {
+            window.renderKardex();
+        }
+    } catch (error) {
+        console.error("Error al cambiar de pestaña:", error);
+    }
+};
 
 function cerrarModales() { 
     document.querySelectorAll('.modal').forEach(m => m.style.display = 'none'); 
@@ -488,7 +506,32 @@ function cerrarModales() {
 // ====================================================================
 function initLoginSelect() { 
     let sel = document.getElementById('login_user'); 
-    if(sel) sel.innerHTML = Object.keys(usuariosData).map(u => `<option value="${u}">${u}</option>`).join(''); 
+    if(!sel) return;
+
+    let htmlUsuarios = '';
+    
+    // Iteramos sobre todos los usuarios registrados
+    Object.keys(usuariosData).forEach(u => {
+        let datosUsuario = usuariosData[u];
+        
+        // El Admin siempre puede entrar a todos lados (Regla de oro)
+        if (u === "Admin") {
+            htmlUsuarios += `<option value="${u}">${u}</option>`;
+            return;
+        }
+
+        // Revisamos si el usuario tiene permiso para la sucursal "invisible" donde está la PC
+        if (datosUsuario.sucursales_permitidas) {
+            if (datosUsuario.sucursales_permitidas.includes(sucursalActual)) {
+                htmlUsuarios += `<option value="${u}">${u}</option>`;
+            }
+        } else {
+            // Si es un usuario muy viejo que no tiene configuración, por defecto lo mostramos
+            htmlUsuarios += `<option value="${u}">${u}</option>`;
+        }
+    });
+
+    sel.innerHTML = htmlUsuarios;
 }
 
 function intentarLogin() {
@@ -535,6 +578,48 @@ function intentarLogin() {
         alert("PIN Incorrecto"); 
     }
 }
+window.filtrarUsuariosPorSucursal = function() {
+    let selectorSucursal = document.getElementById('login_sucursal');
+    let selectorUsuarios = document.getElementById('login_user');
+    
+    if(!selectorSucursal || !selectorUsuarios) return;
+
+    let sucursalElegida = selectorSucursal.value;
+    
+    // Si no han elegido sucursal, vaciamos la lista de usuarios
+    if (sucursalElegida === "") {
+        selectorUsuarios.innerHTML = '<option value="">-- Selecciona Sucursal Primero --</option>';
+        selectorUsuarios.disabled = true;
+        return;
+    }
+    
+    // Preparamos la lista
+    selectorUsuarios.disabled = false;
+    let htmlUsuarios = '<option value="">-- Selecciona Usuario --</option>';
+    
+    // Iteramos sobre todos los usuarios registrados
+    Object.keys(usuariosData).forEach(u => {
+        let datosUsuario = usuariosData[u];
+        
+        // El Admin siempre puede entrar a todos lados (Regla de oro)
+        if (u === "Admin") {
+            htmlUsuarios += `<option value="${u}">${u}</option>`;
+            return;
+        }
+
+        // Revisamos si el usuario tiene permiso para la sucursal elegida
+        if (datosUsuario.sucursales_permitidas) {
+            if (datosUsuario.sucursales_permitidas.includes(sucursalElegida)) {
+                htmlUsuarios += `<option value="${u}">${u}</option>`;
+            }
+        } else {
+            // Si es un usuario muy viejo que no tiene configuración, por defecto lo mostramos para no perder el acceso
+            htmlUsuarios += `<option value="${u}">${u}</option>`;
+        }
+    });
+
+    selectorUsuarios.innerHTML = htmlUsuarios;
+};
 function cerrarSesion() { usuarioActual = ""; document.getElementById('login-screen').style.display = 'flex'; document.getElementById('login_pin').focus(); }
 
 function renderUsuarios() {
@@ -546,7 +631,6 @@ function renderUsuarios() {
     });
     if(document.getElementById('u_lista')) document.getElementById('u_lista').innerHTML = html;
 }
-
 function guardarUsuario() {
     let nom = document.getElementById('u_nombre').value.trim(); 
     let pin = document.getElementById('u_pin').value.trim();
@@ -560,10 +644,13 @@ function guardarUsuario() {
     
     if(tabs.length === 0) return alert("Debes seleccionar al menos un módulo permitido.");
     
-    // Preparar el objeto exacto
-    let objetoUsuario = { pin: pin, tabs: tabs };
+    // 🏢 NUEVO: Recolectar sucursales marcadas
+    let sucursalesSeleccionadas = Array.from(document.querySelectorAll('.cb-sucursal:checked')).map(cb => cb.value).join(',');
 
-    // 🛡️ ACTUALIZACIÓN INMEDIATA: Guardamos primero en la memoria local para que no dependa de la velocidad del internet
+    // Preparar el objeto exacto (ahora incluye sucursales)
+    let objetoUsuario = { pin: pin, tabs: tabs, sucursales_permitidas: sucursalesSeleccionadas };
+
+    // 🛡️ ACTUALIZACIÓN INMEDIATA: Guardamos primero en la memoria local
     usuariosData[nom] = objetoUsuario;
     localStorage.setItem("pos_usuarios_v9", JSON.stringify(usuariosData));
     
@@ -581,18 +668,23 @@ function guardarUsuario() {
         // Desmarcar absolutamente TODOS los checks para evitar confusiones visuales
         ['v-tab', 'c-tab', 'prov-tab', 'k-tab', 'i-tab', 'cli-tab', 'pro-tab', 'rec-tab', 'r-tab', 'u-tab', 'kardex-tab'].forEach(t => {
             let chk = document.getElementById('chk_' + t);
-            if(chk) chk.checked = false; // 🌟 AHORA SÍ, TODOS APAGADOS AL TERMINAR
+            if(chk) chk.checked = false;
         });
+
+        // 🏢 NUEVO: Desmarcar las sucursales al terminar
+        document.querySelectorAll('.cb-sucursal').forEach(cb => cb.checked = false);
 
         // Redibujamos la tabla de usuarios registrados
         if(typeof renderUsuarios === 'function') renderUsuarios();
+        
+        // Actualizamos el menú de login
+        initLoginSelect();
     })
     .catch(error => { 
         console.error(error); 
         alert("⚠️ Guardado localmente, pero hubo un bache al subir a la nube."); 
     });
 }
-
 function editarUsuario(nom) {
     let u = usuariosData[nom];
     if(!u) return;
@@ -601,18 +693,33 @@ function editarUsuario(nom) {
     document.getElementById('u_nombre').readOnly = true;
     document.getElementById('u_nombre').style.background = '#eee';
 
-    // 🌟 Y AQUÍ TAMBIÉN: Faltaba agregarlo para que se limpie correctamente al editar
+    // Limpiamos pestañas y marcamos las permitidas
     ['v-tab', 'c-tab', 'prov-tab', 'k-tab', 'i-tab', 'cli-tab', 'pro-tab', 'rec-tab', 'r-tab', 'u-tab', 'kardex-tab'].forEach(t => {
         let chk = document.getElementById('chk_' + t); 
         if(chk) chk.checked = false; 
     });
-
     u.tabs.forEach(t => {
         let chk = document.getElementById('chk_' + t);
         if(chk) chk.checked = true;
     });
+
+    // 🏢 NUEVO: Limpiamos sucursales y marcamos las permitidas
+    document.querySelectorAll('.cb-sucursal').forEach(cb => cb.checked = false);
+    if (u.sucursales_permitidas) {
+        let permitidas = u.sucursales_permitidas.split(',');
+        document.querySelectorAll('.cb-sucursal').forEach(cb => {
+            if (permitidas.includes(cb.value)) cb.checked = true;
+        });
+    } else {
+        // Por defecto, si no tiene nada (ej. Admin antiguo), le marcamos todas para no bloquearlo
+        document.querySelectorAll('.cb-sucursal').forEach(cb => cb.checked = true);
+    }
+
     document.getElementById('u_nombre').focus();
+    window.scrollTo({ top: 0, behavior: 'smooth' });
 }
+
+
 
 function eliminarUsuario(nom) {
     if(nom === 'Admin') return alert("No puedes eliminar al administrador");
@@ -678,10 +785,24 @@ function actualizarSelectsSucursales() {
     if(document.getElementById('corte_sucursal')) document.getElementById('corte_sucursal').innerHTML = optionsGlobal;
     if(document.getElementById('pr_sucursal')) document.getElementById('pr_sucursal').innerHTML = optionsPromo;
     
+    // 🏢 DIBUJO DE LAS CASILLAS EN LA PESTAÑA DE AJUSTES (DISEÑO TIPO TARJETA)
+    let cajaSucursales = document.getElementById('contenedor_checkbox_sucursales');
+    if (cajaSucursales) {
+        let htmlCheckboxes = listaSucursales.map(s => {
+            let idLimpio = s.replace(/\s+/g, '_');
+            return `<div style="display: flex !important; flex-direction: row !important; align-items: center !important; justify-content: center !important; background: #ffffff !important; border: 2px solid var(--p, #0d6efd) !important; padding: 10px 15px !important; border-radius: 8px !important; cursor: pointer !important; box-shadow: 0 2px 4px rgba(0,0,0,0.1) !important;" onclick="let cb = this.querySelector('input'); cb.checked = !cb.checked;">
+                <input type="checkbox" class="cb-sucursal" value="${s}" id="chk_${idLimpio}" checked style="margin: 0 10px 0 0 !important; width: 20px !important; height: 20px !important; pointer-events: none !important;">
+                <span style="font-size: 15px !important; font-weight: bold !important; color: var(--p, #0d6efd) !important; margin: 0 !important; white-space: nowrap !important;">📍 ${s}</span>
+            </div>`;
+        }).join('');
+        cajaSucursales.innerHTML = htmlCheckboxes;
+    }
+    
     if(document.getElementById('ui_sucursal') && typeof sucursalActual !== 'undefined' && listaSucursales.includes(sucursalActual)) {
         document.getElementById('ui_sucursal').value = sucursalActual;
     }
 }
+   
 
 function renderGestSucursales() {
     let html = listaSucursales.map((s, i) => `
@@ -1249,13 +1370,7 @@ window.renderV = function() {
     } catch(err) { console.error("Error renderizando lista:", err); }
 };
 
-// Cobro y Pagos Mixtos
-let pagosCobro = []; let restanteCobro = 0;
-function checkMetodoCobro() { 
-    let met = document.getElementById('m_metodo').value; 
-    document.getElementById('div_cobro_cliente').style.display = (met === 'Crédito') ? 'block' : 'none';
-    calcCambio(); 
-}
+
 
 function calcCambio() { 
     let r = parseFloat(document.getElementById('m_recibido').value) || 0; 
@@ -1263,11 +1378,58 @@ function calcCambio() {
     document.getElementById('m_cambio').innerText = "Cambio: $" + cambioVirtual.toFixed(2); 
 }
 
-window.agregarPagoVenta = function() {
+// Cobro y Pagos Mixtos
+let pagosCobro = []; let restanteCobro = 0;
+
+// 1. NUEVA FUNCIÓN PARA MOSTRAR LOS BOTONES DE LAS TERMINALES
+window.checkMetodoCobro = function() {
+    let met = document.getElementById('m_metodo').value;
+    
+    // Ocultar o mostrar div de cliente de crédito
+    let divCli = document.getElementById('div_cobro_cliente');
+    if (divCli) divCli.style.display = (met === 'Crédito') ? 'block' : 'none';
+    
+    // Elementos de la interfaz
+    let btnNormal = document.getElementById('btn_cobro_normal');
+    let divTerminales = document.getElementById('div_botones_terminal');
+    let btnMP = document.getElementById('btn_term_mp');
+    let btnGN = document.getElementById('btn_term_gn');
+    
+    if (btnNormal && divTerminales) {
+        if (met === 'Tarjeta') {
+            btnNormal.style.display = 'none';
+            divTerminales.style.display = 'flex';
+            
+            // 🌟 LEER CONFIGURACIÓN DE AJUSTES EN TIEMPO REAL
+            let sucursal = typeof sucursalActual !== 'undefined' ? sucursalActual : "Matriz";
+            let configMP = JSON.parse(localStorage.getItem("mp_config_" + sucursal) || "{}");
+            let configGN = JSON.parse(localStorage.getItem("gn_config_" + sucursal) || "{}");
+            
+            // Mostrar los botones solo si la terminal está activada en ajustes
+            if (btnMP) btnMP.style.display = configMP.activo ? 'block' : 'none';
+            if (btnGN) btnGN.style.display = configGN.activo ? 'block' : 'none';
+            
+        } else {
+            // Regresar al estado normal si no es tarjeta
+            btnNormal.style.display = 'block';
+            divTerminales.style.display = 'none';
+        }
+    }
+    
+    if (typeof calcCambio === 'function') calcCambio(); 
+};
+
+// 2. FUNCIÓN DE COBRO ACTUALIZADA CON MERCADO PAGO Y GETNET
+window.agregarPagoVenta = async function(terminalSeleccionada = null) { 
     try {
         let met = document.getElementById('m_metodo').value;
         let r = parseFloat(document.getElementById('m_recibido').value) || 0;
         if (r <= 0) return alert("⚠️ Ingresa un monto válido.");
+
+        // Si eligió tarjeta pero le dio a la tecla 'Enter' (sin hacer clic en los botones nuevos)
+        if (met === 'Tarjeta' && !terminalSeleccionada) {
+            return alert("👆 Por favor, elige a qué terminal enviar el cobro haciendo clic en uno de los botones (M. PAGO, GETNET o MANUAL).");
+        }
 
         let telClienteSeleccionado = null;
         if (met === 'Crédito') { 
@@ -1277,6 +1439,34 @@ window.agregarPagoVenta = function() {
 
         let pagoAplicado = Math.min(r, Math.round(restanteCobro * 100) / 100); 
         let cambio = Math.max(0, r - pagoAplicado); 
+
+        // 🚀🌟 CONEXIÓN A LA TERMINAL SELECCIONADA 🌟🚀
+        if (met === 'Tarjeta' && terminalSeleccionada) {
+            let cobroExitoso = false;
+            let intentoTerminal = false;
+
+            if (terminalSeleccionada === 'Mercado Pago') {
+                intentoTerminal = true;
+                cobroExitoso = await enviarCobroTerminal(pagoAplicado); // Función MP
+            } 
+            else if (terminalSeleccionada === 'Getnet') {
+                intentoTerminal = true;
+                cobroExitoso = await enviarCobroGetnet(pagoAplicado); // Función Getnet
+            }
+            else if (terminalSeleccionada === 'Tarjeta Manual') {
+                intentoTerminal = true;
+                cobroExitoso = true; // Pasa directo sin usar internet
+            }
+
+            if (intentoTerminal && !cobroExitoso) {
+                let forzarCobro = confirm("⚠️ Hubo un error de conexión con " + terminalSeleccionada + ".\n\n¿Lograste cobrar el dinero directamente en la maquinita física y deseas forzar el registro de esta venta?");
+                
+                if (!forzarCobro) return; // Abortamos
+            }
+            
+            // Re-etiquetamos el método de pago para que en tu ticket y corte Z salga bonito
+            met = (terminalSeleccionada === 'Tarjeta Manual') ? 'Tarjeta' : terminalSeleccionada;
+        }
 
         if (typeof pagosCobro === 'undefined') window.pagosCobro = [];
         pagosCobro.push({ metodo: met, montoAplicado: Number(pagoAplicado.toFixed(2)), montoEntregado: Number(r.toFixed(2)), cliente_tel: telClienteSeleccionado || "" });
@@ -1703,8 +1893,12 @@ async function finalizarCompra() {
         let totalCompra = carC.reduce((acc, x) => acc + ((x.can * x.cos) * (1 - (x.desc||0)/100)), 0); 
         let met = document.getElementById('c_metodo_pago').value; 
         let prov = document.getElementById('c_proveedor').value.trim();
+        
+        // 🌟 1. LEEMOS SI LA CASILLA ESTÁ MARCADA
+        let esInventarioInicial = document.getElementById('c_inventario_inicial') ? document.getElementById('c_inventario_inicial').checked : false;
 
-        if(met === 'Por Pagar') {
+        // 🌟 2. SOLO COBRAMOS DEUDAS SI NO ES INVENTARIO INICIAL
+        if(!esInventarioInicial && (met === 'Por Pagar' || met === 'Crédito')) {
             if(!prov) {
                 isGuardandoCompra = false; 
                 return alert("❌ Debes ingresar el nombre del Proveedor para guardar la deuda.");
@@ -1717,7 +1911,8 @@ async function finalizarCompra() {
             if(typeof renderProveedores === 'function') renderProveedores();
         }
         
-        if(met === 'Efectivo') {
+        // 🌟 3. SOLO RESTAMOS EFECTIVO SI NO ES INVENTARIO INICIAL
+        if(!esInventarioInicial && met === 'Efectivo') {
             let efectivoActual = calcularEfectivoEnCaja();
             if(efectivoActual < totalCompra) {
                 isGuardandoCompra = false; 
@@ -1758,7 +1953,10 @@ async function finalizarCompra() {
                     if (stockAnterior < 0) stockAnterior = 0;
 
                     maestro.stock[sucursalActual] = stockAnterior + x.can; 
-                    registrarEnKardex(x.cod, prod.nom, "COMPRA", x.can, x.pre || prod.pv, x.cos || prod.cos);
+                    
+                    // 🌟 (Opcional) Cambiamos la palabra en el Kardex si es carga inicial
+                    let conceptoKardex = esInventarioInicial ? "CARGA INICIAL" : "COMPRA";
+                    registrarEnKardex(x.cod, prod.nom, conceptoKardex, x.can, x.pre || prod.pv, x.cos || prod.cos);
 
                     // 🧮 3. SEPARACIÓN DE COSTOS (Último vs Promedio)
                     let costoCompraUnitarioBase = 0;
@@ -1770,18 +1968,14 @@ async function finalizarCompra() {
                     }
 
                     if (costoCompraUnitarioBase > 0) {
-                        // Usamos el Promedio Histórico para la matemática (o el último costo si es nuevo)
                         let costoHistorico = prod.cos_promedio !== undefined ? parseFloat(prod.cos_promedio) : (parseFloat(prod.cos) || 0);
-                        
                         let valorViejo = stockAnterior * costoHistorico;
                         let valorNuevo = x.can * costoCompraUnitarioBase;
                         let piezasTotales = stockAnterior + x.can;
 
                         let costoPromedio = (valorViejo + valorNuevo) / piezasTotales;
                         
-                        // 🔥 Guardamos el Promedio oculto para las ganancias
                         prod.cos_promedio = parseFloat(costoPromedio.toFixed(2));
-                        // 🔥 Guardamos el Último Costo a la vista (Catálogo/Compras)
                         prod.cos = parseFloat(costoCompraUnitarioBase.toFixed(2));
                     }
 
@@ -1810,12 +2004,23 @@ async function finalizarCompra() {
         
         localStorage.setItem("pos_precision_v6", JSON.stringify(inv));
         let idCompra = Date.now();
-        let objetoCompra = { id: idCompra, fecha: getFechaLocal(), hora: new Date().toLocaleTimeString(), cajero: usuarioActual, sucursal: sucursalActual, proveedor: prov || "General", metodo: met, total: totalCompra, items: carC };
+        
+        // 🌟 4. Si fue inicial, lo marcamos en el historial para que no ensucie tus reportes financieros
+        let metodoFinal = esInventarioInicial ? "Inventario Inicial" : met;
+        
+        let objetoCompra = { id: idCompra, fecha: getFechaLocal(), hora: new Date().toLocaleTimeString(), cajero: usuarioActual, sucursal: sucursalActual, proveedor: prov || "General", metodo: metodoFinal, total: totalCompra, items: carC };
         compras.push(objetoCompra); localStorage.setItem("pos_compras_local", JSON.stringify(compras));
         if (typeof db !== 'undefined') await db.collection("compras").doc(String(idCompra)).set(objetoCompra).catch(e => alert("Error Nube: " + e));
 
         carC = []; renderC(); renderI(); renderCorte(); 
-        alert("✅ Compra guardada con éxito."); 
+        
+        // 🌟 5. Mensaje de éxito dinámico
+        if(esInventarioInicial) {
+            alert("✅ Inventario cargado con éxito (No se restó dinero de caja)."); 
+            document.getElementById('c_inventario_inicial').checked = false; // Desmarcamos la casilla automáticamente
+        } else {
+            alert("✅ Compra guardada con éxito."); 
+        }
 
     } catch (errorGeneral) {
         console.error("Error procesando la compra:", errorGeneral);
@@ -1824,7 +2029,6 @@ async function finalizarCompra() {
         isGuardandoCompra = false; 
     }
 }
-
 
 function pausarCompraActual() {
     if(carC.length === 0) return alert("❌ Lista vacía.");
@@ -2337,7 +2541,15 @@ function renderCorte() {
         let fInicio = document.getElementById('corte_fecha_inicio').value; let fFin = document.getElementById('corte_fecha_fin').value; 
         let fCajero = document.getElementById('corte_cajero').value; let fSuc = document.getElementById('corte_sucursal').value; 
         let hoy = getFechaLocal();
-        
+        // 🌟 MINI SCRIPT PARA LLENAR LA LISTA DE CAJEROS AUTOMÁTICAMENTE 🌟
+        let selectCajero = document.getElementById('corte_cajero');
+        if(selectCajero && selectCajero.options.length <= 1 && ventas && ventas.length > 0) {
+            // Saca los nombres de las ventas, quita los vacíos y borra los duplicados
+            let cajerosUnicos = [...new Set(ventas.map(v => v.cajero).filter(Boolean))];
+            // Agrega cada cajero al menú desplegable
+            cajerosUnicos.forEach(c => selectCajero.innerHTML += `<option value="${c}">${c}</option>`);
+        }
+        // ------------------------------------------------------------------
         let ef=0, ta=0, trans=0, cr=0; let tVentas = 0, tUtilidad = 0, numVentas = 0;
         let ventasPorDia = {}, utilPorDia = {}, depsHash = {}, cajerosHash = {}, horasHash = {}, metricasCajero = {}, topProductosHash = {}; 
 
@@ -2767,6 +2979,17 @@ function reiniciarFaltantes() {
     alert("✅ Faltantes reiniciados a 0 con éxito.");
 }
 
+window.toggleMayoreo = function() {
+    forceWholesale = !forceWholesale; 
+    let st = document.getElementById('v_mayoreo_status'); 
+    if(st) { 
+        st.innerText = forceWholesale ? "MAYOREO: ACTIVADO" : "MAYOREO: DESACTIVADO"; 
+        st.style.background = forceWholesale ? "var(--warning)" : "#444"; 
+        st.style.color = forceWholesale ? "#000" : "#bbb"; 
+    } 
+    window.renderV(); 
+};
+
 window.onkeydown = (e) => { 
     if(usuarioActual === "") return;
     if (e.key === 'F1') { e.preventDefault(); let btn = document.getElementById('btn_v-tab'); if (btn && window.getComputedStyle(btn).display !== 'none') btn.click(); return; }
@@ -2858,7 +3081,7 @@ window.onkeydown = (e) => {
     if(e.key === 'F9' && document.getElementById('v-tab').style.display === 'block') { e.preventDefault(); abrirVisorTickets(); }
     if(e.key === 'F8') { e.preventDefault(); preguntarPausar(); }
     if(e.key === 'F7') { e.preventDefault(); if(document.getElementById('v-tab').style.display === 'block') abrirPausadas(); }
-    if(e.key === 'F4') { e.preventDefault(); forceWholesale = !forceWholesale; let st = document.getElementById('v_mayoreo_status'); if(st) { st.innerText = forceWholesale ? "MAYOREO: ACTIVADO" : "MAYOREO: DESACTIVADO"; st.style.background = forceWholesale ? "var(--warning)" : "#444"; } window.renderV(); }
+    if(e.key === 'F4') { e.preventDefault(); window.toggleMayoreo(); }
     if(e.key === 'F10') { e.preventDefault(); abrirBuscador(); }
     if(e.key === 'Escape') { cerrarModales(); }
 };
@@ -3010,54 +3233,104 @@ function registrarEnKardex(productoCod, productoNom, tipoMov, cantidad, precio, 
     }
 }
 
-// Dibujar la tabla en la pantalla
-function renderKardex() {
-    // Rellenamos el selector de sucursales en la pestaña Kardex de manera idéntica al sistema
-    let selectSuc = document.getElementById('kardex_sucursal');
-    if (selectSuc && selectSuc.innerHTML === "") {
-        selectSuc.innerHTML = '<option value="">📍 Todas las Sucursales</option>' + 
-            listaSucursales.map(s => `<option value="${s}">📍 ${s}</option>`).join('');
+window.renderKardex = function() {
+    try {
+        let selectSuc = document.getElementById('kardex_sucursal');
+        
+        // 1. Llenar las sucursales si están vacías
+        let sucursalesSeguras = [];
+        if (typeof listaSucursales !== 'undefined' && Array.isArray(listaSucursales)) {
+            sucursalesSeguras = listaSucursales;
+        }
+
+        if (selectSuc && selectSuc.options.length <= 1) {
+            selectSuc.innerHTML = '<option value="">📍 Todas las Sucursales</option>' + 
+                sucursalesSeguras.map(s => `<option value="${s}">📍 ${s}</option>`).join('');
+            
+            // Preseleccionamos la sucursal actual para que no busque a ciegas
+            if (typeof sucursalActual !== 'undefined') selectSuc.value = sucursalActual;
+        }
+
+        // 2. Poner las fechas de HOY por defecto si están vacías
+        let dIni = document.getElementById('kardex_fecha_ini');
+        let dFin = document.getElementById('kardex_fecha_fin');
+        if(dIni && !dIni.value) dIni.value = getFechaLocal();
+        if(dFin && !dFin.value) dFin.value = getFechaLocal();
+
+        if (typeof filtrarKardex === 'function') {
+            filtrarKardex();
+        }
+    } catch (error) {
+        console.error("❌ Error al dibujar el Kardex:", error);
     }
+};
 
-    filtrarKardex();
-}
+window.filtrarKardex = function() {
+    try {
+        if (typeof historialKardex === 'undefined' || !Array.isArray(historialKardex)) return;
 
-// Filtrar el Kardex según los inputs del usuario
-function filtrarKardex() {
-    let txt = document.getElementById('kardex_buscar').value.toLowerCase().trim();
-    let sucFiltro = document.getElementById('kardex_sucursal').value;
-    let tipoFiltro = document.getElementById('kardex_tipo').value;
+        let txt = document.getElementById('kardex_buscar').value.toLowerCase().trim();
+        let sucFiltro = document.getElementById('kardex_sucursal').value;
+        let tipoFiltro = document.getElementById('kardex_tipo').value;
+        
+        // 🌟 AHORA SÍ LEEMOS LAS FECHAS
+        let fInicio = document.getElementById('kardex_fecha_ini').value;
+        let fFin = document.getElementById('kardex_fecha_fin').value;
 
-    let registrosFiltrados = historialKardex.filter(reg => {
-        let matchTxt = txt === "" || reg.codigo.toLowerCase().includes(txt) || (reg.nombre && reg.nombre.toLowerCase().includes(txt));
-        let matchSuc = sucFiltro === "" || reg.sucursal === sucFiltro;
-        let matchTipo = tipoFiltro === "" || reg.tipo === tipoFiltro;
-        return matchTxt && matchSuc && matchTipo;
-    });
+        let registrosFiltrados = historialKardex.filter(reg => {
+            let matchTxt = txt === "" || (reg.codigo && String(reg.codigo).toLowerCase().includes(txt)) || (reg.nombre && String(reg.nombre).toLowerCase().includes(txt));
+            let matchSuc = sucFiltro === "" || reg.sucursal === sucFiltro;
+            let matchTipo = tipoFiltro === "" || reg.tipo === tipoFiltro;
+            
+            // Comprobamos que el movimiento haya pasado en este rango de fechas
+            let matchFecha = true;
+            if (fInicio && fFin && reg.fecha) {
+                matchFecha = (reg.fecha >= fInicio && reg.fecha <= fFin);
+            }
 
-    let html = '';
-    registrosFiltrados.slice(0, 150).forEach(reg => { // Limitamos a 150 filas por rendimiento
-        let colorTipo = '#000';
-        if (reg.tipo === 'VENTA') colorTipo = 'var(--s)';
-        if (reg.tipo === 'COMPRA') colorTipo = '#17a2b8';
-        if (reg.tipo === 'EDICIÓN') colorTipo = 'var(--p)';
-        if (reg.tipo === 'AJUSTE') colorTipo = '#fd7e14';
-        if (reg.tipo === 'ANULACIÓN') colorTipo = 'var(--danger)';
+            return matchTxt && matchSuc && matchTipo && matchFecha;
+        });
 
-        html += `<tr style="border-bottom: 1px solid #eee;">
-            <td style="padding:8px;">${reg.fecha} <br><small style="color:#888;">${reg.hora}</small></td>
-            <td style="padding:8px;"><b>${reg.nombre}</b><br><small style="color:#666;">${reg.codigo}</small></td>
-            <td style="padding:8px;"><span class="badge-kit" style="background:${colorTipo}; color:white; font-weight:bold;">${reg.tipo}</span></td>
-            <td style="padding:8px; text-align:center; font-weight:bold;">${reg.cantidad > 0 ? '+' : ''}${reg.cantidad}</td>
-            <td style="padding:8px; text-align:right;">$${reg.precio.toFixed(2)}</td>
-            <td style="padding:8px; text-align:right; color:#666;">$${reg.costo.toFixed(2)}</td>
-            <td style="padding:8px;">📍 ${reg.sucursal}</td>
-            <td style="padding:8px;">👤 ${reg.cajero}</td>
-        </tr>`;
-    });
+        let html = '';
+        registrosFiltrados.slice(0, 150).forEach(reg => {
+            // Colores para que sea súper fácil de leer
+            let colorTipo = '#000';
+            if (reg.tipo === 'VENTA') colorTipo = 'var(--s)'; // Verde
+            if (reg.tipo === 'COMPRA') colorTipo = '#17a2b8'; // Azulito
+            if (reg.tipo === 'EDICIÓN') colorTipo = 'var(--p)'; // Azul
+            if (reg.tipo === 'AJUSTE') colorTipo = '#fd7e14'; // Naranja
+            if (reg.tipo === 'ANULACIÓN') colorTipo = 'var(--danger)'; // Rojo
+            if (reg.tipo === 'CARGA INICIAL') colorTipo = '#6f42c1'; // Morado
+            if (reg.tipo && reg.tipo.includes('TRANSFERENCIA')) colorTipo = '#e83e8c'; // Rosa
 
-    document.getElementById('kardex_tabla_body').innerHTML = html || `<tr><td colspan="8" style="text-align:center; padding:20px; color:#999;">No se encontraron movimientos con los filtros seleccionados.</td></tr>`;
-}
+            let precioVentaSeguro = parseFloat(reg.precio) || 0;
+            let costoSeguro = parseFloat(reg.costo) || 0;
+            let cantidadSegura = parseFloat(reg.cantidad) || 0;
+            
+            // Coloreamos la cantidad de Verde si entra, de Rojo si sale
+            let colorCantidad = cantidadSegura > 0 ? '#28a745' : (cantidadSegura < 0 ? '#dc3545' : '#000');
+
+            html += `<tr style="border-bottom: 1px solid #eee; background: #fff;">
+                <td style="padding:8px;">${reg.fecha} <br><small style="color:#888;">${reg.hora}</small></td>
+                <td style="padding:8px;"><b>${reg.nombre}</b><br><small style="color:#666;">${reg.codigo}</small></td>
+                <td style="padding:8px;"><span style="background:${colorTipo}; color:white; font-weight:bold; padding: 4px 8px; border-radius: 4px; font-size:11px;">${reg.tipo}</span></td>
+                <td style="padding:8px; text-align:center; font-weight:bold; color:${colorCantidad}; font-size:16px;">${cantidadSegura > 0 ? '+' : ''}${cantidadSegura}</td>
+                <td style="padding:8px; text-align:right; font-weight:bold;">$${precioVentaSeguro.toFixed(2)}</td>
+                <td style="padding:8px; text-align:right; color:#666;">$${costoSeguro.toFixed(2)}</td>
+                <td style="padding:8px; font-weight:bold;">📍 ${reg.sucursal}</td>
+                <td style="padding:8px;">👤 ${reg.cajero}</td>
+            </tr>`;
+        });
+
+        let tbody = document.getElementById('kardex_tabla_body');
+        if (tbody) {
+            tbody.innerHTML = html || `<tr><td colspan="8" style="text-align:center; padding:30px; color:#666; font-size:15px;">🔍 Aún no hay movimientos registrados. ¡Haz una venta, compra o ajuste de stock para ver cómo aparece aquí!</td></tr>`;
+        }
+
+    } catch (error) {
+        console.error("❌ Error interno en filtrarKardex:", error);
+    }
+};
 
 
 // ====================================================================
@@ -3370,22 +3643,110 @@ function confirmarRecepcion() {
 // === 🛑 MÓDULO DE CIERRE DE CAJA (CORTE Z) ==========================
 // ====================================================================
 
-// Base de datos local para el historial de cortes
+
+// ====================================================================
+// === 🛑 MÓDULO DE CIERRE DE CAJA (CORTE Z / X) ======================
+// ====================================================================
+
 let historialCortesZ = JSON.parse(localStorage.getItem("pos_cortes_z_v1")) || [];
+let currentCorteData = {}; // Memoria temporal para guardar los datos
 
-let currentCorteData = {}; // Memoria temporal para guardar los datos al momento del clic
-
-function abrirCorteCaja() {
-    let ultimoCorteTimestamp = 0;
-    let cortesSucursal = historialCortesZ.filter(c => c.sucursal === sucursalActual);
-    if (cortesSucursal.length > 0) {
-        ultimoCorteTimestamp = cortesSucursal[cortesSucursal.length - 1].id;
+window.abrirCorteCaja = function() {
+    let selectMenu = document.getElementById('cc_filtro_cajero');
+    if(selectMenu) {
+        // Llenamos la lista con los cajeros que hayan vendido hoy
+        let htmlCajeros = '<option value="">👤 Todos los cajeros</option>';
+        let cajerosActivos = [];
+        if (typeof ventas !== 'undefined' && ventas.length > 0) {
+            cajerosActivos = [...new Set(ventas.map(v => v.cajero).filter(Boolean))];
+        }
+        // Agregamos al usuario actual por si acaba de entrar y no ha vendido nada
+        if (usuarioActual && usuarioActual !== 'Admin' && !cajerosActivos.includes(usuarioActual)) {
+            cajerosActivos.push(usuarioActual);
+        }
+        cajerosActivos.forEach(c => htmlCajeros += `<option value="${c}">${c}</option>`);
+        selectMenu.innerHTML = htmlCajeros;
     }
+
+    document.getElementById('modalCorteCaja').style.display = 'block';
+
+    let radios = document.getElementsByName('tipo_corte');
+    if(radios && radios.length > 0) {
+        radios[0].checked = true; // Por defecto arrancamos en "Corte por Cajero"
+    }
+    
+    window.cambiarTipoCorte(); 
+};
+
+window.cambiarTipoCorte = function() {
+    let radioSeleccionado = document.querySelector('input[name="tipo_corte"]:checked');
+    let tipo = radioSeleccionado ? radioSeleccionado.value : 'turno';
+    let radios = document.getElementsByName('tipo_corte');
+    
+    let inputInicio = document.getElementById('cc_fecha_inicio');
+    let inputFin = document.getElementById('cc_fecha_fin');
+    let selectCajero = document.getElementById('cc_filtro_cajero');
+    
+    let divCajero = document.getElementById('caja_filtro_cajero');
+    let divFechas = document.getElementById('caja_filtro_fechas');
+
+    if (tipo === 'turno') {
+        // Estilo del botón
+        if(radios.length > 1) {
+            radios[0].parentElement.style.background = '#e0f0ff';
+            radios[0].parentElement.style.borderColor = '#007bff';
+            radios[1].parentElement.style.background = '#f8f9fa';
+            radios[1].parentElement.style.borderColor = '#ccc';
+        }
+
+        // Mostramos el selector de cajeros y ocultamos fechas
+        if(divCajero) divCajero.style.display = 'flex';
+        if(divFechas) divFechas.style.display = 'none';
+
+        if(inputInicio) inputInicio.value = getFechaLocal();
+        if(inputFin) inputFin.value = getFechaLocal();
+        
+        // Si no es el Admin, forzamos su nombre. Si es Admin, lo dejamos elegir.
+        if (selectCajero) {
+            if (usuarioActual && usuarioActual !== 'Admin') {
+                selectCajero.value = usuarioActual;
+            } else {
+                selectCajero.value = "";
+            }
+        }
+    } else {
+        // Estilo del botón
+        if(radios.length > 1) {
+            radios[0].parentElement.style.background = '#f8f9fa';
+            radios[0].parentElement.style.borderColor = '#ccc';
+            radios[1].parentElement.style.background = '#e0f0ff';
+            radios[1].parentElement.style.borderColor = '#007bff';
+        }
+
+        // Ocultamos el selector de cajeros y mostramos el calendario
+        if(divCajero) divCajero.style.display = 'none';
+        if(divFechas) divFechas.style.display = 'flex';
+
+        if(selectCajero) selectCajero.value = ""; 
+        if(inputInicio) inputInicio.value = getFechaLocal();
+        if(inputFin) inputFin.value = getFechaLocal();
+    }
+
+    window.calcularTotalesCorte();
+};
+
+window.calcularTotalesCorte = function() {
+    let fInicio = document.getElementById('cc_fecha_inicio').value || getFechaLocal();
+    let fFin = document.getElementById('cc_fecha_fin').value || getFechaLocal();
+    let cajeroSeleccionado = document.getElementById('cc_filtro_cajero') ? document.getElementById('cc_filtro_cajero').value : "";
 
     let ef=0, ta=0, trans=0, cr=0, totalVentas=0;
     
     ventas.forEach(v => {
-        if(!v.anulada && v.sucursal === sucursalActual && v.id > ultimoCorteTimestamp) {
+        let cumpleFiltroCajero = (cajeroSeleccionado === "" || v.cajero === cajeroSeleccionado);
+        let cumpleFiltroFecha = (v.fecha >= fInicio && v.fecha <= fFin);
+        
+        if(!v.anulada && v.sucursal === sucursalActual && cumpleFiltroCajero && cumpleFiltroFecha) {
             let tVentaTicket = parseFloat(v.total) || 0;
             totalVentas += tVentaTicket;
 
@@ -3406,21 +3767,24 @@ function abrirCorteCaja() {
             }
         }
     });
-    
 
     let ing_efectivo = 0, ret_efectivo = 0;
-    let listaRetirosGastos = []; // 🔥 MEMORIA PARA EL DESGLOSE DE GASTOS
+    let listaRetirosGastos = []; 
 
     movimientos.forEach(m => {
-        if(m.sucursal === sucursalActual && m.id > ultimoCorteTimestamp) {
-            if (m.motivo && m.motivo.includes("RETIRO POR CORTE Z")) return;
+        let cumpleFiltroMovimiento = (cajeroSeleccionado === "" || m.cajero === cajeroSeleccionado);
+        let cumpleFiltroFechaMov = (m.fecha >= fInicio && m.fecha <= fFin);
+
+        if(m.sucursal === sucursalActual && cumpleFiltroMovimiento && cumpleFiltroFechaMov) {
+            // Ignoramos retiros de cortes pasados
+            if (m.motivo && m.motivo.includes("RETIRO POR CORTE")) return;
 
             let montoM = parseFloat(m.monto) || 0;
             if(m.tipo === 'Ingreso') {
                 ing_efectivo += montoM;
             } else if(m.tipo === 'Retiro') {
                 ret_efectivo += montoM;
-                listaRetirosGastos.push(m); // Lo guardamos en la lista
+                listaRetirosGastos.push(m);
             }
         }
     });
@@ -3435,61 +3799,46 @@ function abrirCorteCaja() {
         credito: cr,
         ingresos: ing_efectivo,
         retiros: ret_efectivo,
-        esperado: efectivoEsperado
+        esperado: efectivoEsperado,
+        cajeroCorte: cajeroSeleccionado || "Todos",
+        fechaInicio: fInicio,
+        fechaFin: fFin
     };
 
-    // 🖥️ 1. Llenamos el desglose visual de Gastos
     let htmlGastos = listaRetirosGastos.map(g => `<tr><td>${g.hora}</td><td>${g.motivo}</td><td style="text-align:right; color:red;">-$${parseFloat(g.monto).toFixed(2)}</td></tr>`).join('');
     document.getElementById('cc_lista_gastos').innerHTML = htmlGastos || '<tr><td colspan="3" style="text-align:center; color:#888;">No hubo retiros</td></tr>';
-    document.getElementById('cc_detalle_gastos').style.display = 'none'; // Se oculta por defecto al abrir
+    document.getElementById('cc_detalle_gastos').style.display = 'none'; 
 
-    // 🖥️ 2. Llenamos los textos de la ventana
     document.getElementById('cc_v_efectivo').innerText = "$" + ef.toFixed(2);
     document.getElementById('cc_v_ingresos').innerText = "+$" + ing_efectivo.toFixed(2);
     document.getElementById('cc_v_retiros').innerText = "-$" + ret_efectivo.toFixed(2);
     document.getElementById('cc_v_esperado').innerText = "$" + efectivoEsperado.toFixed(2);
 
-    // 🖥️ 3. Limpiamos la calculadora y el cajero
     document.querySelectorAll('.calc-den').forEach(input => input.value = '');
     document.getElementById('cc_fisico').value = '';
     document.getElementById('cc_resultado_cuadre').innerText = '';
     document.getElementById('cc_resultado_cuadre').style.background = 'transparent';
+};
 
-    document.getElementById('modalCorteCaja').style.display = 'block';
-}
-
-// ----------------------------------------------------
-// 🔥 NUEVAS FUNCIONES PARA LA CALCULADORA Y EL DESGLOSE
-// ----------------------------------------------------
-
-// Muestra/Oculta la lista de gastos
-function toggleDetalleGastos() {
+window.toggleDetalleGastos = function() {
     let div = document.getElementById('cc_detalle_gastos');
     div.style.display = div.style.display === 'none' ? 'block' : 'none';
-}
+};
 
-// Suma el valor de la calculadora automáticamente
-function sumarDenominaciones() {
+window.sumarDenominaciones = function() {
     let totalFisico = 0;
-    
-    // Recorre todos los cuadritos de la calculadora
     document.querySelectorAll('.calc-den').forEach(input => {
         let valorBillete = parseFloat(input.getAttribute('data-val'));
         let cantidad = parseFloat(input.value) || 0;
         totalFisico += (valorBillete * cantidad);
     });
     
-    // Lo empuja al campo principal de "EFECTIVO FÍSICO"
     let fisicoInput = document.getElementById('cc_fisico');
     fisicoInput.value = totalFisico > 0 ? totalFisico.toFixed(2) : '';
-    
-    // Ejecuta tu función de cuadre que ya estaba programada
-    calcularDiferenciaCorte();
-}
+    window.calcularDiferenciaCorte();
+};
 
-
-// Calcula el sobrante/faltante conforme el cajero escribe sus billetes
-function calcularDiferenciaCorte() {
+window.calcularDiferenciaCorte = function() {
     let fisico = parseFloat(document.getElementById('cc_fisico').value) || 0;
     let esperado = currentCorteData.esperado;
     let diferencia = fisico - esperado;
@@ -3509,10 +3858,9 @@ function calcularDiferenciaCorte() {
         divResultado.style.background = "#f8d7da";
         divResultado.style.color = "#721c24";
     }
-}
+};
 
-// Guarda en la base de datos, resetea la caja e imprime el ticket
-function guardarCorteCaja() {
+window.guardarCorteCaja = function() {
     let inputFisico = document.getElementById('cc_fisico').value;
     if (inputFisico === '') return alert("❌ Debes ingresar cuánto efectivo hay en caja.");
     
@@ -3520,11 +3868,22 @@ function guardarCorteCaja() {
     let esperado = currentCorteData.esperado;
     let diferencia = fisico - esperado;
 
-    if (!confirm(`¿Confirmas el Cierre de Caja?\n\nEfectivo Esperado: $${esperado.toFixed(2)}\nEfectivo Real: $${fisico.toFixed(2)}\nDiferencia: $${diferencia.toFixed(2)}\n\n(Se imprimirá el ticket de comprobante)`)) return;
+    // Saber qué tipo de corte es
+    let radioSeleccionado = document.querySelector('input[name="tipo_corte"]:checked');
+    let tipoDeCorte = radioSeleccionado ? radioSeleccionado.value : 'general';
+    let nombreCorte = tipoDeCorte === 'turno' ? "Turno (X)" : "General (Z)";
+
+    if (!confirm(`¿Confirmas el Corte de ${nombreCorte}?\n\nEfectivo Esperado: $${esperado.toFixed(2)}\nEfectivo Real: $${fisico.toFixed(2)}\nDiferencia: $${diferencia.toFixed(2)}\n\n(Se imprimirá el ticket comprobante)`)) return;
 
     // 1. Armamos el Ticket para la Impresora
+    let lblTitulo = document.getElementById('tk_corte_titulo');
+    if (lblTitulo) lblTitulo.innerText = `CORTE DE ${nombreCorte.toUpperCase()}`;
+    
     document.getElementById('tk_corte_fecha').innerText = getFechaLocal() + " " + new Date().toLocaleTimeString();
-    document.getElementById('tk_corte_cajero').innerText = usuarioActual || 'Admin';
+    
+    // Si fue corte de Turno, muestra el nombre del cajero. Si fue general, dice "Todos".
+    let nombreCajeroImprimir = currentCorteData.cajeroCorte === "Todos" ? "Todas las cajas" : currentCorteData.cajeroCorte;
+    document.getElementById('tk_corte_cajero').innerText = nombreCajeroImprimir || usuarioActual || 'Admin';
     
     document.getElementById('tk_corte_vef').innerText = "$" + currentCorteData.efectivoVentas.toFixed(2);
     document.getElementById('tk_corte_vtar').innerText = "$" + currentCorteData.tarjeta.toFixed(2);
@@ -3547,40 +3906,24 @@ function guardarCorteCaja() {
         divDif.innerHTML = `<span>DIFERENCIA:</span> <b style="color:black;">FALTANTE -$${Math.abs(diferencia).toFixed(2)}</b>`;
     }
 
-    // 2. Guardamos el Corte en la Base de Datos para Auditoría
+    // 2. Guardamos el Corte para Auditoría
     let idCorte = Date.now();
     let objetoCorte = {
-        id: idCorte,
-        fecha: getFechaLocal(),
-        hora: new Date().toLocaleTimeString(),
-        cajero: usuarioActual,
-        sucursal: sucursalActual,
-        ventas_totales: currentCorteData.ventasTotales,
-        efectivo_ventas: currentCorteData.efectivoVentas,
-        ingresos: currentCorteData.ingresos,
-        gastos: currentCorteData.retiros,
-        efectivo_esperado: esperado,
-        efectivo_real: fisico,
-        diferencia: diferencia
+        id: idCorte, fecha: getFechaLocal(), hora: new Date().toLocaleTimeString(), cajero: usuarioActual,
+        tipo: nombreCorte, sucursal: sucursalActual, ventas_totales: currentCorteData.ventasTotales,
+        efectivo_ventas: currentCorteData.efectivoVentas, ingresos: currentCorteData.ingresos,
+        gastos: currentCorteData.retiros, efectivo_esperado: esperado, efectivo_real: fisico, diferencia: diferencia
     };
-
     historialCortesZ.push(objetoCorte);
     localStorage.setItem("pos_cortes_z_v1", JSON.stringify(historialCortesZ));
 
-    // Si quieres guardar los cortes en la nube automáticamente, descomenta esto (y crea la colección 'cortes_caja' en PocketBase):
-    // if (typeof db !== 'undefined') db.collection("cortes_caja").doc(String(idCorte)).set(objetoCorte).catch(e => console.warn(e));
-
-    // 3. Imprimimos el ticket (Oculta la interfaz y manda a impresión)
     cerrarModales();
     
-    // Opcional: Como hiciste cierre, podríamos hacer un retiro automático de todo el dinero para que el día de mañana empiece en $0.
-    // Si quieres que el dinero "se vacíe" de la caja registradora, ejecuta un retiro por el "Efectivo Real":
-    procesarRetiroCaja(fisico, `RETIRO POR CORTE Z (Fondo retirado a caja fuerte)`);
+    // Retiro automático del dinero para vaciar la caja en el sistema
+    procesarRetiroCaja(fisico, `RETIRO POR CORTE ${tipoDeCorte === 'turno' ? 'X' : 'Z'} (Fondo a caja fuerte)`);
     
-    setTimeout(() => {
-        imprimirTicket('ticket_corte_print_area');
-    }, 500);
-}
+    setTimeout(() => { imprimirTicket('ticket_corte_print_area'); }, 500);
+};
 // ====================================================================
 // === 🧮 CÁLCULO DE COSTO PROMEDIO AUTOMÁTICO (PEPS/PROMEDIO) ========
 // ====================================================================
@@ -3615,3 +3958,274 @@ window.aplicarCostoPromedio = function(cod, cantidadEntrante, costoCompraNuevo) 
         console.log(`📦 Costo Promedio de [${item.nom}] actualizado a $${item.cos}`);
     }
 };
+// ==========================================
+// 💳 INTEGRACIÓN MERCADO PAGO (POINT SMART)
+// ==========================================
+
+// 1. Cargar las credenciales al abrir la página
+async function cargarConfigMP() {
+    try {
+        // Buscamos si ya hay una configuración guardada para esta sucursal
+        const records = await pb.collection('config_mp').getFullList({
+            filter: `sucursal = "${sucursalActual}"`
+        });
+
+        if (records.length > 0) {
+            let config = records[0];
+            document.getElementById('mp_activo').checked = config.activo;
+            document.getElementById('mp_token').value = config.access_token || "";
+            document.getElementById('mp_device').value = config.device_id || "";
+            
+            // Guardamos esto en la memoria local para usarlo rápido al cobrar
+            localStorage.setItem("mp_config_" + sucursalActual, JSON.stringify(config));
+        }
+    } catch (err) {
+        console.log("Aún no hay configuración de MP para esta sucursal o falta la tabla.");
+    }
+}
+
+// 2. Guardar las credenciales en la nube
+async function guardarConfigMP() {
+    let activo = document.getElementById('mp_activo').checked;
+    let token = document.getElementById('mp_token').value.trim();
+    let device = document.getElementById('mp_device').value.trim();
+
+    if (activo && (!token || !device)) {
+        alert("⚠️ Si activas la conexión, debes llenar el Token y el Device ID.");
+        return;
+    }
+
+    let data = {
+        sucursal: sucursalActual,
+        activo: activo,
+        access_token: token,
+        device_id: device
+    };
+
+    try {
+        // Revisamos si actualizamos o creamos uno nuevo
+        const records = await pb.collection('config_mp').getFullList({
+            filter: `sucursal = "${sucursalActual}"`
+        });
+
+        if (records.length > 0) {
+            await pb.collection('config_mp').update(records[0].id, data);
+        } else {
+            await pb.collection('config_mp').create(data);
+        }
+        
+        localStorage.setItem("mp_config_" + sucursalActual, JSON.stringify(data));
+        alert("✅ Configuración de Mercado Pago guardada correctamente.");
+        
+    } catch (err) {
+        console.error(err);
+        alert("❌ Error al guardar. Verifica que creaste la tabla 'config_mp' en PocketBase.");
+    }
+}
+
+// Llama a esta función dentro de tu función inicial (la que arranca el sistema)
+// cargarConfigMP();
+// ==========================================
+// 🚀 ORDEN DE COBRO A TERMINAL FÍSICA
+// ==========================================
+
+async function enviarCobroTerminal(montoCobro) {
+    // 1. Leemos las claves secretas desde la memoria
+    let configMP = JSON.parse(localStorage.getItem("mp_config_" + sucursalActual) || "{}");
+    
+    // Si no está activado o faltan datos, cancelamos el viaje y cobramos de forma manual
+    if (!configMP.activo || !configMP.access_token || !configMP.device_id) {
+        return false; 
+    }
+
+    // 2. Efecto visual para que el cajero sepa que está cargando
+    let lblTotalOriginal = document.getElementById('m_total').innerText;
+    document.getElementById('m_total').innerText = "⏳ CONECTANDO...";
+    document.getElementById('m_total').style.color = "#009ee3"; // Azul Mercado Pago
+
+    // 3. Preparamos el paquete de datos para Mercado Pago
+    const url = `https://api.mercadopago.com/point/integration-api/devices/${configMP.device_id}/payment-intents`;
+    
+    const paqueteDeCobro = {
+        amount: parseFloat(montoCobro),
+        description: "Venta en mostrador - " + sucursalActual,
+        payment: {
+            installments: 1, // 1 sola exhibición (sin meses)
+            type: "credit_card",
+            installments_cost: "merchant"
+        }
+    };
+
+    try {
+        // 4. Disparamos la orden a la nube
+        const respuesta = await fetch(url, {
+            method: "POST",
+            headers: {
+                "Authorization": `Bearer ${configMP.access_token}`,
+                "Content-Type": "application/json"
+            },
+            body: JSON.stringify(paqueteDeCobro)
+        });
+
+        const resultado = await respuesta.json();
+
+        if (respuesta.ok) {
+            // ¡ÉXITO! La terminal ya se encendió
+            document.getElementById('m_total').innerText = "💳 PASE TARJETA";
+            alert("✅ Orden enviada. Pídele al cliente que pase o inserte su tarjeta en la terminal.");
+            return true;
+        } else {
+            // Hubo un error (ej. terminal apagada, sin internet, token inválido)
+            console.error("Error MP:", resultado);
+            document.getElementById('m_total').innerText = lblTotalOriginal;
+            document.getElementById('m_total').style.color = "var(--s)";
+            alert("❌ Error en la terminal: " + (resultado.message || "Revisa si está encendida."));
+            return false;
+        }
+    } catch (error) {
+        console.error("Fallo de red:", error);
+        document.getElementById('m_total').innerText = lblTotalOriginal;
+        document.getElementById('m_total').style.color = "var(--s)";
+        alert("⚠️ No hay conexión a internet para conectar con Mercado Pago.");
+        return false;
+    }
+}
+// ==========================================
+// 💳 INTEGRACIÓN GETNET (SANTANDER)
+// ==========================================
+
+// Cambiar visualmente los campos según lo que elija el usuario
+window.toggleGetnetCampos = function() {
+    let tipo = document.getElementById('gn_tipo').value;
+    if (tipo === 'local') {
+        document.getElementById('gn_campos_local').style.display = 'block';
+        document.getElementById('gn_campos_nube').style.display = 'none';
+    } else {
+        document.getElementById('gn_campos_local').style.display = 'none';
+        document.getElementById('gn_campos_nube').style.display = 'block';
+    }
+};
+
+// Cargar la configuración de Getnet al abrir
+async function cargarConfigGetnet() {
+    try {
+        const records = await pb.collection('config_getnet').getFullList({
+            filter: `sucursal = "${sucursalActual}"`
+        });
+
+        if (records.length > 0) {
+            let config = records[0];
+            document.getElementById('gn_activo').checked = config.activo;
+            document.getElementById('gn_tipo').value = config.tipo_conexion || "local";
+            document.getElementById('gn_ip').value = config.ip_local || "";
+            document.getElementById('gn_token').value = config.token_nube || "";
+            document.getElementById('gn_device').value = config.device_id || "";
+            
+            toggleGetnetCampos(); // Ajustamos la vista
+            localStorage.setItem("gn_config_" + sucursalActual, JSON.stringify(config));
+        }
+    } catch (err) {
+        console.log("Aún no hay configuración de Getnet para esta sucursal.");
+    }
+}
+
+// Guardar la configuración de Getnet
+async function guardarConfigGetnet() {
+    let activo = document.getElementById('gn_activo').checked;
+    let tipo = document.getElementById('gn_tipo').value;
+    let ip = document.getElementById('gn_ip').value.trim();
+    let token = document.getElementById('gn_token').value.trim();
+    let device = document.getElementById('gn_device').value.trim();
+
+    if (activo) {
+        if (tipo === 'local' && !ip) return alert("⚠️ Ingresa la Dirección IP de la terminal.");
+        if (tipo === 'nube' && (!token || !device)) return alert("⚠️ Faltan datos de la conexión en la nube.");
+    }
+
+    let data = {
+        sucursal: sucursalActual,
+        activo: activo,
+        tipo_conexion: tipo,
+        ip_local: ip,
+        token_nube: token,
+        device_id: device
+    };
+
+    try {
+        const records = await pb.collection('config_getnet').getFullList({
+            filter: `sucursal = "${sucursalActual}"`
+        });
+
+        if (records.length > 0) {
+            await pb.collection('config_getnet').update(records[0].id, data);
+        } else {
+            await pb.collection('config_getnet').create(data);
+        }
+        
+        localStorage.setItem("gn_config_" + sucursalActual, JSON.stringify(data));
+        alert("✅ Configuración de Getnet guardada correctamente.");
+        
+    } catch (err) {
+        console.error(err);
+        alert("❌ Error al guardar. Verifica que creaste la tabla 'config_getnet' en PocketBase.");
+    }
+}
+
+// Llama a esta función dentro de tu función que arranca el sistema para que se carguen al iniciar
+// cargarConfigGetnet();
+// ==========================================
+// 🚀 ORDEN DE COBRO A TERMINAL GETNET
+// ==========================================
+
+async function enviarCobroGetnet(montoCobro) {
+    let configGN = JSON.parse(localStorage.getItem("gn_config_" + sucursalActual) || "{}");
+    
+    if (!configGN.activo) return false;
+
+    // Efecto visual Santander
+    let lblTotalOriginal = document.getElementById('m_total').innerText;
+    document.getElementById('m_total').innerText = "⏳ GETNET...";
+    document.getElementById('m_total').style.color = "#ec0000"; // Rojo Santander
+
+    try {
+        let url = "";
+        let opciones = {};
+
+        if (configGN.tipo_conexion === "local") {
+            // 📡 CONEXIÓN RED LOCAL (Wi-Fi Directo a la IP)
+            url = `http://${configGN.ip_local}/api/v1/payment`; // <- URL sujeta al manual
+            opciones = {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ amount: parseFloat(montoCobro) })
+            };
+        } else {
+            // ☁️ CONEXIÓN EN LA NUBE (Clover / Smart)
+            url = `https://api.getnet.com/v1/devices/${configGN.device_id}/payment`; // <- URL sujeta al manual
+            opciones = {
+                method: "POST",
+                headers: {
+                    "Authorization": `Bearer ${configGN.token_nube}`,
+                    "Content-Type": "application/json"
+                },
+                body: JSON.stringify({ amount: parseFloat(montoCobro) })
+            };
+        }
+
+        /* ⚠️ NOTA: Este fetch está comentado hasta tener el manual exacto de la terminal.
+        Cuando lo tengas, solo quitamos las diagonales "//" de las dos líneas de abajo.
+        
+        const respuesta = await fetch(url, opciones);
+        if (respuesta.ok) return true; 
+        */
+
+        // Simulador de fallo para obligar al cajero a confirmar manual mientras no tengamos el manual
+        throw new Error("API de Getnet en espera de configuración manual.");
+
+    } catch (error) {
+        console.error("Fallo Getnet:", error);
+        document.getElementById('m_total').innerText = lblTotalOriginal;
+        document.getElementById('m_total').style.color = "var(--s)";
+        return false;
+    }
+}
