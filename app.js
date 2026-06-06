@@ -415,7 +415,23 @@ function getFechaLocal() {
 
 function updateClock() {
     let clockEl = document.getElementById('live_clock');
-    if(clockEl) clockEl.innerText = new Date().toLocaleString('es-MX', { weekday: 'short', year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit' }).toUpperCase();
+    if(clockEl) {
+        let d = new Date();
+        // Fecha limpia sin puntos extra (ej. "05 JUN 2026")
+        let fecha = d.toLocaleDateString('es-MX', { day: '2-digit', month: 'short', year: 'numeric' }).toUpperCase().replace(/\./g, '');
+        // Hora exacta (ej. "10:56:09 PM")
+        let hora = d.toLocaleTimeString('es-MX', { hour: '2-digit', minute: '2-digit', second: '2-digit' }).toUpperCase();
+        
+        // Inyectamos el diseño directo con colores modernos
+        clockEl.innerHTML = `
+            <div style="font-size: 11px; color: #a0aec0; letter-spacing: 1px; margin-bottom: 3px; white-space: nowrap;">
+                📅 ${fecha}
+            </div>
+            <div style="font-size: 16px; font-weight: bold; color: #00d2ff; letter-spacing: 1px; white-space: nowrap; text-shadow: 0 0 5px rgba(0, 210, 255, 0.4);">
+                🕒 ${hora}
+            </div>
+        `;
+    }
 }
 
 async function cargarFondosDesdeNube() {
@@ -475,6 +491,7 @@ window.changeTab = function(evt, tabName) {
         if (tabSeleccionada) {
             tabSeleccionada.style.display = "block";
         }
+        tabActual = tabName;
 
         // 4. Iluminamos el botón presionado
         if (evt && evt.currentTarget) {
@@ -3235,96 +3252,88 @@ function registrarEnKardex(productoCod, productoNom, tipoMov, cantidad, precio, 
 
 window.renderKardex = function() {
     try {
+        console.log("Intentando dibujar el Kardex...");
+        
         let selectSuc = document.getElementById('kardex_sucursal');
         
-        // 1. Llenar las sucursales si están vacías
+        // Protegemos la variable por si listaSucursales no existe aún
         let sucursalesSeguras = [];
         if (typeof listaSucursales !== 'undefined' && Array.isArray(listaSucursales)) {
             sucursalesSeguras = listaSucursales;
         }
 
-        if (selectSuc && selectSuc.options.length <= 1) {
+        if (selectSuc && selectSuc.innerHTML === "") {
             selectSuc.innerHTML = '<option value="">📍 Todas las Sucursales</option>' + 
                 sucursalesSeguras.map(s => `<option value="${s}">📍 ${s}</option>`).join('');
-            
-            // Preseleccionamos la sucursal actual para que no busque a ciegas
-            if (typeof sucursalActual !== 'undefined') selectSuc.value = sucursalActual;
         }
 
-        // 2. Poner las fechas de HOY por defecto si están vacías
-        let dIni = document.getElementById('kardex_fecha_ini');
-        let dFin = document.getElementById('kardex_fecha_fin');
-        if(dIni && !dIni.value) dIni.value = getFechaLocal();
-        if(dFin && !dFin.value) dFin.value = getFechaLocal();
-
+        // Llamamos al filtro, pero verificamos que exista primero
         if (typeof filtrarKardex === 'function') {
             filtrarKardex();
+        } else {
+            console.warn("⚠️ La función filtrarKardex no existe en el código aún.");
         }
+        
     } catch (error) {
-        console.error("❌ Error al dibujar el Kardex:", error);
+        console.error("❌ Error mortal al dibujar el Kardex:", error);
+        alert("Ocurrió un error al cargar el Kardex. Revisa la consola (F12).");
     }
 };
 
+
+// Filtrar el Kardex según los inputs del usuario
 window.filtrarKardex = function() {
     try {
-        if (typeof historialKardex === 'undefined' || !Array.isArray(historialKardex)) return;
+        // 🛡️ ESCUDO: Si historialKardex no existe o no tiene datos, no hacemos nada para no romper el sistema
+        if (typeof historialKardex === 'undefined' || !Array.isArray(historialKardex)) {
+            console.warn("⏳ Esperando datos del Kardex...");
+            return;
+        }
 
-        let txt = document.getElementById('kardex_buscar').value.toLowerCase().trim();
-        let sucFiltro = document.getElementById('kardex_sucursal').value;
-        let tipoFiltro = document.getElementById('kardex_tipo').value;
+        let txtBusqueda = document.getElementById('kardex_buscar');
+        let txt = txtBusqueda ? txtBusqueda.value.toLowerCase().trim() : "";
         
-        // 🌟 AHORA SÍ LEEMOS LAS FECHAS
-        let fInicio = document.getElementById('kardex_fecha_ini').value;
-        let fFin = document.getElementById('kardex_fecha_fin').value;
+        let sucSelect = document.getElementById('kardex_sucursal');
+        let sucFiltro = sucSelect ? sucSelect.value : "";
+        
+        let tipoSelect = document.getElementById('kardex_tipo');
+        let tipoFiltro = tipoSelect ? tipoSelect.value : "";
 
         let registrosFiltrados = historialKardex.filter(reg => {
-            let matchTxt = txt === "" || (reg.codigo && String(reg.codigo).toLowerCase().includes(txt)) || (reg.nombre && String(reg.nombre).toLowerCase().includes(txt));
+            let matchTxt = txt === "" || (reg.codigo && reg.codigo.toLowerCase().includes(txt)) || (reg.nombre && reg.nombre.toLowerCase().includes(txt));
             let matchSuc = sucFiltro === "" || reg.sucursal === sucFiltro;
             let matchTipo = tipoFiltro === "" || reg.tipo === tipoFiltro;
-            
-            // Comprobamos que el movimiento haya pasado en este rango de fechas
-            let matchFecha = true;
-            if (fInicio && fFin && reg.fecha) {
-                matchFecha = (reg.fecha >= fInicio && reg.fecha <= fFin);
-            }
-
-            return matchTxt && matchSuc && matchTipo && matchFecha;
+            return matchTxt && matchSuc && matchTipo;
         });
 
         let html = '';
-        registrosFiltrados.slice(0, 150).forEach(reg => {
-            // Colores para que sea súper fácil de leer
+        registrosFiltrados.slice(0, 150).forEach(reg => { // Limitamos a 150 filas por rendimiento visual
             let colorTipo = '#000';
-            if (reg.tipo === 'VENTA') colorTipo = 'var(--s)'; // Verde
-            if (reg.tipo === 'COMPRA') colorTipo = '#17a2b8'; // Azulito
-            if (reg.tipo === 'EDICIÓN') colorTipo = 'var(--p)'; // Azul
-            if (reg.tipo === 'AJUSTE') colorTipo = '#fd7e14'; // Naranja
-            if (reg.tipo === 'ANULACIÓN') colorTipo = 'var(--danger)'; // Rojo
-            if (reg.tipo === 'CARGA INICIAL') colorTipo = '#6f42c1'; // Morado
-            if (reg.tipo && reg.tipo.includes('TRANSFERENCIA')) colorTipo = '#e83e8c'; // Rosa
+            if (reg.tipo === 'VENTA') colorTipo = 'var(--s)';
+            if (reg.tipo === 'COMPRA') colorTipo = '#17a2b8';
+            if (reg.tipo === 'EDICIÓN') colorTipo = 'var(--p)';
+            if (reg.tipo === 'AJUSTE') colorTipo = '#fd7e14';
+            if (reg.tipo === 'ANULACIÓN') colorTipo = 'var(--danger)';
 
             let precioVentaSeguro = parseFloat(reg.precio) || 0;
             let costoSeguro = parseFloat(reg.costo) || 0;
             let cantidadSegura = parseFloat(reg.cantidad) || 0;
-            
-            // Coloreamos la cantidad de Verde si entra, de Rojo si sale
-            let colorCantidad = cantidadSegura > 0 ? '#28a745' : (cantidadSegura < 0 ? '#dc3545' : '#000');
 
-            html += `<tr style="border-bottom: 1px solid #eee; background: #fff;">
+            html += `<tr style="border-bottom: 1px solid #eee;">
                 <td style="padding:8px;">${reg.fecha} <br><small style="color:#888;">${reg.hora}</small></td>
                 <td style="padding:8px;"><b>${reg.nombre}</b><br><small style="color:#666;">${reg.codigo}</small></td>
-                <td style="padding:8px;"><span style="background:${colorTipo}; color:white; font-weight:bold; padding: 4px 8px; border-radius: 4px; font-size:11px;">${reg.tipo}</span></td>
-                <td style="padding:8px; text-align:center; font-weight:bold; color:${colorCantidad}; font-size:16px;">${cantidadSegura > 0 ? '+' : ''}${cantidadSegura}</td>
-                <td style="padding:8px; text-align:right; font-weight:bold;">$${precioVentaSeguro.toFixed(2)}</td>
+                <td style="padding:8px;"><span class="badge-kit" style="background:${colorTipo}; color:white; font-weight:bold;">${reg.tipo}</span></td>
+                <td style="padding:8px; text-align:center; font-weight:bold;">${cantidadSegura > 0 ? '+' : ''}${cantidadSegura}</td>
+                <td style="padding:8px; text-align:right;">$${precioVentaSeguro.toFixed(2)}</td>
                 <td style="padding:8px; text-align:right; color:#666;">$${costoSeguro.toFixed(2)}</td>
-                <td style="padding:8px; font-weight:bold;">📍 ${reg.sucursal}</td>
+                <td style="padding:8px;">📍 ${reg.sucursal}</td>
                 <td style="padding:8px;">👤 ${reg.cajero}</td>
             </tr>`;
         });
 
         let tbody = document.getElementById('kardex_tabla_body');
         if (tbody) {
-            tbody.innerHTML = html || `<tr><td colspan="8" style="text-align:center; padding:30px; color:#666; font-size:15px;">🔍 Aún no hay movimientos registrados. ¡Haz una venta, compra o ajuste de stock para ver cómo aparece aquí!</td></tr>`;
+            tbody.innerHTML = html || `<tr><td colspan="8" style="text-align:center; padding:20px; color:#999;">No se encontraron movimientos.</td></tr>`;
         }
 
     } catch (error) {
@@ -4229,3 +4238,151 @@ async function enviarCobroGetnet(montoCobro) {
         return false;
     }
 }
+// ====================================================================
+// 🔍 FUNCIÓN MAESTRA CONECTORA PARA EL BUSCADO GLOBAL
+// ====================================================================
+// ====================================================================
+// 🔍 FUNCIÓN MAESTRA CONECTORA PARA EL BUSCADO GLOBAL
+// ====================================================================
+window.seleccionarBusqueda = function(cod) {
+    try {
+        // 1. Cerramos el modal de búsqueda inmediatamente
+        let modalBuscar = document.getElementById('modalBuscar');
+        if (modalBuscar) modalBuscar.style.display = 'none';
+
+        // 🔍 DETECCIÓN DIRECTA EN PANTALLA:
+        let panelCompras = document.getElementById('compras') || document.getElementById('c-tab');
+        let estoyEnPestañaCompras = panelCompras && panelCompras.style.display !== 'none' && panelCompras.style.visibility !== 'hidden';
+
+        let panelKits = document.getElementById('k-tab');
+        let estoyEnPestañaKits = panelKits && panelKits.style.display !== 'none';
+
+        let panelPromos = document.getElementById('pro-tab');
+        let estoyEnPestañaPromos = panelPromos && panelPromos.style.display !== 'none';
+
+        if (estoyEnPestañaCompras) {
+            // 📥 INYECCIÓN EN COMPRAS
+            let inputC = document.getElementById('c_cod');
+            if (inputC) {
+                inputC.value = cod;
+                setTimeout(() => { if (typeof handleCompraScan === 'function') handleCompraScan({ key: 'Enter' }); }, 50);
+            }
+        } 
+        else if (estoyEnPestañaKits) {
+            // 📦 INYECCIÓN EN KITS (Componentes)
+            let inputK = document.getElementById('k_comp_cod');
+            if (inputK) {
+                inputK.value = cod;
+                // Si quieres que al seleccionar se agregue de inmediato o haga algo, puedes poner una función aquí. 
+                // Por ahora solo llenará la cajita.
+                inputK.focus();
+            }
+        }
+        else if (estoyEnPestañaPromos) {
+            // 🏷️ INYECCIÓN EN PROMOCIONES
+            let inputP = document.getElementById('pr_cod');
+            if (inputP) {
+                inputP.value = cod;
+                setTimeout(() => { if (typeof verificarProdPromo === 'function') verificarProdPromo(); }, 50);
+            }
+        }
+        else {
+            // 🛒 SI NO ESTÁ EN NINGUNA DE LAS ANTERIORES, PROCEDE CON VENTAS
+            cerrarModales();
+            
+            let panelVentas = document.getElementById('ventas');
+            let estoyEnVentas = panelVentas && panelVentas.style.display !== 'none';
+
+            if (estoyEnVentas || tabActual === 'v-tab') {
+                let inputV = document.getElementById('v_cod');
+                if (inputV) inputV.value = cod;
+                setTimeout(() => {
+                    if (typeof handleVenta === 'function') handleVenta({ key: 'Enter' });
+                }, 50);
+            } 
+        }
+    } catch (e) {
+        console.error("❌ Error en seleccionarBusqueda:", e);
+    }
+};
+// ====================================================================
+// === 💸 NAVEGACIÓN RÁPIDA POR TECLADO PARA LA CALCULADORA ========
+// ====================================================================
+
+// 1. Interceptamos las teclas cuando el cajero escribe en la calculadora
+document.addEventListener('keydown', function(e) {
+    // Verificamos si estamos escribiendo dentro de un cuadrito de denominación (.calc-den)
+    if (e.target && e.target.classList.contains('calc-den')) {
+        let inputs = Array.from(document.querySelectorAll('.calc-den'));
+        let index = inputs.indexOf(e.target);
+
+        // Si presiona ENTER, Flecha Abajo o Flecha Derecha (Avanzar)
+        if (e.key === 'Enter' || e.key === 'ArrowDown' || e.key === 'ArrowRight') {
+            e.preventDefault(); // Evitamos que la pantalla brinque
+            
+            if (index < inputs.length - 1) {
+                // Brinca al siguiente billete/moneda y selecciona el texto
+                inputs[index + 1].focus();
+                inputs[index + 1].select();
+            } else {
+                // Si ya está en la última moneda ($0.50) y da Enter, salta al campo manual de EFECTIVO FÍSICO
+                let campoFisico = document.getElementById('cc_fisico');
+                if (campoFisico) { 
+                    campoFisico.focus(); 
+                    campoFisico.select(); 
+                }
+            }
+        }
+        // Si presiona Flecha Arriba o Flecha Izquierda (Retroceder)
+        else if (e.key === 'ArrowUp' || e.key === 'ArrowLeft') {
+            e.preventDefault();
+            if (index > 0) {
+                // Regresa al billete anterior y selecciona el texto
+                inputs[index - 1].focus();
+                inputs[index - 1].select();
+            }
+        }
+    }
+});
+
+// 2. Le damos un "empujoncito" a tu función original para que enfoque el primer billete automáticamente
+let abrirCorteOriginal = window.abrirCorteCaja;
+window.abrirCorteCaja = function() {
+    // Ejecuta todo lo que tu función original ya hacía perfectamente
+    if(typeof abrirCorteOriginal === 'function') abrirCorteOriginal();
+    
+    // Y le agregamos este pequeño extra: colocar el cursor en los billetes de $1000
+    setTimeout(() => {
+        let primerBillete = document.querySelector('.calc-den');
+        if(primerBillete) {
+            primerBillete.focus();
+            primerBillete.select();
+        }
+    }, 200); // Le damos 200ms para asegurar que el modal ya se abrió visualmente
+};
+// ====================================================================
+// === ⚓ SEGURO ANTI-SALTOS Y REPARACIÓN DEL MENÚ SUPERIOR ============
+// ====================================================================
+
+// 1. Sobreescribimos la función rebelde para que no jale la pantalla hacia abajo
+function cerrarModales() { 
+    document.querySelectorAll('.modal').forEach(m => m.style.display = 'none'); 
+    setTimeout(() => { 
+        // El secreto está en el "preventScroll: true"
+        if(tabActual === 'v-tab') {
+            let inputV = document.getElementById('v_cod');
+            if(inputV) inputV.focus({ preventScroll: true }); 
+        }
+        if(tabActual === 'c-tab') {
+            let inputC = document.getElementById('c_cod');
+            if(inputC) inputC.focus({ preventScroll: true }); 
+        }
+    }, 150); 
+}
+
+// 2. Obligamos a la pantalla a quedarse en la coordenada 0 (hasta arriba) al recargar
+window.addEventListener('load', () => {
+    setTimeout(() => window.scrollTo(0, 0), 50);
+    setTimeout(() => window.scrollTo(0, 0), 150);
+    setTimeout(() => window.scrollTo(0, 0), 300);
+});
