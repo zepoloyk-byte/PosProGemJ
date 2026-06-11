@@ -4167,22 +4167,31 @@ async function enviarCobroTerminal(montoCobro) {
         return false; 
     }
 
-    // 2. Efecto visual para que el cajero sepa que está cargando
-    let lblTotalOriginal = document.getElementById('m_total').innerText;
-    document.getElementById('m_total').innerText = "⏳ CONECTANDO...";
-    document.getElementById('m_total').style.color = "#009ee3"; // Azul Mercado Pago
+    // 2. ✨ EFECTO VISUAL MODERNIZADO (Mini-spinner y texto pequeño)
+    const elTotal = document.getElementById('m_total');
+    let lblTotalOriginal = elTotal.innerText; // Guardamos el monto original
 
-    // 3. 🌉 EL PUENTE PROXY: Envolvemos la URL para saltar el bloqueo de CORS
+    // Reducimos el tamaño de todo el contenedor temporalmente para el estado de carga
+    elTotal.style.fontSize = "16px"; 
+    elTotal.style.fontWeight = "normal";
+    elTotal.style.color = "#009ee3"; // Azul Mercado Pago
+
+    // Inyectamos la estructura con el texto forzado a ser pequeño y discreto
+    elTotal.innerHTML = `
+        <div class="loader-mp"></div>
+        <span style="font-size: 13px !important; letter-spacing: 0.5px; font-weight: 500;">CONECTANDO TERMINAL...</span>
+    `;
+
+    // 3. 🌉 EL PUENTE PROXY: Envolvemos la URL para saltar el CORS de GitHub
     const urlOriginal = `https://api.mercadopago.com/point/integration-api/devices/${configMP.device_id}/payment-intents`;
     const url = `https://corsproxy.io/?${encodeURIComponent(urlOriginal)}`;
     
+    // El paquete EXACTO y limpio que exige la terminal física (¡SIN DUPLICADOS!)
     const paqueteDeCobro = {
         amount: parseFloat(montoCobro),
-        description: "Venta en mostrador - " + sucursalActual,
-        payment: {
-            installments: 1, // 1 sola exhibición (sin meses)
-            type: "credit_card",
-            installments_cost: "merchant"
+        additional_info: {
+            print_on_terminal: true, // Imprime el ticket solo en la maquinita
+            external_reference: "Ticket-" + Math.floor(Math.random() * 10000)
         }
     };
 
@@ -4200,22 +4209,23 @@ async function enviarCobroTerminal(montoCobro) {
         const resultado = await respuesta.json();
 
         if (respuesta.ok) {
-            // ¡ÉXITO! La terminal ya se encendió
-            document.getElementById('m_total').innerText = "💳 PASE TARJETA";
+            // ¡ÉXITO! La terminal ya recibió la orden
+            elTotal.innerText = "💳 PASE TARJETA";
             alert("✅ Orden enviada. Pídele al cliente que pase o inserte su tarjeta en la terminal.");
             return true;
         } else {
-            // Hubo un error (ej. terminal apagada, sin internet, token inválido)
+            // Hubo un error de Mercado Pago (ej. formato, terminal ocupada)
             console.error("Error MP:", resultado);
-            document.getElementById('m_total').innerText = lblTotalOriginal;
-            document.getElementById('m_total').style.color = "var(--s)";
+            elTotal.innerText = lblTotalOriginal;
+            elTotal.style.color = "var(--s)";
             alert("❌ Error en la terminal: " + (resultado.message || "Revisa si está encendida."));
             return false;
         }
     } catch (error) {
+        // Error de red general
         console.error("Fallo de red:", error);
-        document.getElementById('m_total').innerText = lblTotalOriginal;
-        document.getElementById('m_total').style.color = "var(--s)";
+        elTotal.innerText = lblTotalOriginal;
+        elTotal.style.color = "var(--s)";
         alert("⚠️ Ocurrió un problema de conexión al intentar enviar el cobro a la terminal.");
         return false;
     }

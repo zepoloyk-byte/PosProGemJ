@@ -261,3 +261,36 @@ tbody tr { height: auto !important; }
 @media (max-width: 480px) {
     .kpi-grid { grid-template-columns: 1fr !important; }
 }
+/* =========================================
+   📺 DISEÑO DEL NUEVO CARGADOR MP (MINI-SPINNER)
+   ========================================= */
+
+/* Este es el contenedor que alinea el spinner y el texto */
+#m_total {
+    display: flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+}
+
+/* Este es el circulito gráfico que rota */
+.loader-mp {
+  border: 2px solid rgba(0,158,227, 0.1); /* Círculo de fondo tenue */
+  border-radius: 50%;
+  border-top: 2px solid #009ee3; /* El color de carga (Azul MP) */
+  width: 14px; /* ¡MÁS PEQUEÑO! Exactamente lo que pediste */
+  height: 14px;
+  -webkit-animation: spin 1s linear infinite; /* Tiempo y tipo de rotación */
+  animation: spin 1s linear infinite;
+  margin-right: 8px; /* Separación con el texto */
+}
+
+/* Esta es la regla matemática que lo hace girar */
+@-webkit-keyframes spin {
+  0% { -webkit-transform: rotate(0deg); }
+  100% { -webkit-transform: rotate(360deg); }
+}
+
+@keyframes spin {
+  0% { transform: rotate(0deg); }
+  100% { transform: rotate(360deg); }
+}
