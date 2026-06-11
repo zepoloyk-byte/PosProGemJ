@@ -4186,11 +4186,11 @@ async function enviarCobroTerminal(montoCobro) {
     const urlOriginal = `https://api.mercadopago.com/point/integration-api/devices/${configMP.device_id}/payment-intents`;
     const url = `https://corsproxy.io/?${encodeURIComponent(urlOriginal)}`;
     
-    // El paquete EXACTO y limpio que exige la terminal física (¡SIN DUPLICADOS!)
+    // El paquete EXACTO y limpio convirtiendo los pesos a centavos (* 100)
     const paqueteDeCobro = {
-        amount: parseFloat(montoCobro),
+        amount: Math.round(parseFloat(montoCobro) * 100), // <-- ¡Aquí está el truco mágico!
         additional_info: {
-            print_on_terminal: true, // Imprime el ticket solo en la maquinita
+            print_on_terminal: true,
             external_reference: "Ticket-" + Math.floor(Math.random() * 10000)
         }
     };
