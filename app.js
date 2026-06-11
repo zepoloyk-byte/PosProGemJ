@@ -505,6 +505,21 @@ window.changeTab = function(evt, tabName) {
         if (tabName === 'kardex-tab' && typeof window.renderKardex === 'function') {
             window.renderKardex();
         }
+
+        // 🎯 NUEVO: Posicionar el cursor automáticamente
+        setTimeout(() => {
+            let inputObjetivo = null;
+            
+            if (tabName === 'v-tab') inputObjetivo = document.getElementById('v_cod'); // Ventas
+            else if (tabName === 'c-tab') inputObjetivo = document.getElementById('c_cod'); // Compras
+            else if (tabName === 'i-tab') inputObjetivo = document.getElementById('buscar_inv'); // Inventario
+
+            // Si existe la casilla, ponemos el cursor sin que la pantalla salte
+            if (inputObjetivo) {
+                inputObjetivo.focus({ preventScroll: true });
+            }
+        }, 100); // Esperamos una fracción de segundo a que la pestaña esté 100% visible
+
     } catch (error) {
         console.error("Error al cambiar de pestaña:", error);
     }
@@ -1914,16 +1929,28 @@ async function finalizarCompra() {
         // 🌟 1. LEEMOS SI LA CASILLA ESTÁ MARCADA
         let esInventarioInicial = document.getElementById('c_inventario_inicial') ? document.getElementById('c_inventario_inicial').checked : false;
 
+        // 🚀 EL ARREGLO: Limpiamos la palabra de acentos y mayúsculas para que no haya errores
+        let metSeguro = (met || "").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+
         // 🌟 2. SOLO COBRAMOS DEUDAS SI NO ES INVENTARIO INICIAL
-        if(!esInventarioInicial && (met === 'Por Pagar' || met === 'Crédito')) {
+        if(!esInventarioInicial && (metSeguro.includes('pagar') || metSeguro.includes('credito'))) {
             if(!prov) {
                 isGuardandoCompra = false; 
                 return alert("❌ Debes ingresar el nombre del Proveedor para guardar la deuda.");
             }
+            
+            // Si el proveedor no existe, lo creamos
             if(!proveedores[prov]) proveedores[prov] = { saldo: 0, historial: [], sucursal: sucursalActual };
-            proveedores[prov].saldo += totalCompra;
+            
+            // Aseguramos que se sume como número
+            proveedores[prov].saldo = (parseFloat(proveedores[prov].saldo) || 0) + totalCompra;
+            
+            if (!proveedores[prov].historial) proveedores[prov].historial = [];
             proveedores[prov].historial.push({ fecha: getFechaLocal(), hora: new Date().toLocaleTimeString(), tipo: 'Compra', monto: totalCompra, detalle: `Compra de ${carC.length} producto(s)` });
-            if (typeof db !== 'undefined') db.collection("proveedores").doc(prov).set(proveedores[prov]).catch(e => console.log(e));
+            
+            // Subimos a la nube
+            if (typeof db !== 'undefined') db.collection("proveedores").doc(prov).set(proveedores[prov]).catch(e => console.log("Error proveedor:", e));
+            
             localStorage.setItem("pos_proveedores_v1", JSON.stringify(proveedores));
             if(typeof renderProveedores === 'function') renderProveedores();
         }
@@ -1971,11 +1998,9 @@ async function finalizarCompra() {
 
                     maestro.stock[sucursalActual] = stockAnterior + x.can; 
                     
-                    // 🌟 (Opcional) Cambiamos la palabra en el Kardex si es carga inicial
                     let conceptoKardex = esInventarioInicial ? "CARGA INICIAL" : "COMPRA";
                     registrarEnKardex(x.cod, prod.nom, conceptoKardex, x.can, x.pre || prod.pv, x.cos || prod.cos);
 
-                    // 🧮 3. SEPARACIÓN DE COSTOS (Último vs Promedio)
                     let costoCompraUnitarioBase = 0;
                     if (x.cos_base !== undefined) { 
                         costoCompraUnitarioBase = parseFloat(x.cos_base); 
@@ -2022,7 +2047,6 @@ async function finalizarCompra() {
         localStorage.setItem("pos_precision_v6", JSON.stringify(inv));
         let idCompra = Date.now();
         
-        // 🌟 4. Si fue inicial, lo marcamos en el historial para que no ensucie tus reportes financieros
         let metodoFinal = esInventarioInicial ? "Inventario Inicial" : met;
         
         let objetoCompra = { id: idCompra, fecha: getFechaLocal(), hora: new Date().toLocaleTimeString(), cajero: usuarioActual, sucursal: sucursalActual, proveedor: prov || "General", metodo: metodoFinal, total: totalCompra, items: carC };
@@ -2031,10 +2055,9 @@ async function finalizarCompra() {
 
         carC = []; renderC(); renderI(); renderCorte(); 
         
-        // 🌟 5. Mensaje de éxito dinámico
         if(esInventarioInicial) {
-            alert("✅ Inventario cargado con éxito (No se restó dinero de caja)."); 
-            document.getElementById('c_inventario_inicial').checked = false; // Desmarcamos la casilla automáticamente
+            alert("✅ Inventario cargado con éxito (No se restó dinero de caja ni se creó deuda)."); 
+            document.getElementById('c_inventario_inicial').checked = false; 
         } else {
             alert("✅ Compra guardada con éxito."); 
         }
@@ -3648,190 +3671,350 @@ function confirmarRecepcion() {
     alert("✅ Recepción completada. El stock se sumó correctamente a tu inventario."); 
     renderI(); cerrarModales(); actualizarContadorRecepciones(); 
 }
-// ====================================================================
-// === 🛑 MÓDULO DE CIERRE DE CAJA (CORTE Z) ==========================
-// ====================================================================
 
 
 // ====================================================================
 // === 🛑 MÓDULO DE CIERRE DE CAJA (CORTE Z / X) ======================
 // ====================================================================
 
-let historialCortesZ = JSON.parse(localStorage.getItem("pos_cortes_z_v1")) || [];
-let currentCorteData = {}; // Memoria temporal para guardar los datos
 
-window.abrirCorteCaja = function() {
-    let selectMenu = document.getElementById('cc_filtro_cajero');
-    if(selectMenu) {
-        // Llenamos la lista con los cajeros que hayan vendido hoy
-        let htmlCajeros = '<option value="">👤 Todos los cajeros</option>';
-        let cajerosActivos = [];
-        if (typeof ventas !== 'undefined' && ventas.length > 0) {
-            cajerosActivos = [...new Set(ventas.map(v => v.cajero).filter(Boolean))];
-        }
-        // Agregamos al usuario actual por si acaba de entrar y no ha vendido nada
-        if (usuarioActual && usuarioActual !== 'Admin' && !cajerosActivos.includes(usuarioActual)) {
-            cajerosActivos.push(usuarioActual);
-        }
-        cajerosActivos.forEach(c => htmlCajeros += `<option value="${c}">${c}</option>`);
-        selectMenu.innerHTML = htmlCajeros;
+// 1. UTILIDAD: Convierte los milisegundos de forma segura
+window.formatearParaInput = function(milisegundos) {
+    try {
+        let fecha = new Date(Number(milisegundos));
+        if (isNaN(fecha.getTime())) return ""; // Si la fecha es inválida, no explota
+        let tzoffset = fecha.getTimezoneOffset() * 60000; 
+        return new Date(fecha.getTime() - tzoffset).toISOString().slice(0, 16);
+    } catch(e) {
+        return "";
     }
+};
+
+
+// 🌟 FUNCIÓN PARA ABRIR/CERRAR INGRESOS EXTRA (Asegúrate de que esté en tu app.js)
+window.toggleDetalleIngresos = function() {
+    let div = document.getElementById('cc_detalle_ingresos');
+    if (div) {
+        div.style.display = div.style.display === 'none' ? 'block' : 'none';
+    }
+};
+
+
+// 1. FUNCIÓN CORREGIDA: abrirCorteCaja (Fecha y hora actual por defecto ⏰)
+window.abrirCorteCaja = async function() { 
+    let selectMenu = document.getElementById('cc_filtro_cajero');
+    let inputInicio = document.getElementById('cc_fecha_inicio');
+    let inputFin = document.getElementById('cc_fecha_fin');
+
+    if(inputInicio) inputInicio.onchange = function() { window.calcularTotalesCorte(); };
+    if(inputFin) inputFin.onchange = function() { window.calcularTotalesCorte(); };
 
     document.getElementById('modalCorteCaja').style.display = 'block';
 
-    let radios = document.getElementsByName('tipo_corte');
-    if(radios && radios.length > 0) {
-        radios[0].checked = true; // Por defecto arrancamos en "Corte por Cajero"
+    let divResultado = document.getElementById('cc_resultado_cuadre');
+    let btnConfirmar = document.querySelector('.btn-final[style*="var(--danger)"]');
+    
+    if (divResultado) {
+        divResultado.innerText = "⏳ Sincronizando datos de la nube...";
+        divResultado.style.background = "#e0f0ff";
+        divResultado.style.color = "#007bff";
+    }
+    if (btnConfirmar) btnConfirmar.disabled = true;
+
+    // DESCARGAMOS LA NUBE
+    try {
+        if (typeof pb !== 'undefined') {
+            let records = await pb.collection('ventas').getFullList({ requestKey: null });
+            let vNube = records.map(r => r.data);
+            
+            let mapa = {};
+            ventas.forEach(v => mapa[v.id] = v);
+            vNube.forEach(v => mapa[v.id] = v);
+            ventas = Object.values(mapa).sort((a,b) => a.id - b.id);
+        }
+    } catch(e) {
+        console.warn("Sin internet. Calculando local.");
     }
     
-    window.cambiarTipoCorte(); 
-};
+    if (btnConfirmar) btnConfirmar.disabled = false;
 
-window.cambiarTipoCorte = function() {
-    let radioSeleccionado = document.querySelector('input[name="tipo_corte"]:checked');
-    let tipo = radioSeleccionado ? radioSeleccionado.value : 'turno';
-    let radios = document.getElementsByName('tipo_corte');
-    
-    let inputInicio = document.getElementById('cc_fecha_inicio');
-    let inputFin = document.getElementById('cc_fecha_fin');
-    let selectCajero = document.getElementById('cc_filtro_cajero');
-    
-    let divCajero = document.getElementById('caja_filtro_cajero');
-    let divFechas = document.getElementById('caja_filtro_fechas');
+    // ARMAMOS LA LISTA DE CAJEROS
+    if(selectMenu) {
+        let htmlCajeros = '<option value="">👤 Todos los cajeros</option>';
+        let cajerosActivos = new Set();
 
-    if (tipo === 'turno') {
-        // Estilo del botón
-        if(radios.length > 1) {
-            radios[0].parentElement.style.background = '#e0f0ff';
-            radios[0].parentElement.style.borderColor = '#007bff';
-            radios[1].parentElement.style.background = '#f8f9fa';
-            radios[1].parentElement.style.borderColor = '#ccc';
+        if (typeof ventas !== 'undefined') {
+            ventas.forEach(v => { if(v.cajero) cajerosActivos.add(v.cajero.trim()); });
         }
-
-        // Mostramos el selector de cajeros y ocultamos fechas
-        if(divCajero) divCajero.style.display = 'flex';
-        if(divFechas) divFechas.style.display = 'none';
-
-        if(inputInicio) inputInicio.value = getFechaLocal();
-        if(inputFin) inputFin.value = getFechaLocal();
+        if (typeof movimientos !== 'undefined') {
+            movimientos.forEach(m => { if(m.cajero) cajerosActivos.add(m.cajero.trim()); });
+        }
         
-        // Si no es el Admin, forzamos su nombre. Si es Admin, lo dejamos elegir.
-        if (selectCajero) {
-            if (usuarioActual && usuarioActual !== 'Admin') {
-                selectCajero.value = usuarioActual;
-            } else {
-                selectCajero.value = "";
-            }
+        if (usuarioActual && usuarioActual !== 'Admin') cajerosActivos.add(usuarioActual);
+
+        [...cajerosActivos].forEach(c => htmlCajeros += `<option value="${c}">${c}</option>`);
+        selectMenu.innerHTML = htmlCajeros;
+        
+        selectMenu.onchange = function() { window.calcularTotalesCorte(); };
+
+        if (usuarioActual && usuarioActual !== 'Admin') {
+            selectMenu.value = usuarioActual;
         }
+    }
+
+    // 🌟 AQUÍ ESTÁ EL CAMBIO SOLICITADO: Por defecto, la fecha/hora exacta de AHORITA MISMO
+    let ahoraMilisegundos = Date.now();
+    let inicioSugerido = ahoraMilisegundos;
+
+    // Intentamos buscar si hay ventas de hoy para ajustar el inicio a la primera venta del día
+    let dHOY = new Date(); dHOY.setHours(0,0,0,0);
+    let ventasDeHoy = ventas.filter(v => Number(v.id) >= dHOY.getTime() && v.sucursal === sucursalActual && !v.anulada);
+    
+    if(ventasDeHoy.length > 0) {
+        // Si hay ventas hoy, la sugerencia de inicio retrocede al momento de la primera venta de hoy
+        inicioSugerido = Math.min(...ventasDeHoy.map(v => Number(v.id)));
     } else {
-        // Estilo del botón
-        if(radios.length > 1) {
-            radios[0].parentElement.style.background = '#f8f9fa';
-            radios[0].parentElement.style.borderColor = '#ccc';
-            radios[1].parentElement.style.background = '#e0f0ff';
-            radios[1].parentElement.style.borderColor = '#007bff';
-        }
-
-        // Ocultamos el selector de cajeros y mostramos el calendario
-        if(divCajero) divCajero.style.display = 'none';
-        if(divFechas) divFechas.style.display = 'flex';
-
-        if(selectCajero) selectCajero.value = ""; 
-        if(inputInicio) inputInicio.value = getFechaLocal();
-        if(inputFin) inputFin.value = getFechaLocal();
+        // Si no hay ventas, sugerimos arrancar desde el inicio del día actual (00:00) por defecto
+        inicioSugerido = dHOY.getTime();
     }
 
-    window.calcularTotalesCorte();
-};
+    // Llenamos las cajas con Día y Hora actuales
+    if(inputInicio) inputInicio.value = window.formatearParaInput(inicioSugerido);
+    if(inputFin) inputFin.value = window.formatearParaInput(ahoraMilisegundos);
 
-window.calcularTotalesCorte = function() {
-    let fInicio = document.getElementById('cc_fecha_inicio').value || getFechaLocal();
-    let fFin = document.getElementById('cc_fecha_fin').value || getFechaLocal();
-    let cajeroSeleccionado = document.getElementById('cc_filtro_cajero') ? document.getElementById('cc_filtro_cajero').value : "";
-
-    let ef=0, ta=0, trans=0, cr=0, totalVentas=0;
+    window.calcularTotalesCorte(); 
     
-    ventas.forEach(v => {
-        let cumpleFiltroCajero = (cajeroSeleccionado === "" || v.cajero === cajeroSeleccionado);
-        let cumpleFiltroFecha = (v.fecha >= fInicio && v.fecha <= fFin);
-        
-        if(!v.anulada && v.sucursal === sucursalActual && cumpleFiltroCajero && cumpleFiltroFecha) {
-            let tVentaTicket = parseFloat(v.total) || 0;
-            totalVentas += tVentaTicket;
-
-            if (v.pagos && Array.isArray(v.pagos) && v.pagos.length > 0) {
-                v.pagos.forEach(p => {
-                    let monto = parseFloat(p.montoAplicado) || 0;
-                    if(p.metodo === 'Efectivo') ef += monto;
-                    else if(p.metodo === 'Tarjeta') ta += monto;
-                    else if(p.metodo === 'Transferencia') trans += monto;
-                    else if(p.metodo === 'Crédito') cr += monto;
-                });
-            } else {
-                let mStr = v.metodo || '';
-                if(mStr.includes('Efectivo')) ef += tVentaTicket;
-                else if(mStr.includes('Tarjeta')) ta += tVentaTicket;
-                else if(mStr.includes('Transferencia')) trans += tVentaTicket;
-                else if(mStr.includes('Crédito')) cr += tVentaTicket;
-            }
-        }
-    });
-
-    let ing_efectivo = 0, ret_efectivo = 0;
-    let listaRetirosGastos = []; 
-
-    movimientos.forEach(m => {
-        let cumpleFiltroMovimiento = (cajeroSeleccionado === "" || m.cajero === cajeroSeleccionado);
-        let cumpleFiltroFechaMov = (m.fecha >= fInicio && m.fecha <= fFin);
-
-        if(m.sucursal === sucursalActual && cumpleFiltroMovimiento && cumpleFiltroFechaMov) {
-            // Ignoramos retiros de cortes pasados
-            if (m.motivo && m.motivo.includes("RETIRO POR CORTE")) return;
-
-            let montoM = parseFloat(m.monto) || 0;
-            if(m.tipo === 'Ingreso') {
-                ing_efectivo += montoM;
-            } else if(m.tipo === 'Retiro') {
-                ret_efectivo += montoM;
-                listaRetirosGastos.push(m);
-            }
-        }
-    });
-
-    let efectivoEsperado = ef + ing_efectivo - ret_efectivo;
-
-    currentCorteData = {
-        ventasTotales: totalVentas,
-        efectivoVentas: ef,
-        tarjeta: ta,
-        transferencia: trans,
-        credito: cr,
-        ingresos: ing_efectivo,
-        retiros: ret_efectivo,
-        esperado: efectivoEsperado,
-        cajeroCorte: cajeroSeleccionado || "Todos",
-        fechaInicio: fInicio,
-        fechaFin: fFin
-    };
-
-    let htmlGastos = listaRetirosGastos.map(g => `<tr><td>${g.hora}</td><td>${g.motivo}</td><td style="text-align:right; color:red;">-$${parseFloat(g.monto).toFixed(2)}</td></tr>`).join('');
-    document.getElementById('cc_lista_gastos').innerHTML = htmlGastos || '<tr><td colspan="3" style="text-align:center; color:#888;">No hubo retiros</td></tr>';
-    document.getElementById('cc_detalle_gastos').style.display = 'none'; 
-
-    document.getElementById('cc_v_efectivo').innerText = "$" + ef.toFixed(2);
-    document.getElementById('cc_v_ingresos').innerText = "+$" + ing_efectivo.toFixed(2);
-    document.getElementById('cc_v_retiros').innerText = "-$" + ret_efectivo.toFixed(2);
-    document.getElementById('cc_v_esperado').innerText = "$" + efectivoEsperado.toFixed(2);
-
-    document.querySelectorAll('.calc-den').forEach(input => input.value = '');
-    document.getElementById('cc_fisico').value = '';
-    document.getElementById('cc_resultado_cuadre').innerText = '';
-    document.getElementById('cc_resultado_cuadre').style.background = 'transparent';
+    setTimeout(() => {
+        let primerBillete = document.querySelector('.calc-den');
+        if(primerBillete) { primerBillete.focus(); primerBillete.select(); }
+    }, 200);
 };
 
+// 2. FUNCIÓN: cambiarTipoCorte (Lógica inteligente unificada - SIN BOTONES FANTASMA)
+window.cambiarTipoCorte = function() {
+    try {
+        let selectCajero = document.getElementById('cc_filtro_cajero');
+        let cajeroSel = selectCajero ? selectCajero.value.trim() : "";
+        let inputInicio = document.getElementById('cc_fecha_inicio');
+        let inputFin = document.getElementById('cc_fecha_fin');
+
+        let ahora = Date.now();
+        
+        if (cajeroSel !== "") {
+            // SI HAY CAJERO: Buscamos su última venta después de su último corte
+            let ultimoCorteId = 0;
+            if (typeof historialCortesZ !== 'undefined') {
+                let cortes = historialCortesZ.filter(c => c.cajero === cajeroSel);
+                if (cortes.length > 0) ultimoCorteId = Math.max(...cortes.map(c => Number(c.id) || 0));
+            }
+            
+            let ventasFiltradas = ventas.filter(v => Number(v.id) > ultimoCorteId && (v.cajero && v.cajero.trim() === cajeroSel) && v.sucursal === sucursalActual && !v.anulada);
+            
+            let inicioSugerido = ahora;
+            let idsValidos = ventasFiltradas.map(v => Number(v.id)).filter(id => !isNaN(id) && id > 0);
+            
+            if (idsValidos.length > 0) {
+                inicioSugerido = Math.min(...idsValidos);
+            } else {
+                let d = new Date(); d.setHours(0,0,0,0);
+                inicioSugerido = d.getTime();
+            }
+
+            if(inputInicio) inputInicio.value = window.formatearParaInput(inicioSugerido);
+            if(inputFin) inputFin.value = window.formatearParaInput(ahora);
+
+        } else {
+            // SI SON TODOS LOS CAJEROS: Sugerimos el día completo (00:00 a 23:59)
+            let d = new Date(); d.setHours(0,0,0,0);
+            if(inputInicio) inputInicio.value = window.formatearParaInput(d.getTime());
+            
+            let dFin = new Date(); dFin.setHours(23,59,59,999);
+            if(inputFin) inputFin.value = window.formatearParaInput(dFin.getTime());
+        }
+
+        window.calcularTotalesCorte();
+    } catch (e) {
+        console.error("Error ajustando fechas:", e);
+        window.calcularTotalesCorte(); 
+    }
+};
+
+// 3. FUNCIÓN ACTUALIZADA: calcularTotalesCorte (Con lista de ingresos)
+window.calcularTotalesCorte = function() {
+    try {
+        let cajeroSel = document.getElementById('cc_filtro_cajero') ? document.getElementById('cc_filtro_cajero').value.trim() : "";
+        let inputInicio = document.getElementById('cc_fecha_inicio');
+        let inputFin = document.getElementById('cc_fecha_fin');
+
+        let msInicio = inputInicio && inputInicio.value ? new Date(inputInicio.value).getTime() : 0;
+        let msFin = inputFin && inputFin.value ? new Date(inputFin.value).getTime() : Infinity;
+
+        if (isNaN(msInicio)) msInicio = 0;
+        if (isNaN(msFin)) msFin = Infinity;
+
+        let ef=0, ta=0, trans=0, cr=0, totalVentas=0;
+        
+        ventas.forEach(v => {
+            let cumpleCajero = (cajeroSel === "" || (v.cajero && v.cajero.trim() === cajeroSel));
+            let cumpleFechas = (Number(v.id) >= msInicio && Number(v.id) <= msFin);
+            
+            if(!v.anulada && v.sucursal === sucursalActual && cumpleCajero && cumpleFechas) {
+                let tVentaTicket = parseFloat(v.total) || 0;
+                totalVentas += tVentaTicket;
+
+                if (v.pagos && Array.isArray(v.pagos) && v.pagos.length > 0) {
+                    v.pagos.forEach(p => {
+                        let monto = parseFloat(p.montoAplicado) || 0;
+                        if(p.metodo === 'Efectivo') ef += monto;
+                        else if(p.metodo === 'Tarjeta') ta += monto;
+                        else if(p.metodo === 'Transferencia') trans += monto;
+                        else if(p.metodo === 'Crédito') cr += monto;
+                    });
+                } else {
+                    let mStr = v.metodo || '';
+                    if(mStr.includes('Efectivo')) ef += tVentaTicket;
+                    else if(mStr.includes('Tarjeta')) ta += tVentaTicket;
+                    else if(mStr.includes('Transferencia')) trans += tVentaTicket;
+                    else if(mStr.includes('Crédito')) cr += tVentaTicket;
+                }
+            }
+        });
+
+        let ing_efectivo = 0, ret_efectivo = 0;
+        let listaRetirosGastos = []; 
+        let listaIngresosExtra = []; // 🌟 NUEVA LISTA
+
+        movimientos.forEach(m => {
+            let cumpleCajero = (cajeroSel === "" || (m.cajero && m.cajero.trim() === cajeroSel));
+            let cumpleFechas = (Number(m.id) >= msInicio && Number(m.id) <= msFin);
+
+            if(m.sucursal === sucursalActual && cumpleCajero && cumpleFechas) {
+                if (m.motivo && m.motivo.includes("RETIRO POR CORTE")) return;
+
+                let montoM = parseFloat(m.monto) || 0;
+                if(m.tipo === 'Ingreso') {
+                    ing_efectivo += montoM;
+                    listaIngresosExtra.push(m); // 🌟 GUARDAMOS EL INGRESO
+                } else if(m.tipo === 'Retiro') {
+                    ret_efectivo += montoM;
+                    listaRetirosGastos.push(m);
+                }
+            }
+        });
+
+        let efectivoEsperado = ef + ing_efectivo - ret_efectivo;
+
+        currentCorteData = {
+            ventasTotales: totalVentas,
+            efectivoVentas: ef,
+            tarjeta: ta,
+            transferencia: trans,
+            credito: cr,
+            ingresos: ing_efectivo,
+            retiros: ret_efectivo,
+            esperado: efectivoEsperado,
+            cajeroCorte: cajeroSel || "Todos",
+            fechaInicio: inputInicio ? inputInicio.value : "",
+            fechaFin: inputFin ? inputFin.value : ""
+        };
+
+        // 🌟 RENDERIZAMOS LA TABLA DE GASTOS
+        let htmlGastos = listaRetirosGastos.map(g => `<tr><td>${g.hora}</td><td>${g.motivo}</td><td style="text-align:right; color:red;">-$${parseFloat(g.monto).toFixed(2)}</td></tr>`).join('');
+        document.getElementById('cc_lista_gastos').innerHTML = htmlGastos || '<tr><td colspan="3" style="text-align:center; color:#888;">No hubo retiros</td></tr>';
+        document.getElementById('cc_detalle_gastos').style.display = 'none'; 
+
+        // 🌟 RENDERIZAMOS LA TABLA DE INGRESOS EXTRA
+        let htmlIngresos = listaIngresosExtra.map(g => `<tr><td>${g.hora}</td><td>${g.motivo}</td><td style="text-align:right; color:#28a745;">+$${parseFloat(g.monto).toFixed(2)}</td></tr>`).join('');
+        let tablaIng = document.getElementById('cc_lista_ingresos');
+        if (tablaIng) tablaIng.innerHTML = htmlIngresos || '<tr><td colspan="3" style="text-align:center; color:#888;">No hubo ingresos extra</td></tr>';
+        let detIng = document.getElementById('cc_detalle_ingresos');
+        if (detIng) detIng.style.display = 'none'; 
+
+        document.getElementById('cc_v_efectivo').innerText = "$" + ef.toFixed(2);
+        document.getElementById('cc_v_ingresos').innerText = "+$" + ing_efectivo.toFixed(2);
+        document.getElementById('cc_v_retiros').innerText = "-$" + ret_efectivo.toFixed(2);
+        document.getElementById('cc_v_esperado').innerText = "$" + efectivoEsperado.toFixed(2);
+
+        document.querySelectorAll('.calc-den').forEach(input => input.value = '');
+        document.getElementById('cc_fisico').value = '';
+        document.getElementById('cc_resultado_cuadre').innerText = '';
+        document.getElementById('cc_resultado_cuadre').style.background = 'transparent';
+
+    } catch (e) { console.error("Error calculando:", e); }
+};
+// Función para mostrar/ocultar los detalles de los gastos en el corte
 window.toggleDetalleGastos = function() {
     let div = document.getElementById('cc_detalle_gastos');
-    div.style.display = div.style.display === 'none' ? 'block' : 'none';
+    if (div) {
+        div.style.display = div.style.display === 'none' ? 'block' : 'none';
+    }
+};
+// Función para mostrar/ocultar los detalles de los INGRESOS en el corte
+window.toggleDetalleIngresos = function() {
+    let div = document.getElementById('cc_detalle_ingresos');
+    if (div) {
+        div.style.display = div.style.display === 'none' ? 'block' : 'none';
+    }
+};
+
+// 4. FUNCIÓN: guardarCorteCaja (Limpia de variables viejas)
+window.guardarCorteCaja = function() {
+    let inputFisico = document.getElementById('cc_fisico').value;
+    if (inputFisico === '') return alert("❌ Debes ingresar cuánto efectivo hay en caja.");
+    
+    let fisico = parseFloat(inputFisico) || 0;
+    let esperado = currentCorteData.esperado;
+    let diferencia = fisico - esperado;
+
+    let nombreCorte = currentCorteData.cajeroCorte === "Todos" ? "General (Z)" : "Cajero (X)";
+
+    if (!confirm(`¿Confirmas el Corte de Caja?\n\nEfectivo Esperado: $${esperado.toFixed(2)}\nEfectivo Real: $${fisico.toFixed(2)}\nDiferencia: $${diferencia.toFixed(2)}\n\n(Se imprimirá el ticket comprobante)`)) return;
+
+    let lblTitulo = document.getElementById('tk_corte_titulo');
+    if (lblTitulo) lblTitulo.innerText = `CORTE DE CAJA`;
+    
+    document.getElementById('tk_corte_fecha').innerText = getFechaLocal() + " " + new Date().toLocaleTimeString();
+    
+    let nombreCajeroImprimir = currentCorteData.cajeroCorte === "Todos" ? "Todas las cajas" : currentCorteData.cajeroCorte;
+    document.getElementById('tk_corte_cajero').innerText = nombreCajeroImprimir;
+    
+    document.getElementById('tk_corte_vef').innerText = "$" + currentCorteData.efectivoVentas.toFixed(2);
+    document.getElementById('tk_corte_vtar').innerText = "$" + currentCorteData.tarjeta.toFixed(2);
+    document.getElementById('tk_corte_vtra').innerText = "$" + currentCorteData.transferencia.toFixed(2);
+    document.getElementById('tk_corte_vcre').innerText = "$" + currentCorteData.credito.toFixed(2);
+    document.getElementById('tk_corte_vtot').innerText = "$" + currentCorteData.ventasTotales.toFixed(2);
+
+    document.getElementById('tk_corte_ing').innerText = "$" + currentCorteData.ingresos.toFixed(2);
+    document.getElementById('tk_corte_ret').innerText = "$" + currentCorteData.retiros.toFixed(2);
+
+    document.getElementById('tk_corte_esp').innerText = "$" + esperado.toFixed(2);
+    document.getElementById('tk_corte_fis').innerText = "$" + fisico.toFixed(2);
+
+    let divDif = document.getElementById('tk_corte_dif_caja');
+    if (diferencia === 0) {
+        divDif.innerHTML = `<span>DIFERENCIA:</span> <b>✅ CUADRE PERFECTO</b>`;
+    } else if (diferencia > 0) {
+        divDif.innerHTML = `<span>DIFERENCIA:</span> <b style="color:black;">SOBRANTE +$${diferencia.toFixed(2)}</b>`;
+    } else {
+        divDif.innerHTML = `<span>DIFERENCIA:</span> <b style="color:black;">FALTANTE -$${Math.abs(diferencia).toFixed(2)}</b>`;
+    }
+
+    let idCorte = Date.now();
+    let objetoCorte = {
+        id: idCorte, fecha: getFechaLocal(), hora: new Date().toLocaleTimeString(), cajero: currentCorteData.cajeroCorte,
+        tipo: nombreCorte, sucursal: sucursalActual, ventas_totales: currentCorteData.ventasTotales,
+        efectivo_ventas: currentCorteData.efectivoVentas, ingresos: currentCorteData.ingresos,
+        gastos: currentCorteData.retiros, efectivo_esperado: esperado, efectivo_real: fisico, diferencia: diferencia
+    };
+    
+    if (typeof historialCortesZ === 'undefined') window.historialCortesZ = [];
+    historialCortesZ.push(objetoCorte);
+    localStorage.setItem("pos_cortes_z_v1", JSON.stringify(historialCortesZ));
+
+    cerrarModales();
+    procesarRetiroCaja(fisico, `RETIRO POR CORTE CAJA (Fondo a caja fuerte)`);
+    
+    setTimeout(() => { imprimirTicket('ticket_corte_print_area'); }, 500);
 };
 
 window.sumarDenominaciones = function() {
@@ -3869,70 +4052,7 @@ window.calcularDiferenciaCorte = function() {
     }
 };
 
-window.guardarCorteCaja = function() {
-    let inputFisico = document.getElementById('cc_fisico').value;
-    if (inputFisico === '') return alert("❌ Debes ingresar cuánto efectivo hay en caja.");
-    
-    let fisico = parseFloat(inputFisico) || 0;
-    let esperado = currentCorteData.esperado;
-    let diferencia = fisico - esperado;
 
-    // Saber qué tipo de corte es
-    let radioSeleccionado = document.querySelector('input[name="tipo_corte"]:checked');
-    let tipoDeCorte = radioSeleccionado ? radioSeleccionado.value : 'general';
-    let nombreCorte = tipoDeCorte === 'turno' ? "Turno (X)" : "General (Z)";
-
-    if (!confirm(`¿Confirmas el Corte de ${nombreCorte}?\n\nEfectivo Esperado: $${esperado.toFixed(2)}\nEfectivo Real: $${fisico.toFixed(2)}\nDiferencia: $${diferencia.toFixed(2)}\n\n(Se imprimirá el ticket comprobante)`)) return;
-
-    // 1. Armamos el Ticket para la Impresora
-    let lblTitulo = document.getElementById('tk_corte_titulo');
-    if (lblTitulo) lblTitulo.innerText = `CORTE DE ${nombreCorte.toUpperCase()}`;
-    
-    document.getElementById('tk_corte_fecha').innerText = getFechaLocal() + " " + new Date().toLocaleTimeString();
-    
-    // Si fue corte de Turno, muestra el nombre del cajero. Si fue general, dice "Todos".
-    let nombreCajeroImprimir = currentCorteData.cajeroCorte === "Todos" ? "Todas las cajas" : currentCorteData.cajeroCorte;
-    document.getElementById('tk_corte_cajero').innerText = nombreCajeroImprimir || usuarioActual || 'Admin';
-    
-    document.getElementById('tk_corte_vef').innerText = "$" + currentCorteData.efectivoVentas.toFixed(2);
-    document.getElementById('tk_corte_vtar').innerText = "$" + currentCorteData.tarjeta.toFixed(2);
-    document.getElementById('tk_corte_vtra').innerText = "$" + currentCorteData.transferencia.toFixed(2);
-    document.getElementById('tk_corte_vcre').innerText = "$" + currentCorteData.credito.toFixed(2);
-    document.getElementById('tk_corte_vtot').innerText = "$" + currentCorteData.ventasTotales.toFixed(2);
-
-    document.getElementById('tk_corte_ing').innerText = "$" + currentCorteData.ingresos.toFixed(2);
-    document.getElementById('tk_corte_ret').innerText = "$" + currentCorteData.retiros.toFixed(2);
-
-    document.getElementById('tk_corte_esp').innerText = "$" + esperado.toFixed(2);
-    document.getElementById('tk_corte_fis').innerText = "$" + fisico.toFixed(2);
-
-    let divDif = document.getElementById('tk_corte_dif_caja');
-    if (diferencia === 0) {
-        divDif.innerHTML = `<span>DIFERENCIA:</span> <b>✅ CUADRE PERFECTO</b>`;
-    } else if (diferencia > 0) {
-        divDif.innerHTML = `<span>DIFERENCIA:</span> <b style="color:black;">SOBRANTE +$${diferencia.toFixed(2)}</b>`;
-    } else {
-        divDif.innerHTML = `<span>DIFERENCIA:</span> <b style="color:black;">FALTANTE -$${Math.abs(diferencia).toFixed(2)}</b>`;
-    }
-
-    // 2. Guardamos el Corte para Auditoría
-    let idCorte = Date.now();
-    let objetoCorte = {
-        id: idCorte, fecha: getFechaLocal(), hora: new Date().toLocaleTimeString(), cajero: usuarioActual,
-        tipo: nombreCorte, sucursal: sucursalActual, ventas_totales: currentCorteData.ventasTotales,
-        efectivo_ventas: currentCorteData.efectivoVentas, ingresos: currentCorteData.ingresos,
-        gastos: currentCorteData.retiros, efectivo_esperado: esperado, efectivo_real: fisico, diferencia: diferencia
-    };
-    historialCortesZ.push(objetoCorte);
-    localStorage.setItem("pos_cortes_z_v1", JSON.stringify(historialCortesZ));
-
-    cerrarModales();
-    
-    // Retiro automático del dinero para vaciar la caja en el sistema
-    procesarRetiroCaja(fisico, `RETIRO POR CORTE ${tipoDeCorte === 'turno' ? 'X' : 'Z'} (Fondo a caja fuerte)`);
-    
-    setTimeout(() => { imprimirTicket('ticket_corte_print_area'); }, 500);
-};
 // ====================================================================
 // === 🧮 CÁLCULO DE COSTO PROMEDIO AUTOMÁTICO (PEPS/PROMEDIO) ========
 // ====================================================================
@@ -4052,8 +4172,9 @@ async function enviarCobroTerminal(montoCobro) {
     document.getElementById('m_total').innerText = "⏳ CONECTANDO...";
     document.getElementById('m_total').style.color = "#009ee3"; // Azul Mercado Pago
 
-    // 3. Preparamos el paquete de datos para Mercado Pago
-    const url = `https://api.mercadopago.com/point/integration-api/devices/${configMP.device_id}/payment-intents`;
+    // 3. 🌉 EL PUENTE PROXY: Envolvemos la URL para saltar el bloqueo de CORS
+    const urlOriginal = `https://api.mercadopago.com/point/integration-api/devices/${configMP.device_id}/payment-intents`;
+    const url = `https://corsproxy.io/?${encodeURIComponent(urlOriginal)}`;
     
     const paqueteDeCobro = {
         amount: parseFloat(montoCobro),
@@ -4066,7 +4187,7 @@ async function enviarCobroTerminal(montoCobro) {
     };
 
     try {
-        // 4. Disparamos la orden a la nube
+        // 4. Disparamos la orden a la nube (a través del puente)
         const respuesta = await fetch(url, {
             method: "POST",
             headers: {
@@ -4095,7 +4216,7 @@ async function enviarCobroTerminal(montoCobro) {
         console.error("Fallo de red:", error);
         document.getElementById('m_total').innerText = lblTotalOriginal;
         document.getElementById('m_total').style.color = "var(--s)";
-        alert("⚠️ No hay conexión a internet para conectar con Mercado Pago.");
+        alert("⚠️ Ocurrió un problema de conexión al intentar enviar el cobro a la terminal.");
         return false;
     }
 }
