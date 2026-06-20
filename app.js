@@ -592,9 +592,31 @@ function intentarLogin() {
         
         // 🔒 SEGURO ANTI-BLOQUEO DEL ADMIN: 
         if (u === "Admin") {
-            if (!allowedTabs.includes("u-tab")) allowedTabs.push("u-tab");           
+            if (!allowedTabs.includes("u-tab")) allowedTabs.push("u-tab");          
             if (!allowedTabs.includes("kardex-tab")) allowedTabs.push("kardex-tab"); 
+            if (!allowedTabs.includes("audi-tab")) allowedTabs.push("audi-tab"); 
         }
+
+        // =================================================================
+        // 🛡️ GUARDIÁN DE PERMISOS: INVENTARIO CIEGO Y AUDITORÍAS
+        // =================================================================
+        setTimeout(() => {
+            // Obtenemos los permisos del usuario (si es Admin, tiene acceso a todo)
+            let misPermisos = datosUsuario.permisos || []; 
+            let esAdmin = (u === "Admin");
+
+            // 1. Control del Botón "Hacer Inventario Ciego" (Para Cajeros)
+            let btnInvCiego = document.getElementById('btn_hacer_inv_ciego');
+            if (btnInvCiego) {
+                btnInvCiego.style.display = (esAdmin || misPermisos.includes('inv_ciego')) ? 'inline-block' : 'none';
+            }
+
+            // 2. Control de la Pestaña "Auditorías" (Para el Administrador)
+            let btnAuditoria = document.getElementById('btn_audi-tab');
+            if (btnAuditoria) {
+                btnAuditoria.style.display = (esAdmin || misPermisos.includes('auditoria')) ? 'inline-block' : 'none';
+            }
+        }, 300); // Pequeña pausa para asegurar que el diseño HTML ya cargó
         
         allowedTabs.forEach(tabId => { 
             let btn = document.getElementById('btn_' + tabId); 
@@ -609,7 +631,8 @@ function intentarLogin() {
     } else { 
         alert("PIN Incorrecto"); 
     }
-}
+    }
+
 window.filtrarUsuariosPorSucursal = function() {
     let selectorSucursal = document.getElementById('login_sucursal');
     let selectorUsuarios = document.getElementById('login_user');
@@ -1913,160 +1936,370 @@ function renderC() {
         }
     }, 50);
 }
+
+
+ // Variable global para recordar cuánto estamos cobrando
+let totalCompraAProcesar = 0;
+
+async function abrirPagoMixtoCompra(totalCompra) {
+    totalCompraAProcesar = parseFloat(totalCompra) || 0;
+    
+    // 🛡️ 1. Verificamos que el modal exista en el HTML
+    let inputEfectivo = document.getElementById("pago_compra_efectivo");
+    let inputTarjeta = document.getElementById("pago_compra_tarjeta");
+    let totalTexto = document.getElementById("pago_mixto_compra_total");
+    let modal = document.getElementById("modalPagoMixtoCompra");
+    let selectCajeros = document.getElementById("pago_compra_origen_efectivo");
+
+    if (!inputEfectivo || !inputTarjeta || !totalTexto || !modal) {
+        console.error("❌ ERROR: No se encontró el diseño...");
+        return; 
+    }
+
+    // 📡 2. MICRO-DESCARGA EN SILENCIO (Para que el cálculo de saldos sea perfecto)
+    try {
+        if (selectCajeros) {
+            selectCajeros.innerHTML = `<option>Sincronizando saldos reales...</option>`; // Mensaje visual temporal
+            selectCajeros.disabled = true;
+        }
+
+        let hoyLocal = typeof getFechaLocal === 'function' ? getFechaLocal() : new Date().toLocaleString("sv-SE", { timeZone: "America/Mexico_City" }).substring(0, 10);
+        
+        // Descargamos de PocketBase ÚNICAMENTE las ventas del día de hoy para no gastar internet
+        let records = await pb.collection('ventas').getFullList({ 
+            filter: `fecha >= "${hoyLocal}"`,
+            requestKey: null 
+        });
+
+        // Inyectamos las ventas descargadas al sistema temporalmente para la matemática
+        let vNube = records.map(r => r.data);
+        let mapaTemp = {};
+        if (typeof ventas !== 'undefined') ventas.forEach(v => mapaTemp[v.id] = v);
+        vNube.forEach(v => mapaTemp[v.id] = v);
+        ventas = Object.values(mapaTemp).sort((a,b) => a.id - b.id);
+
+    } catch(err) {
+        console.log("⚠️ Sincronización silenciosa omitida (Sin internet o error). Usando datos locales.", err);
+    }
+
+    // 🧮 3. AHORA SÍ: Con las ventas en memoria, cargamos los saldos exactos al centavo
+    cargarCajerosEnModal();
+    if (selectCajeros) selectCajeros.disabled = false;
+
+    // 💵 4. Asignamos los montos visuales a la ventana
+    inputEfectivo.value = totalCompraAProcesar.toFixed(2);
+    inputTarjeta.value = "0.00";
+    totalTexto.innerText = totalCompraAProcesar.toFixed(2);
+    
+    // 🚪 5. Mostramos la ventana y calculamos diferencias
+    modal.style.display = "flex";
+    calcularRestanteCompra(); 
+}
+
+
+// Controla el comportamiento al cambiar el método de pago principal
+function evaluarMetodoSeleccionado() {
+    let met = document.getElementById('c_metodo_pago').value;
+    let chkInv = document.getElementById('c_inventario_inicial');
+    let inputProv = document.getElementById('c_proveedor');
+
+    // Si eligen Pago Mixto, desmarcamos inventario inicial por consistencia
+    if (met === "Mixto" && chkInv) {
+        chkInv.checked = false;
+    }
+    
+    // Si eligen crédito, le damos un sutil recordatorio visual para el proveedor
+    if (met === "Credito" && inputProv) {
+        inputProv.style.borderColor = "#dc3545"; 
+        inputProv.placeholder = "⚠️ ESCRIBE EL NOMBRE DEL PROVEEDOR AQUÍ...";
+    } else if (inputProv) {
+        inputProv.style.borderColor = "#ccc";
+        inputProv.placeholder = "Nombre de proveedor o General...";
+    }
+}
+
+// Controla el comportamiento al marcar la casilla de Inventario Inicial
+function evaluarInventarioInicial(checkbox) {
+    let selectMetodo = document.getElementById('c_metodo_pago');
+    if (checkbox.checked && selectMetodo) {
+        // Al ser inventario inicial, forzamos temporalmente a efectivo simulado
+        // ya que la función maestra 'procesarGuardadoEInventario' saltará los flujos de dinero
+        selectMetodo.value = "Efectivo"; 
+    }
+}
+
 let isGuardandoCompra = false; // 🛡️ CANDADO ANTI-DOBLE CLIC
 
 async function finalizarCompra() { 
     if (isGuardandoCompra) return; 
     if (carC.length === 0) return; 
 
-    isGuardandoCompra = true; 
+    // 1. Calculamos el total acumulado en el carrito de compras
+    let totalCompra = carC.reduce((acc, x) => acc + ((x.can * x.cos) * (1 - (x.desc||0)/100)), 0); 
+    
+    // 🛡️ LECTURA SEGURA: Buscamos las cajas de texto con cuidado
+    let inputMetodo = document.getElementById('c_metodo_pago');
+    let inputProveedor = document.getElementById('c_proveedor');
+    let inputInventario = document.getElementById('c_inventario_inicial');
+
+    // Si falta el método de pago, avisamos sin romper el sistema
+    if (!inputMetodo) {
+        alert("❌ ERROR: El sistema no encuentra el menú de Método de Pago. Revisa que en tu HTML exista el id='c_metodo_pago'.");
+        return;
+    }
+
+    // Extraemos los valores de forma segura
+    let met = inputMetodo.value; 
+    let prov = inputProveedor ? inputProveedor.value.trim() : "";
+    let esInventarioInicial = inputInventario ? inputInventario.checked : false;
+
+    // 2. Bloqueo estricto para compras a Crédito
+    if (!esInventarioInicial && met === "Credito" && !prov) {
+        alert("❌ Error: Para registrar una compra a CRÉDITO es obligatorio escribir el nombre del Proveedor.");
+        return;
+    }
+
+    // 3. ENRUTAMIENTO INTELIGENTE DEL DINERO
+    if (esInventarioInicial) {
+        // CASO A: Inventario inicial (Sube directo a la nube sin tocar flujos)
+        isGuardandoCompra = true;
+        try {
+            await procesarGuardadoEInventario(totalCompra, "Inventario Inicial", { metodo: "Inventario Inicial" });
+            alert("✅ Inventario inicial cargado con éxito.");
+        } catch (e) { console.error(e); } finally { isGuardandoCompra = false; }
+        
+    } else if (met === "Mixto") {
+        // CASO B: Es pago mixto
+        abrirPagoMixtoCompra(totalCompra); 
+        
+    } else if (met === "Credito") {
+        // CASO C: Se guarda en la cuenta de deudas
+        isGuardandoCompra = true;
+        try {
+            let metaPago = { metodo: "Crédito", es_credito: true };
+            await procesarGuardadoEInventario(totalCompra, "Crédito", metaPago);
+            alert("✅ Compra a crédito registrada. Deuda asignada al proveedor.");
+        } catch (e) { console.error(e); } finally { isGuardandoCompra = false; }
+        
+    } else {
+        // CASO D: Pagos directos normales (Efectivo, Tarjeta, Transferencia)
+        isGuardandoCompra = true;
+        try {
+            let metaPago = { 
+                metodo: met,
+                cajas_afectadas: met === "Efectivo" ? { "Caja_Actual": totalCompra } : { "Banco_Directo": totalCompra }
+            };
+            await procesarGuardadoEInventario(totalCompra, met, metaPago);
+            alert("✅ Compra directa procesada con éxito.");
+        } catch (e) { console.error(e); } finally { isGuardandoCompra = false; }
+    }
+}
+async function guardarCompraMixtaFinal() {
+    if (isGuardandoCompra) return;
+    isGuardandoCompra = true;
 
     try {
-        let totalCompra = carC.reduce((acc, x) => acc + ((x.can * x.cos) * (1 - (x.desc||0)/100)), 0); 
-        let met = document.getElementById('c_metodo_pago').value; 
+        let totalCompra = totalCompraAProcesar;
         let prov = document.getElementById('c_proveedor').value.trim();
         
-        // 🌟 1. LEEMOS SI LA CASILLA ESTÁ MARCADA
-        let esInventarioInicial = document.getElementById('c_inventario_inicial') ? document.getElementById('c_inventario_inicial').checked : false;
+        // 1. Recopilamos los montos ingresados en el modal mixto
+        let efectivo = parseFloat(document.getElementById("pago_compra_efectivo").value) || 0;
+        let tarjeta = parseFloat(document.getElementById("pago_compra_tarjeta").value) || 0;
+        let origenEfectivo = document.getElementById("pago_compra_origen_efectivo").value;
 
-        // 🚀 EL ARREGLO: Limpiamos la palabra de acentos y mayúsculas para que no haya errores
-        let metSeguro = (met || "").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
-
-        // 🌟 2. SOLO COBRAMOS DEUDAS SI NO ES INVENTARIO INICIAL
-        if(!esInventarioInicial && (metSeguro.includes('pagar') || metSeguro.includes('credito'))) {
-            if(!prov) {
-                isGuardandoCompra = false; 
-                return alert("❌ Debes ingresar el nombre del Proveedor para guardar la deuda.");
-            }
-            
-            // Si el proveedor no existe, lo creamos
-            if(!proveedores[prov]) proveedores[prov] = { saldo: 0, historial: [], sucursal: sucursalActual };
-            
-            // Aseguramos que se sume como número
-            proveedores[prov].saldo = (parseFloat(proveedores[prov].saldo) || 0) + totalCompra;
-            
-            if (!proveedores[prov].historial) proveedores[prov].historial = [];
-            proveedores[prov].historial.push({ fecha: getFechaLocal(), hora: new Date().toLocaleTimeString(), tipo: 'Compra', monto: totalCompra, detalle: `Compra de ${carC.length} producto(s)` });
-            
-            // Subimos a la nube
-            if (typeof db !== 'undefined') db.collection("proveedores").doc(prov).set(proveedores[prov]).catch(e => console.log("Error proveedor:", e));
-            
-            localStorage.setItem("pos_proveedores_v1", JSON.stringify(proveedores));
-            if(typeof renderProveedores === 'function') renderProveedores();
-        }
+        // 2. Procesamos el impacto financiero en las Cajas/Movimientos
+        let cajasAfectadas = {};
         
-        // 🌟 3. SOLO RESTAMOS EFECTIVO SI NO ES INVENTARIO INICIAL
-        if(!esInventarioInicial && met === 'Efectivo') {
-            let efectivoActual = calcularEfectivoEnCaja();
-            if(efectivoActual < totalCompra) {
-                isGuardandoCompra = false; 
-                if(confirm(`⚠️ No hay suficiente efectivo en caja.\nEfectivo: $${efectivoActual.toFixed(2)}\nTotal: $${totalCompra.toFixed(2)}\n\n¿Registrar un Ingreso extra en la caja ahora?`)) {
-                    abrirModalMovimiento(); 
-                    document.getElementById('mov_tipo').value = 'Ingreso'; 
-                    document.getElementById('mov_monto').value = (totalCompra - efectivoActual).toFixed(2); 
-                    document.getElementById('mov_motivo').value = 'Fondo para compra';
-                    alert("👉 AVISO: Una vez que guardes el ingreso de dinero, DEBES volver a presionar 'FINALIZAR COMPRA' para que tu mercancía se suba al inventario.");
-                }
-                return; 
-            }
+        if (efectivo > 0) {
+            cajasAfectadas[origenEfectivo] = efectivo;
+            
+            // Registramos el retiro de efectivo de la caja elegida
             let idMov = Date.now();
-            let nuevoMov = { id: idMov, fecha: getFechaLocal(), hora: new Date().toLocaleTimeString(), cajero: usuarioActual, sucursal: sucursalActual, tipo: 'Retiro', monto: totalCompra, motivo: 'Compra ' + (prov ? ` (${prov})` : '') };
-            movimientos.push(nuevoMov); localStorage.setItem("pos_movimientos_v1", JSON.stringify(movimientos));
-            if (typeof db !== 'undefined') db.collection("movimientos").doc(String(idMov)).set(nuevoMov).catch(e => console.log(e));
-        }
+            let nuevoMov = { 
+                id: idMov, 
+                fecha: getFechaLocal(), 
+                hora: new Date().toLocaleTimeString(), 
+                cajero: origenEfectivo === "Caja_Actual" ? usuarioActual : origenEfectivo, // Registra de quién se extrajo
+                sucursal: sucursalActual, 
+                tipo: 'Retiro', 
+                monto: efectivo, 
+                motivo: 'Compra Mixta ' + (prov ? ` (${prov})` : '') 
+            };
             
-        for (let x of carC) { 
-            try {
-                let prod = inv[x.cod];
-                if (prod && prod.tipo === 'kit' && prod.comp && prod.comp.length > 0) {
-                    for (let c of prod.comp) {
-                        let codComp = c.cod; let maestroComp = obtenerProductoMaestro(codComp);
-                        let cantTotalAumentar = (c.can || 1) * x.can; 
-                        if(maestroComp) {
-                            if(!maestroComp.stock) maestroComp.stock = {};
-                            maestroComp.stock[sucursalActual] = (maestroComp.stock[sucursalActual] || 0) + cantTotalAumentar;
-                            let docIdAActualizar = maestroComp === inv[codComp] ? codComp : inv[codComp].grupo;
-                            if(typeof db !== 'undefined') await db.collection("inventario").doc(docIdAActualizar).set(maestroComp); 
-                        }
-                    }
-                } else if (prod) {
-                    let maestro = obtenerProductoMaestro(x.cod);
-                    if(!maestro.stock) maestro.stock = {}; 
-                    
-                    let stockAnterior = maestro.stock[sucursalActual] || 0;
-                    if (stockAnterior < 0) stockAnterior = 0;
+            movimientos.push(nuevoMov); 
+            localStorage.setItem("pos_movimientos_v1", JSON.stringify(movimientos));
+            if (typeof db !== 'undefined') await db.collection("movimientos").doc(String(idMov)).set(nuevoMov).catch(e => console.error(e));
+        }
 
-                    maestro.stock[sucursalActual] = stockAnterior + x.can; 
-                    
-                    let conceptoKardex = esInventarioInicial ? "CARGA INICIAL" : "COMPRA";
-                    registrarEnKardex(x.cod, prod.nom, conceptoKardex, x.can, x.pre || prod.pv, x.cos || prod.cos);
+        if (tarjeta > 0) {
+            cajasAfectadas["Banco_Terminal"] = tarjeta;
+        }
 
-                    let costoCompraUnitarioBase = 0;
-                    if (x.cos_base !== undefined) { 
-                        costoCompraUnitarioBase = parseFloat(x.cos_base); 
-                        if (x.iva !== undefined) prod.iva = x.iva; 
-                    } else if (x.cos !== undefined) { 
-                        costoCompraUnitarioBase = parseFloat(x.cos / (1 + ((prod.iva||0) / 100))); 
-                    }
+        // 3. Preparamos la metadata del pago mixto para guardarla en el ticket de compra
+        let metaPago = {
+            metodo: "Mixto",
+            es_mixto: true,
+            desglose_pago: { "Efectivo": efectivo, "Tarjeta/Transferencia": tarjeta },
+            cajas_afectadas: cajasAfectadas
+        };
 
-                    if (costoCompraUnitarioBase > 0) {
-                        let costoHistorico = prod.cos_promedio !== undefined ? parseFloat(prod.cos_promedio) : (parseFloat(prod.cos) || 0);
-                        let valorViejo = stockAnterior * costoHistorico;
-                        let valorNuevo = x.can * costoCompraUnitarioBase;
-                        let piezasTotales = stockAnterior + x.can;
+        // 4. Ejecutamos la actualización masiva de inventarios, costos y kardex
+        await procesarGuardadoEInventario(totalCompra, "Mixto", metaPago);
 
-                        let costoPromedio = (valorViejo + valorNuevo) / piezasTotales;
-                        
-                        prod.cos_promedio = parseFloat(costoPromedio.toFixed(2));
-                        prod.cos = parseFloat(costoCompraUnitarioBase.toFixed(2));
-                    }
+        // Cerramos el modal de pago mixto exitosamente
+        document.getElementById('modalPagoMixtoCompra').style.display = 'none';
+        alert("✅ Compra procesada y guardada con éxito.");
 
-                    if (x.pre !== undefined) {
-                        if (x.solo_sucursal) {
-                            if (!prod.pre_sucursales) prod.pre_sucursales = {}; 
-                            prod.pre_sucursales[sucursalActual] = parseFloat(x.pre);
-                        } else {
-                            prod.pv = parseFloat(x.pre); 
-                            if (prod.pre_sucursales && prod.pre_sucursales[sucursalActual] !== undefined) delete prod.pre_sucursales[sucursalActual];
-                        }
-                        prod.updatedAt = Date.now(); 
-                    }
-                    
-                    if(typeof db !== 'undefined') {
-                        await db.collection("inventario").doc(x.cod).set(prod);
-                        if (maestro !== prod) {
-                            await db.collection("inventario").doc(prod.grupo).set(maestro);
-                        }
+    } catch (error) {
+        console.error("Error en flujo de guardado mixto:", error);
+        alert("Ocurrió un error al guardar la compra.");
+    } finally {
+        isGuardandoCompra = false;
+    }
+}
+
+// 📦 FUNCIÓN AUXILIAR MAESTRA (Con auditoría contable y descuento de cajas en vivo)
+async function procesarGuardadoEInventario(totalCompra, metodoNombre, metaPago) {
+    let prov = document.getElementById('c_proveedor').value.trim();
+    let esInventarioInicial = document.getElementById('c_inventario_inicial') ? document.getElementById('c_inventario_inicial').checked : false;
+
+    // --- 1. Tu lógica original intacta para actualizar existencias y costos ---
+    for (let x of carC) { 
+        try {
+            let prod = inv[x.cod];
+            if (prod && prod.tipo === 'kit' && prod.comp && prod.comp.length > 0) {
+                for (let c of prod.comp) {
+                    let codComp = c.cod; let maestroComp = obtenerProductoMaestro(codComp);
+                    let cantTotalAumentar = (c.can || 1) * x.can; 
+                    if(maestroComp) {
+                        if(!maestroComp.stock) maestroComp.stock = {};
+                        maestroComp.stock[sucursalActual] = (maestroComp.stock[sucursalActual] || 0) + cantTotalAumentar;
+                        let docIdAActualizar = maestroComp === inv[codComp] ? codComp : inv[codComp].grupo;
+                        if(typeof db !== 'undefined') await db.collection("inventario").doc(docIdAActualizar).set(maestroComp); 
                     }
                 }
-            } catch (errorItem) {
-                console.error("Error aislando producto: ", x.cod, errorItem);
+            } else if (prod) {
+                let maestro = obtenerProductoMaestro(x.cod);
+                if(!maestro.stock) maestro.stock = {}; 
+                
+                let stockAnterior = maestro.stock[sucursalActual] || 0;
+                if (stockAnterior < 0) stockAnterior = 0;
+
+                maestro.stock[sucursalActual] = stockAnterior + x.can; 
+                
+                let conceptoKardex = esInventarioInicial ? "CARGA INICIAL" : "COMPRA";
+                registrarEnKardex(x.cod, prod.nom, conceptoKardex, x.can, x.pre || prod.pv, x.cos || prod.cos);
+
+                let costoCompraUnitarioBase = 0;
+                if (x.cos_base !== undefined) { 
+                    costoCompraUnitarioBase = parseFloat(x.cos_base); 
+                    if (x.iva !== undefined) prod.iva = x.iva; 
+                } else if (x.cos !== undefined) { 
+                    costoCompraUnitarioBase = parseFloat(x.cos / (1 + ((prod.iva||0) / 100))); 
+                }
+
+                if (costoCompraUnitarioBase > 0) {
+                    let costoHistorico = prod.cos_promedio !== undefined ? parseFloat(prod.cos_promedio) : (parseFloat(prod.cos) || 0);
+                    let valorViejo = stockAnterior * costoHistorico;
+                    let valorNuevo = x.can * costoCompraUnitarioBase;
+                    let piezasTotales = stockAnterior + x.can;
+
+                    let costoPromedio = (valorViejo + valorNuevo) / piezasTotales;
+                    
+                    prod.cos_promedio = parseFloat(costoPromedio.toFixed(2));
+                    prod.cos = parseFloat(costoCompraUnitarioBase.toFixed(2));
+                }
+
+                if (x.pre !== undefined) {
+                    if (x.solo_sucursal) {
+                        if (!prod.pre_sucursales) prod.pre_sucursales = {}; 
+                        prod.pre_sucursales[sucursalActual] = parseFloat(x.pre);
+                    } else {
+                        prod.pv = parseFloat(x.pre); 
+                        if (prod.pre_sucursales && prod.pre_sucursales[sucursalActual] !== undefined) delete prod.pre_sucursales[sucursalActual];
+                    }
+                    prod.updatedAt = Date.now(); 
+                }
+                
+                if(typeof db !== 'undefined') {
+                    await db.collection("inventario").doc(x.cod).set(prod);
+                    if (maestro !== prod) {
+                        await db.collection("inventario").doc(prod.grupo).set(maestro);
+                    }
+                }
+            }
+        } catch (errorItem) {
+            console.error("Error aislando producto: ", x.cod, errorItem);
+        }
+    }
+    
+    // --- 2. Tu guardado de datos original usando el objeto 'db' ---
+    localStorage.setItem("pos_precision_v6", JSON.stringify(inv));
+    let idCompra = Date.now();
+    
+    let objetoCompra = { 
+        id: idCompra, 
+        doc_id: String(idCompra), 
+        fecha: getFechaLocal(), 
+        hora: new Date().toLocaleTimeString(), 
+        cajero: usuarioActual, 
+        sucursal: sucursalActual, 
+        proveedor: prov || "General", 
+        metodo: metodoNombre, 
+        total: totalCompra, 
+        items: carC,
+        ...metaPago 
+    };
+    
+    compras.push(objetoCompra); 
+    localStorage.setItem("pos_compras_local", JSON.stringify(compras));
+    
+    if (typeof db !== 'undefined') {
+        await db.collection("compras").doc(String(idCompra)).set(objetoCompra).catch(e => alert("Error Nube: " + e));
+    }
+
+    // --- 💥 3. PARCHE DE AUDITORÍA CONTABLE (Descuento real de efectivo) ---
+    if (metaPago && metaPago.metodo === "Mixto Especial" && metaPago.cajas_afectadas) {
+        let cajas = metaPago.cajas_afectadas;
+        
+        // Revisamos cada caja de la que jalaste dinero
+        for (let cajeroAfectado of Object.keys(cajas)) {
+            let montoRetirado = parseFloat(cajas[cajeroAfectado]) || 0;
+            
+            // Si sacamos dinero de esta caja y no es el "Banco", creamos el movimiento de retiro
+            if (montoRetirado > 0 && cajeroAfectado !== "Banco_Directo") {
+                let idMov = Date.now() + Math.floor(Math.random() * 1000); // Evita duplicados si procesa rápido
+                
+                let nuevoRetiro = {
+                    id: idMov,
+                    fecha: getFechaLocal(),
+                    hora: new Date().toLocaleTimeString(),
+                    cajero: cajeroAfectado, // <--- Vinculado directamente al dueño de la caja sacada
+                    sucursal: sucursalActual,
+                    tipo: 'Retiro',
+                    monto: montoRetirado,
+                    motivo: `COMPRA MIXTA ESP. (Fondo tomado por Admin para proveedor: ${prov || "General"})`
+                };
+                
+                // A. Insertar en memoria local inmediata para que el selector se actualice al momento
+                if (typeof movimientos !== 'undefined') {
+                    movimientos.push(nuevoRetiro);
+                    localStorage.setItem("pos_movimientos_v1", JSON.stringify(movimientos));
+                }
+                
+                // B. Subir a la nube de Firebase para reporte oficial
+                if (typeof db !== 'undefined') {
+                    await db.collection("movimientos").doc(String(idMov)).set(nuevoRetiro)
+                        .catch(e => console.error("Error registrando retiro de auditoría:", e));
+                }
             }
         }
-        
-        localStorage.setItem("pos_precision_v6", JSON.stringify(inv));
-        let idCompra = Date.now();
-        
-        let metodoFinal = esInventarioInicial ? "Inventario Inicial" : met;
-        
-        let objetoCompra = { id: idCompra, fecha: getFechaLocal(), hora: new Date().toLocaleTimeString(), cajero: usuarioActual, sucursal: sucursalActual, proveedor: prov || "General", metodo: metodoFinal, total: totalCompra, items: carC };
-        compras.push(objetoCompra); localStorage.setItem("pos_compras_local", JSON.stringify(compras));
-        if (typeof db !== 'undefined') await db.collection("compras").doc(String(idCompra)).set(objetoCompra).catch(e => alert("Error Nube: " + e));
+    }
 
-        carC = []; renderC(); renderI(); renderCorte(); 
-        
-        if(esInventarioInicial) {
-            alert("✅ Inventario cargado con éxito (No se restó dinero de caja ni se creó deuda)."); 
-            document.getElementById('c_inventario_inicial').checked = false; 
-        } else {
-            alert("✅ Compra guardada con éxito."); 
-        }
-
-    } catch (errorGeneral) {
-        console.error("Error procesando la compra:", errorGeneral);
-        alert("Hubo un problema al guardar la compra, revisa tu conexión.");
-    } finally {
-        isGuardandoCompra = false; 
+    // --- 4. Limpieza del carrito ---
+    carC = []; renderC(); renderI(); renderCorte(); 
+    if(esInventarioInicial) {
+        document.getElementById('c_inventario_inicial').checked = false; 
     }
 }
 
@@ -2535,14 +2768,83 @@ function calcularEfectivoEnCaja() {
     return ef;
 }
 
-function abrirModalMovimiento() { document.getElementById('mov_monto').value = ''; document.getElementById('mov_motivo').value = ''; document.getElementById('modalMovimiento').style.display = 'block'; setTimeout(() => document.getElementById('mov_monto').focus(), 100); }
+// 🔄 1. DETECTOR VISUAL DE TRANSFERENCIA
+function toggleDestinoTransferencia() {
+    let tipo = document.getElementById('mov_tipo').value;
+    let bloque = document.getElementById('bloque_destino_transferencia');
+    let selectDestino = document.getElementById('mov_cajero_destino');
+    
+    if (tipo === 'Transferencia') {
+        bloque.style.display = 'flex';
+        if (selectDestino) {
+            selectDestino.innerHTML = "";
+            let miNombre = typeof usuarioActual !== 'undefined' ? usuarioActual : 'Admin';
+            
+            // Lista mágica de las cajas de tu negocio
+            let cajerosActivos = new Set(["Admin", "Martin", "Erika", "Yaqui", "Are", "Rigel", "Heigts", "Alex"]);
+            
+            cajerosActivos.forEach(cajero => {
+                // No te puedes transferir a ti mismo
+                if (cajero.toLowerCase() !== miNombre.toLowerCase()) {
+                    let saldoC = typeof calcularCajaFisicaReal === 'function' ? calcularCajaFisicaReal(cajero) : 0;
+                    selectDestino.innerHTML += `<option value="${cajero}">${cajero} (Saldo: $${saldoC.toFixed(2)})</option>`;
+                }
+            });
+        }
+    } else {
+        bloque.style.display = 'none';
+    }
+}
+
+// 🚪 2. ABRIR EL MODAL LIMPITO (Fiel a tus enfoques de foco)
+function abrirModalMovimiento() { 
+    document.getElementById('mov_monto').value = ''; 
+    document.getElementById('mov_motivo').value = ''; 
+    document.getElementById('mov_tipo').value = 'Ingreso';
+    document.getElementById('bloque_destino_transferencia').style.display = 'none'; // oculto por defecto
+    document.getElementById('modalMovimiento').style.display = 'block'; 
+    setTimeout(() => document.getElementById('mov_monto').focus(), 100); 
+}
+
+// 💾 3. GUARDADO CONTABLE DOBLE VÍA
 function guardarMovimiento() {
     let tipo = document.getElementById('mov_tipo').value; let monto = parseFloat(document.getElementById('mov_monto').value) || 0; let motivo = document.getElementById('mov_motivo').value.trim() || 'Manual';
     if(monto <= 0) return alert("❌ Monto inválido.");
-    let idMov = Date.now(); let nuevoMov = { id: idMov, fecha: getFechaLocal(), hora: new Date().toLocaleTimeString(), cajero: usuarioActual, sucursal: sucursalActual, tipo: tipo, monto: monto, motivo: motivo };
-    movimientos.push(nuevoMov); localStorage.setItem("pos_movimientos_v1", JSON.stringify(movimientos));
-    db.collection("movimientos").doc(String(idMov)).set(nuevoMov).catch(e => console.log(e));
-    cerrarModales(); alert(`✅ ${tipo} registrado.`); if(tabActual==='r-tab') renderCorte();
+    let miNombre = typeof usuarioActual !== 'undefined' ? usuarioActual : 'Admin';
+    let hoy = getFechaLocal();
+    let hora = new Date().toLocaleTimeString();
+
+    // 🌟 SI SE TRATA DE UNA TRANSFERENCIA DE EFECTIVO:
+    if (tipo === 'Transferencia') {
+        let cajeroDestino = document.getElementById('mov_cajero_destino').value;
+        if (!cajeroDestino) return alert("❌ Selecciona quién recibirá el dinero.");
+
+        let idBase = Date.now();
+        let descripcionUnica = `🔄 TRASPASO: de ${miNombre} a ${cajeroDestino} (${motivo.toUpperCase()})`;
+
+        // Doble asiento contable:
+        let mRetiro = { id: idBase, fecha: hoy, hora: hora, cajero: miNombre, sucursal: sucursalActual, tipo: 'Retiro', monto: monto, motivo: descripcionUnica };
+        let mIngreso = { id: idBase + 1, fecha: hoy, hora: hora, cajero: cajeroDestino, sucursal: sucursalActual, tipo: 'Ingreso', monto: monto, motivo: descripcionUnica };
+
+        movimientos.push(mRetiro, mIngreso);
+        localStorage.setItem("pos_movimientos_v1", JSON.stringify(movimientos));
+
+        if (typeof db !== 'undefined') {
+            db.collection("movimientos").doc(String(mRetiro.id)).set(mRetiro).catch(e => console.log(e));
+            db.collection("movimientos").doc(String(mIngreso.id)).set(mIngreso).catch(e => console.log(e));
+        }
+
+        cerrarModales(); 
+        alert(`✅ Traspaso completado: Se movieron $${monto.toFixed(2)} a la caja de ${cajeroDestino}.`);
+    } else {
+        // 🔼 INGRESO O RETIRO REGULAR (Tu código nativo intacto)
+        let idMov = Date.now(); let nuevoMov = { id: idMov, fecha: hoy, hora: hora, cajero: miNombre, sucursal: sucursalActual, tipo: tipo, monto: monto, motivo: motivo };
+        movimientos.push(nuevoMov); localStorage.setItem("pos_movimientos_v1", JSON.stringify(movimientos));
+        if (typeof db !== 'undefined') db.collection("movimientos").doc(String(idMov)).set(nuevoMov).catch(e => console.log(e));
+        cerrarModales(); alert(`✅ ${tipo} registrado.`); 
+    }
+
+    if(typeof tabActual !== 'undefined' && tabActual === 'r-tab') renderCorte();
 }
 function registrarGasto() { let monto = parseFloat(prompt("💸 ¿Cuánto vas a retirar?")); if (isNaN(monto) || monto <= 0) return; let motivo = prompt("¿Motivo?"); if (!motivo) return; procesarRetiroCaja(monto, `GASTO: ${motivo.toUpperCase()}`); }
 function registrarPrecorte() { let ef = calcularEfectivoEnCaja(); let monto = parseFloat(prompt(`✂️ PRECORTE\nEfectivo: $${ef.toFixed(2)}\n¿Cuánto retiras?`)); if (isNaN(monto) || monto <= 0) return; if (ef > 0 && monto > ef && !confirm(`⚠️ Retiras más de lo que hay. ¿Seguro?`)) return; procesarRetiroCaja(monto, "PRECORTE"); }
@@ -2851,20 +3153,85 @@ async function abrirVisorCompras() {
     filtrarVisorCompras(); document.getElementById('modalVisorCompras').style.display = 'block'; 
 }
 function filtrarVisorCompras() {
-    let t = document.getElementById('visor_compras_search') ? document.getElementById('visor_compras_search').value.toLowerCase().trim() : ''; let d = document.getElementById('visor_compras_date') ? document.getElementById('visor_compras_date').value : '';
+    let t = document.getElementById('visor_compras_search') ? document.getElementById('visor_compras_search').value.toLowerCase().trim() : ''; 
+    let d = document.getElementById('visor_compras_date') ? document.getElementById('visor_compras_date').value : '';
+    
     visorComprasIndices = compras.filter(c => c.sucursal === sucursalActual && (d === '' || c.fecha === d) && (t === '' || `${c.id} ${c.proveedor}`.toLowerCase().includes(t)));
-    if (visorComprasIndices.length === 0) { document.getElementById('visor_compras_counter').innerText = "0 / 0"; document.getElementById('visor_compras_items').innerHTML = `<tr><td colspan="3">Vacio</td></tr>`; document.getElementById('visor_compras_total').innerText = "0.00"; } 
-    else { currentVisorCompraPos = visorComprasIndices.length - 1; renderVisorCompraActiva(); }
+    
+    if (visorComprasIndices.length === 0) { 
+        document.getElementById('visor_compras_counter').innerText = "0 / 0"; 
+        document.getElementById('visor_compras_items').innerHTML = `<tr><td colspan="3">Vacio</td></tr>`; 
+        document.getElementById('visor_compras_total').innerText = "0.00"; 
+        
+        // 🔴 Si no hay resultados en la búsqueda, escondemos el botón rojo para evitar errores
+        let btnAnular = document.getElementById("btn_anular_compra_visor");
+        if (btnAnular) btnAnular.style.display = "none";
+        
+    } else { 
+        currentVisorCompraPos = visorComprasIndices.length - 1; 
+        renderVisorCompraActiva(); 
+    }
+}
+
+function renderVisorCompraActiva() {
+    if (visorComprasIndices.length === 0) return; 
+    let c = visorComprasIndices[currentVisorCompraPos]; 
+    
+    document.getElementById('visor_compras_counter').innerText = `${currentVisorCompraPos + 1} / ${visorComprasIndices.length}`;
+    document.getElementById('visor_compras_fecha').innerText = `${c.fecha || ''} ${c.hora || ''}`; 
+    document.getElementById('visor_compras_prov').innerText = c.proveedor || 'General'; 
+    document.getElementById('visor_compras_folio').innerText = c.id || '-';
+    
+    let html = ''; let tot = 0;
+    (c.items || []).forEach(x => { 
+        let sub = (x.can * (parseFloat(x.cos)||0)) * (1 - (parseFloat(x.desc)||0)/100); 
+        tot+=sub; 
+        html+=`<tr><td>${x.can}</td><td>${x.nom}</td><td style="text-align:right;">$${sub.toFixed(2)}</td></tr>`; 
+    });
+    
+    document.getElementById('visor_compras_items').innerHTML = html; 
+    document.getElementById('visor_compras_total').innerText = (c.total !== undefined ? parseFloat(c.total) : tot).toFixed(2);
+
+    // --- ✨ NUEVA LÓGICA COPIADA DE VENTAS PARA EL SELLO ANULADA ---
+    let btnAnular = document.getElementById("btn_anular_compra_visor");
+    
+    // Eliminamos cualquier contenedor de marca previo para que no se dupliquen al avanzar tickets
+    let marcaPrevia = document.getElementById("marca_anulada_compras");
+    if (marcaPrevia) marcaPrevia.remove();
+
+    if (c.anulada === true) {
+        // 1. Creamos el hermoso letrero inclinado encima del ticket
+        let contenedorPrint = document.getElementById("visor_compras_print_area");
+        let selloHTML = `
+            <div id="marca_anulada_compras" style="
+                position: absolute; top: 35%; left: 5%; width: 90%;
+                border: 5px solid #000; color: #000;
+                font-size: 34px; font-weight: bold; text-align: center;
+                transform: rotate(-20deg); background: rgba(255,255,255,0.9);
+                padding: 10px 0; user-select: none; pointer-events: none; z-index: 10;
+            ">ANULADA</div>
+        `;
+        contenedorPrint.insertAdjacentHTML('beforeend', selloHTML);
+
+        // 2. Cambiamos el botón inferior para que se vuelva gris y diga "❌ ANULADA"
+        if (btnAnular) {
+            btnAnular.style.display = "block";
+            btnAnular.style.background = "#888"; // Gris de desactivado
+            btnAnular.innerText = "❌ ANULADA";
+            btnAnular.removeAttribute("onclick"); // Le quitamos la función para que ya no haga nada
+        }
+    } else {
+        // Si el ticket está sano y salvo, el botón vuelve a la normalidad
+        if (btnAnular) {
+            btnAnular.style.display = "block";
+            btnAnular.style.background = "#dc3545"; // Rojo vivo
+            btnAnular.innerText = "🗑️ ANULAR";
+            btnAnular.setAttribute("onclick", `anularCompraAdmin('${c.id}')`);
+        }
+    }
 }
 function navVisorCompras(dir) { if (visorComprasIndices.length === 0) return; currentVisorCompraPos = Math.max(0, Math.min(visorComprasIndices.length - 1, currentVisorCompraPos + dir)); renderVisorCompraActiva(); }
-function renderVisorCompraActiva() {
-    if (visorComprasIndices.length === 0) return; let c = visorComprasIndices[currentVisorCompraPos]; 
-    document.getElementById('visor_compras_counter').innerText = `${currentVisorCompraPos + 1} / ${visorComprasIndices.length}`;
-    document.getElementById('visor_compras_fecha').innerText = `${c.fecha || ''} ${c.hora || ''}`; document.getElementById('visor_compras_prov').innerText = c.proveedor || 'General'; document.getElementById('visor_compras_folio').innerText = c.id || '-';
-    let html = ''; let tot = 0;
-    (c.items || []).forEach(x => { let sub = (x.can * (parseFloat(x.cos)||0)) * (1 - (parseFloat(x.desc)||0)/100); tot+=sub; html+=`<tr><td>${x.can}</td><td>${x.nom}</td><td style="text-align:right;">$${sub.toFixed(2)}</td></tr>`; });
-    document.getElementById('visor_compras_items').innerHTML = html; document.getElementById('visor_compras_total').innerText = (c.total !== undefined ? parseFloat(c.total) : tot).toFixed(2);
-}
+
 
 // Analisis de Compras (Excel)
 let datosComprasActuales = [];
@@ -2877,20 +3244,30 @@ function abrirHistorialCompras() {
 }
 function cerrarModalAnalisisCompras() { document.getElementById('modal_analisis_compras').style.display = 'none'; }
 function cargarDatosAnalisisCompras() {
-    let inicio = document.getElementById('filtro_compra_inicio').value; let fin = document.getElementById('filtro_compra_fin').value; let tbody = document.getElementById('body_analisis_compras');
+    let inicio = document.getElementById('filtro_compra_inicio').value; 
+    let fin = document.getElementById('filtro_compra_fin').value; 
+    let tbody = document.getElementById('body_analisis_compras');
     tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;">Cargando...</td></tr>';
+
     db.collection("compras").orderBy("id", "desc").get().then(qs => {
         let total = 0; let html = ''; datosComprasActuales = [];
-        let dI = inicio ? new Date(inicio + "T00:00:00").getTime() : 0; let dF = fin ? new Date(fin + "T23:59:59").getTime() : Infinity;
+        let dI = inicio ? new Date(inicio + "T00:00:00").getTime() : 0; 
+        let dF = fin ? new Date(fin + "T23:59:59").getTime() : Infinity;
+        
         qs.forEach(doc => {
             let data = doc.data(); let dDate = new Date(data.id).getTime();
             if(dDate >= dI && dDate <= dF && data.sucursal === sucursalActual) {
-                datosComprasActuales.push(data); let m = parseFloat(data.total) || 0; total += m;
+                datosComprasActuales.push(data); 
+                let m = parseFloat(data.total) || 0; total += m;
                 let lst = (data.detalles || data.items || []).map(d => `${d.can}x ${d.nom}`).join(", ");
-                html += `<tr><td>${data.fecha}</td><td>${data.proveedor || 'General'}</td><td>${(data.detalles||data.items||[]).length} items</td><td style="text-align:right;">$${m.toFixed(2)}</td><td>${lst.substring(0,30)}</td></tr>`;
+                
+                // Dibujamos la fila NORMAL (sin el botón rojo, porque ese ya está en el visor)
+                html += `<tr><td>${data.fecha}</td><td>${data.proveedor || 'General'}</td><td>${(data.detalles||data.items||[]).length} items</td><td style="text-align:right;">$${m.toFixed(2)}</td><td>${lst.substring(0,30)}...</td></tr>`;
             }
         });
-        tbody.innerHTML = html || '<tr><td colspan="5" style="text-align:center;">Vacio</td></tr>'; document.getElementById('total_analisis_compras').innerText = total.toFixed(2);
+        
+        tbody.innerHTML = html || '<tr><td colspan="5" style="text-align:center;">Vacio</td></tr>'; 
+        document.getElementById('total_analisis_compras').innerText = total.toFixed(2);
     }).catch(e => tbody.innerHTML = `<tr><td colspan="5">Error</td></tr>`);
 }
 function exportarComprasExcel() {
@@ -4517,3 +4894,569 @@ window.addEventListener('load', () => {
     setTimeout(() => window.scrollTo(0, 0), 150);
     setTimeout(() => window.scrollTo(0, 0), 300);
 });
+// Variable global para recordar qué compra vamos a anular
+let idCompraTemporal = null;
+
+// 1. Esta función solo abre la ventanita con los asteriscos
+function anularCompraAdmin(idCompra) {
+    idCompraTemporal = idCompra; // Guardamos el ID
+    document.getElementById("input_password_anular").value = ""; // Limpiamos la caja de texto
+    document.getElementById("modalPasswordAnular").style.display = "flex"; // Mostramos la ventana
+}
+
+// 2. Esta función se dispara cuando tecleas la clave y le das a "ANULAR"
+async function ejecutarAnulacionCompra() {
+    let passwordIngresada = document.getElementById("input_password_anular").value;
+    
+    if (passwordIngresada === "") {
+        alert("⚠️ Por favor ingresa una contraseña.");
+        return;
+    }
+
+
+      try {
+        // 🔐 VERIFICACIÓN CON TU ESTRUCTURA PERSONALIZADA
+        
+        // 1. Forzamos al sistema a buscar SIEMPRE el PIN del usuario administrador
+        let usuarioActivo = "Admin"; // (Asegúrate de que en PocketBase el doc_id sea exactamente 'admin')
+        
+        // 2. Buscamos a este usuario en la base de datos.
+        let registroUsuario = await pb.collection('usuarios').getFirstListItem(`doc_id="${usuarioActivo}"`);
+
+        // 3. Extraemos el PIN directamente del JSON
+        let pinReal = registroUsuario.data.pin;
+
+        // 4. Comparamos lo que tecleaste con el PIN de la base de datos
+        if (passwordIngresada !== pinReal) {
+            alert("❌ Contraseña incorrecta. Operación cancelada.");
+            return; // Detenemos todo
+        }
+
+        // Si el código llega a esta línea, ¡la contraseña es CORRECTA! 🎉
+        document.getElementById("modalPasswordAnular").style.display = "none";
+        
+    } catch (error) {
+        console.error("Error al buscar al usuario en la base de datos:", error);
+        alert("❌ Ocurrió un error al verificar tu usuario. Revisa la consola.");
+        return; // Detenemos todo
+    }
+
+    // --- LÓGICA DE DEVOLUCIÓN DE STOCK Y BORRADO ---
+    try {
+        // 1. Buscamos el ticket usando TU folio (doc_id) en lugar del ID interno
+        const ticketCompra = await pb.collection('compras').getFirstListItem(`doc_id="${idCompraTemporal}"`);
+        
+        // 2. Extraemos la lista de productos (gracias a tu foto sabemos que se llama 'items')
+        let listaArticulos = ticketCompra.data.items || [];
+
+        // 3. Devolvemos el stock al estante (restando la compra)
+        if (listaArticulos.length > 0) {
+            for (let item of listaArticulos) {
+                try {
+                    let productoDB = await pb.collection('productos').getFirstListItem(`codigo="${item.cod}"`);
+                    let stockRestaurado = productoDB.stock - item.can;
+                    await pb.collection('productos').update(productoDB.id, {
+                        stock: stockRestaurado
+                    });
+                } catch (err) {
+                    console.warn(`⚠️ Producto con código ${item.cod} no encontrado. No se pudo restar stock.`);
+                }
+            }
+        }
+
+     // --- ANTES BORRÁBAMOS EL TICKET, AHORA LO MARCAMOS COMO ANULADO ---
+        
+        // 1. Clonamos el objeto data actual y le agregamos la propiedad 'anulada'
+        let dataActualizada = { ...ticketCompra.data };
+        dataActualizada.anulada = true; // 🏷️ Aquí le ponemos la marca del sello
+
+        // 2. Actualizamos el registro en PocketBase en lugar de destruirlo
+        await pb.collection('compras').update(ticketCompra.id, {
+            data: dataActualizada
+        });
+        
+        alert("✅ Compra anulada y stock descontado con éxito (El registro se conservará como ANULADO).");
+        
+        // 3. Cerramos el visor y recargamos para aplicar los cambios visuales
+        document.getElementById('modalVisorCompras').style.display = 'none';
+        
+        // Si tienes una función para refrescar los datos globales de compras, llámala aquí:
+        // await cargarComprasGlobales(); 
+
+    } catch (error) {
+        console.error("Fallo al anular la compra:", error);
+        alert("❌ Ocurrió un error al intentar actualizar el registro.");
+    }
+}
+// ======================================================================
+// ⚙️ MOTOR DE PAGOS MIXTOS Y SALDOS EN VIVO (ACTUALIZADO)
+// ======================================================================
+
+// 1. EL CALCULADOR DE SALDOS (La versión "Todo-Terreno" que no habías puesto)
+function calcularCajaFisicaReal(nombreCajero) {
+    let saldo = 0;
+    let hoy = typeof getFechaLocal === 'function' ? getFechaLocal() : new Date().toLocaleString("sv-SE", { timeZone: "America/Mexico_City" }).substring(0, 10);
+    let hoyLimpio = String(hoy).trim();
+    let cajeroBuscado = String(nombreCajero).trim().toLowerCase();
+
+    if (typeof ventas !== 'undefined') {
+        ventas.forEach(v => {
+            if (v.anulada === true) return;
+            let fVenta = String(v.fecha || "").trim();
+            let cVenta = String(v.cajero || "").trim().toLowerCase();
+
+            if (fVenta.includes(hoyLimpio) && cVenta.includes(cajeroBuscado)) {
+                if (v.pagos && Array.isArray(v.pagos)) {
+                    v.pagos.forEach(p => {
+                        let metodo = String(p.metodo || "").toLowerCase();
+                        if (metodo.includes("efectivo")) saldo += parseFloat(p.montoAplicado || p.montoEntregado || 0);
+                    });
+                } else {
+                    let metodo = String(v.metodo || "").toLowerCase();
+                    if (metodo.includes("efectivo") || metodo.includes("mixto")) saldo += parseFloat(v.efectivo || v.total || v.monto || 0);
+                }
+            }
+        });
+    }
+
+    if (typeof movimientos !== 'undefined') {
+        movimientos.forEach(m => {
+            let fMov = String(m.fecha || "").trim();
+            let cMov = String(m.cajero || "").trim().toLowerCase();
+
+            if (fMov.includes(hoyLimpio) && cMov.includes(cajeroBuscado)) {
+                let tipoMov = String(m.tipo || "").toLowerCase();
+                let montoMov = parseFloat(m.monto || m.total || 0);
+                if (tipoMov.includes("ingreso") || tipoMov.includes("entrada")) saldo += montoMov;
+                if (tipoMov.includes("retiro") || tipoMov.includes("gasto") || tipoMov.includes("compra")) saldo -= montoMov;
+            }
+        });
+    }
+    return saldo;
+}
+
+// ======================================================================
+// 🎛️ CONTROLADORES DEL PAGO MIXTO MULTI-CAJAS
+// ======================================================================
+
+// ======================================================================
+// 🎛️ CONTROLADORES DEL PAGO MIXTO MULTI-CAJAS
+// ======================================================================
+
+// 1. LLENAMOS LOS DOS MENÚS DESPLEGABLES CON LOS SALDOS REALES
+function cargarCajerosEnModal() {
+    let select1 = document.getElementById("origen_efectivo_1");
+    let select2 = document.getElementById("origen_efectivo_2");
+    if (!select1 || !select2) return;
+
+    let miNombre = typeof usuarioActual !== 'undefined' ? usuarioActual : 'Caja_Actual';
+    let opcionesHTML = `<option value="${miNombre}">Mi Caja Actual ($${calcularCajaFisicaReal(miNombre).toFixed(2)})</option>`;
+
+    let cajerosActivos = new Set(["Admin", "Martin"]);
+    if (typeof ventas !== 'undefined') ventas.forEach(v => { if (v.cajero) cajerosActivos.add(v.cajero); });
+    if (typeof movimientos !== 'undefined') movimientos.forEach(m => { if (m.cajero) cajerosActivos.add(m.cajero); });
+
+    cajerosActivos.forEach(cajero => {
+        if (cajero !== miNombre && cajero !== "Caja_Actual") {
+            let saldoCajero = calcularCajaFisicaReal(cajero);
+            let alerta = saldoCajero < 0 ? " ⚠️" : "";
+            opcionesHTML += `<option value="${cajero}">Caja - ${cajero} ($${saldoCajero.toFixed(2)})${alerta}</option>`;
+        }
+    });
+
+    select1.innerHTML = opcionesHTML;
+    select2.innerHTML = `<option value="">-- No usar segunda caja --</option>` + opcionesHTML;
+}
+
+// 2. ABRIR VENTANA Y LIMPIAR CAJAS (VERSIÓN NUEVA)
+function abrirPagoMixtoCompra(totalCompra) {
+    totalCompraAProcesar = parseFloat(totalCompra) || 0;
+    
+    let modal = document.getElementById("modalPagoMixtoCompra");
+    if (!modal) return; 
+
+    document.getElementById("pago_compra_efectivo_1").value = totalCompraAProcesar.toFixed(2);
+    document.getElementById("pago_compra_efectivo_2").value = "0.00";
+    document.getElementById("pago_compra_tarjeta").value = "0.00";
+    document.getElementById("pago_compra_credito").value = "0.00";
+    document.getElementById("pago_mixto_compra_total").innerText = totalCompraAProcesar.toFixed(2);
+
+    modal.style.display = "flex";
+    calcularRestanteCompra(); 
+    cargarCajerosEnModal();
+
+    let hoyLocal = typeof getFechaLocal === 'function' ? getFechaLocal() : new Date().toLocaleString("sv-SE", { timeZone: "America/Mexico_City" }).substring(0, 10);
+    pb.collection('ventas').getFullList({ requestKey: null }).then(records => {
+        let vNube = records.map(r => r.data).filter(v => String(v.fecha).trim() === hoyLocal);
+        let mapaTemp = {};
+        if (typeof ventas !== 'undefined') ventas.forEach(v => mapaTemp[v.id] = v);
+        vNube.forEach(v => mapaTemp[v.id] = v);
+        ventas = Object.values(mapaTemp).sort((a,b) => a.id - b.id);
+        cargarCajerosEnModal();
+    }).catch(e => console.log("Sincronización de fondo falló", e));
+}
+
+// 3. MATEMÁTICAS EN VIVO
+function calcularRestanteCompra() {
+    let ef1 = parseFloat(document.getElementById("pago_compra_efectivo_1").value) || 0;
+    let ef2 = parseFloat(document.getElementById("pago_compra_efectivo_2").value) || 0;
+    let tarj = parseFloat(document.getElementById("pago_compra_tarjeta").value) || 0;
+    let cred = parseFloat(document.getElementById("pago_compra_credito").value) || 0;
+    
+    let sumado = ef1 + ef2 + tarj + cred;
+    let diferencia = totalCompraAProcesar - sumado;
+    
+    let alerta = document.getElementById("alerta_restante_compra");
+    let btnConfirmar = document.getElementById("btn_confirmar_pago_compra");
+
+    if (Math.abs(diferencia) < 0.01) {
+        alerta.style.background = "#d4edda"; alerta.style.color = "#155724";
+        alerta.innerText = "✅ ¡Todo cuadra a la perfección!";
+        btnConfirmar.disabled = false;
+    } else if (diferencia > 0) {
+        alerta.style.background = "#fff3cd"; alerta.style.color = "#856404";
+        alerta.innerText = `⚠️ Te falta cubrir: $${diferencia.toFixed(2)}`;
+        btnConfirmar.disabled = true;
+    } else {
+        alerta.style.background = "#f8d7da"; alerta.style.color = "#721c24";
+        alerta.innerText = `❌ La suma se pasa por: $${Math.abs(diferencia).toFixed(2)}`;
+        btnConfirmar.disabled = true;
+    }
+}
+
+// 4. EL BOTÓN CONFIRMAR FINAL
+async function guardarCompraMixtaFinal() {
+    let ef1 = parseFloat(document.getElementById("pago_compra_efectivo_1").value) || 0;
+    let ori1 = document.getElementById("origen_efectivo_1").value;
+    let ef2 = parseFloat(document.getElementById("pago_compra_efectivo_2").value) || 0;
+    let ori2 = document.getElementById("origen_efectivo_2").value;
+    let tarj = parseFloat(document.getElementById("pago_compra_tarjeta").value) || 0;
+    let cred = parseFloat(document.getElementById("pago_compra_credito").value) || 0;
+
+    let provInput = document.getElementById("c_proveedor");
+    let proveedor = provInput ? provInput.value.trim() : "";
+
+    if (cred > 0 && proveedor === "") {
+        alert("❌ ERROR: Estás dejando una parte A CRÉDITO. Es OBLIGATORIO escribir el nombre del Proveedor en el menú principal para saber a quién le debes.");
+        document.getElementById('modalPagoMixtoCompra').style.display = 'none';
+        if (provInput) provInput.focus();
+        return;
+    }
+
+    let distribucionCajas = {};
+    if (ef1 > 0 && ori1) distribucionCajas[ori1] = (distribucionCajas[ori1] || 0) + ef1;
+    if (ef2 > 0 && ori2) distribucionCajas[ori2] = (distribucionCajas[ori2] || 0) + ef2;
+    if (tarj > 0) distribucionCajas["Banco_Directo"] = tarj;
+
+    let metadatosPago = {
+        metodo: "Mixto Especial",
+        cajas_afectadas: distribucionCajas,
+        es_credito: cred > 0,
+        monto_credito: cred
+    };
+
+    document.getElementById('modalPagoMixtoCompra').style.display = 'none';
+    isGuardandoCompra = true;
+    
+    try {
+        await procesarGuardadoEInventario(totalCompraAProcesar, "Mixto", metadatosPago);
+        alert("✅ Compra Mixta distribuida y guardada correctamente.");
+    } catch (e) {
+        console.error(e);
+        alert("Hubo un error al guardar.");
+    } finally {
+        isGuardandoCompra = false;
+    }
+}
+// ======================================================================
+// 🕵️ MÓDULO DE INVENTARIO CIEGO (FASE 2: ADMINISTRADOR)
+// ======================================================================
+
+let sesionesPendientesGlobales = [];
+let sesionEnRevisionActiva = null; // Para saber qué conteo estás viendo
+
+// 1. Cargar las sesiones en la columna izquierda
+function cargarBorradoresPendientes() {
+    let contenedor = document.getElementById('lista_sesiones_pendientes');
+    if (!contenedor) return;
+
+    // Leemos de la memoria local (Temporalmente, luego lo atamos a PocketBase si prefieres)
+    sesionesPendientesGlobales = JSON.parse(localStorage.getItem("pos_sesiones_inventario") || "[]");
+    
+    // Filtramos solo las pendientes
+    let pendientes = sesionesPendientesGlobales.filter(s => s.estado === "Pendiente");
+
+    if (pendientes.length === 0) {
+        contenedor.innerHTML = '<div style="padding:15px; background:#e9ecef; border-radius:6px; text-align:center; color:#6c757d; font-size:14px;">No hay inventarios pendientes de revisión.</div>';
+        document.getElementById('panel_detalle_auditoria').style.display = 'none';
+        return;
+    }
+
+    contenedor.innerHTML = pendientes.reverse().map(sesion => `
+        <div onclick="abrirAuditoriaDetalle(${sesion.id})" style="background:#f8f9fa; border:1px solid #dee2e6; border-left:4px solid #17a2b8; padding:12px; border-radius:6px; cursor:pointer; transition:0.2s;">
+            <b style="color:#343a40; font-size:14px;">Cajero: ${sesion.cajero}</b><br>
+            <small style="color:#6c757d;">📅 ${sesion.fecha} - ⏰ ${sesion.hora}</small><br>
+            <span style="display:inline-block; margin-top:5px; background:#17a2b8; color:white; font-size:11px; padding:2px 6px; border-radius:10px;">${sesion.conteo.length} items contados</span>
+        </div>
+    `).join('');
+}
+
+// 2. Abrir un borrador y cruzar los datos
+function abrirAuditoriaDetalle(idSesion) {
+    sesionEnRevisionActiva = sesionesPendientesGlobales.find(s => s.id === idSesion);
+    if (!sesionEnRevisionActiva) return;
+
+    document.getElementById('titulo_detalle_auditoria').innerText = `Auditoría de: ${sesionEnRevisionActiva.cajero} (${sesionEnRevisionActiva.fecha})`;
+    document.getElementById('panel_detalle_auditoria').style.display = 'block';
+    
+    let tbody = document.getElementById('tabla_cruce_auditoria');
+    let htmlTabla = "";
+    let totalImpacto = 0;
+
+    // LA MAGIA: Cruzamos lo que contó el cajero vs lo que dice tu sistema
+    sesionEnRevisionActiva.conteo.forEach(itemCajero => {
+        let cod = itemCajero.cod;
+        let prodSistema = inv[cod]; // Buscamos tu producto real
+        
+        let stockSistema = 0;
+        let costoProd = 0;
+
+        if (prodSistema) {
+            stockSistema = (prodSistema.stock && prodSistema.stock[sucursalActual]) ? prodSistema.stock[sucursalActual] : 0;
+            costoProd = prodSistema.cos || 0; // Usamos tu costo para ver cuánto dinero pierdes
+        }
+
+        let cantFisica = parseFloat(itemCajero.can_fisica) || 0;
+        let diferencia = cantFisica - stockSistema; // Si es negativo, FALTAN. Si es positivo, SOBRAN.
+        
+        let impactoDinero = diferencia * costoProd;
+        totalImpacto += impactoDinero;
+
+        // Estilos para que resalte si te están robando o si todo está bien
+        let colorDif = diferencia === 0 ? '#28a745' : (diferencia < 0 ? '#dc3545' : '#fd7e14');
+        let textDif = diferencia > 0 ? `+${diferencia}` : diferencia;
+        
+        htmlTabla += `
+            <tr style="border-bottom:1px solid #eee;">
+                <td style="padding:12px;"><b>${itemCajero.nom}</b><br><small style="color:#888;">${cod}</small></td>
+                <td style="padding:12px; text-align:center; background:#f8f9fa;">${stockSistema}</td>
+                <td style="padding:12px; text-align:center; font-weight:bold; color:#17a2b8;">${cantFisica}</td>
+                <td style="padding:12px; text-align:center; font-weight:bold; color:${colorDif};">${textDif}</td>
+                <td style="padding:12px; text-align:right; font-weight:bold; color:${impactoDinero < 0 ? '#dc3545' : '#666'};">$${impactoDinero.toFixed(2)}</td>
+            </tr>
+        `;
+    });
+
+    // Fila de total de dinero perdido/sobrante
+    htmlTabla += `
+        <tr style="background:#f4f6f9;">
+            <td colspan="4" style="padding:15px; text-align:right; font-weight:bold; font-size:16px;">IMPACTO TOTAL EN DINERO:</td>
+            <td style="padding:15px; text-align:right; font-weight:bold; font-size:18px; color:${totalImpacto < 0 ? '#dc3545' : '#28a745'};">$${totalImpacto.toFixed(2)}</td>
+        </tr>
+    `;
+
+    tbody.innerHTML = htmlTabla;
+    document.getElementById('btn_aprobar_auditoria').style.display = 'inline-block';
+}
+
+// 3. Un pequeño truco para cargar la lista en cuanto abras la pestaña
+document.getElementById('btn_audi-tab').addEventListener('click', () => {
+    cargarBorradoresPendientes();
+});
+// ======================================================================
+// 📦 MÓDULO DE INVENTARIO CIEGO (FASE 1: CAJERO)
+// ======================================================================
+
+let conteoActualCiego = [];
+
+function abrirModalInventarioCiego() {
+    conteoActualCiego = [];
+    document.getElementById('lista_escaneo_ciego').innerHTML = '';
+    document.getElementById('input_escaneo_ciego').value = '';
+    
+    let modal = document.getElementById('modalInventarioCiego');
+    modal.style.display = 'flex';
+    
+    // Enfocamos el escáner automáticamente
+    setTimeout(() => document.getElementById('input_escaneo_ciego').focus(), 100);
+}
+
+function cerrarModalInventarioCiego() {
+    document.getElementById('modalInventarioCiego').style.display = 'none';
+}
+
+function procesarEscaneoCiego(e) {
+    // Si presiona Enter (como lo hace una pistola de código de barras)
+    if (e.key === 'Enter') {
+        let cod = e.target.value.trim();
+        if (!cod) return;
+
+        let prod = inv[cod]; 
+        if (!prod) {
+            alert("❌ Producto no encontrado en el sistema.");
+            e.target.value = '';
+            return;
+        }
+
+        // Revisamos si ya lo escaneó antes para solo sumarle 1
+        let existe = conteoActualCiego.find(item => item.cod === cod);
+        if (existe) {
+            existe.can_fisica += 1;
+        } else {
+            conteoActualCiego.push({
+                cod: cod,
+                nom: prod.nom,
+                can_fisica: 1
+            });
+        }
+
+        actualizarTablaCiego();
+        e.target.value = ''; // Limpiamos para el siguiente escaneo
+        e.target.focus();
+    }
+}
+
+function actualizarTablaCiego() {
+    let html = '';
+    conteoActualCiego.forEach((item, index) => {
+        html += `
+            <tr style="border-bottom:1px solid #eee;">
+                <td style="padding:10px;"><b>${item.nom}</b><br><small style="color:#888;">${item.cod}</small></td>
+                <td style="padding:10px; text-align:center;">
+                    <input type="number" value="${item.can_fisica}" onchange="modificarCantCiego(${index}, this.value)" style="width:60px; text-align:center; padding:5px; border:1px solid #ccc; border-radius:4px;">
+                </td>
+                <td style="padding:10px; text-align:center;">
+                    <button onclick="eliminarItemCiego(${index})" style="background:none; border:none; cursor:pointer; color:#dc3545; font-size:16px;">✖</button>
+                </td>
+            </tr>`;
+    });
+    document.getElementById('lista_escaneo_ciego').innerHTML = html;
+}
+
+function modificarCantCiego(index, val) {
+    let cant = parseFloat(val);
+    if (isNaN(cant) || cant < 0) cant = 0;
+    conteoActualCiego[index].can_fisica = cant;
+}
+
+function eliminarItemCiego(index) {
+    conteoActualCiego.splice(index, 1);
+    actualizarTablaCiego();
+}
+
+function enviarInventarioCiego() {
+    if (conteoActualCiego.length === 0) return alert("⚠️ No has escaneado ningún producto.");
+    
+    // Empaquetamos el reporte
+    let cajeroActivo = typeof usuarioActual !== 'undefined' ? usuarioActual : 'Desconocido';
+    let fechaHoy = new Date().toLocaleDateString();
+    let horaHoy = new Date().toLocaleTimeString();
+
+    let nuevoBorrador = {
+        id: Date.now(),
+        cajero: cajeroActivo,
+        fecha: fechaHoy,
+        hora: horaHoy,
+        estado: 'Pendiente',
+        conteo: conteoActualCiego
+    };
+
+    // Guardamos en la memoria
+    let pendientes = JSON.parse(localStorage.getItem('pos_sesiones_inventario') || "[]");
+    pendientes.push(nuevoBorrador);
+    localStorage.setItem('pos_sesiones_inventario', JSON.stringify(pendientes));
+
+    alert("✅ ¡Conteo enviado a Auditoría con éxito!");
+    cerrarModalInventarioCiego();
+    
+    // Si el Admin está conectado, actualizamos su tabla roja
+    if(typeof cargarBorradoresPendientes === 'function') cargarBorradoresPendientes();
+}
+let html5QrcodeScannerCiego = null; // Guardará el motor de la cámara
+
+// 1. Encender la cámara del celular
+function encenderCamaraCiego() {
+    let contenedorCamara = document.getElementById('lector_camara_ciego');
+    contenedorCamara.style.display = 'block';
+
+    // Configuramos la cámara: Buscamos formatos comunes de código de barras
+    html5QrcodeScannerCiego = new Html5Qrcode("lector_camara_ciego");
+    
+    html5QrcodeScannerCiego.start(
+        { facingMode: "environment" }, // 📱 Fuerza el uso de la cámara TRASERA
+        {
+            fps: 15,                  // Velocidad de lectura por segundo
+            qrbox: { width: 250, height: 150 } // Cuadro de enfoque en pantalla
+        },
+        (codigoDetectado) => {
+            // 🎯 ¡ÉXITO! Cuando detecta un código, vibra y ejecuta el escaneo
+            if (navigator.vibrate) navigator.vibrate(100); 
+            ejecutarEscaneoDirecto(codigoDetectado);
+        },
+        (error) => {
+            // Error silencioso de escaneo continuo (ignorar para no saturar consola)
+        }
+    ).catch(err => {
+        alert("🔒 Error al acceder a la cámara. Asegúrate de dar permisos.");
+        console.error(err);
+    });
+}
+
+// 2. Apagar la cámara para ahorrar batería
+function apagarCamaraCiego() {
+    if (html5QrcodeScannerCiego) {
+        html5QrcodeScannerCiego.stop().then(() => {
+            document.getElementById('lector_camara_ciego').style.display = 'none';
+            html5QrcodeScannerCiego = null;
+        }).catch(err => console.error(err));
+    }
+}
+
+// 3. Modificamos la función de cierre del modal para apagar la cámara automáticamente si se sale
+function cerrarModalInventarioCiego() {
+    apagarCamaraCiego();
+    document.getElementById('modalInventarioCiego').style.display = 'none';
+}
+
+// 4. Función unificada que busca en tu inventario e inserta el producto
+function ejecutarEscaneoDirecto(cod) {
+    cod = String(cod).trim();
+    if (!cod) return;
+
+    let prod = inv[cod]; 
+    if (!prod) {
+        // Un pitido o alerta sutil si el producto no existe
+        alert(`❌ Código: ${cod}\nNo se encuentra en tu catálogo.`);
+        return;
+    }
+
+    let existe = conteoActualCiego.find(item => item.cod === cod);
+    if (existe) {
+        existe.can_fisica += 1;
+    } else {
+        conteoActualCiego.push({
+            cod: cod,
+            nom: prod.nom,
+            can_fisica: 1
+        });
+    }
+
+    actualizarTablaCiego();
+}
+
+// 5. Ajustamos tu función original de teclado para que use el motor unificado
+function procesarEscaneoCiego(e) {
+    if (e.key === 'Enter') {
+        ejecutarEscaneoDirecto(e.target.value);
+        e.target.value = '';
+        e.target.focus();
+    }
+}
+
+
+
+
+
+
+
+
