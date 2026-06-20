@@ -705,13 +705,23 @@ function guardarUsuario() {
     
     if(tabs.length === 0) return alert("Debes seleccionar al menos un módulo permitido.");
     
-    // 🏢 NUEVO: Recolectar sucursales marcadas
+    // Recolectar sucursales marcadas
     let sucursalesSeleccionadas = Array.from(document.querySelectorAll('.cb-sucursal:checked')).map(cb => cb.value).join(',');
 
-    // Preparar el objeto exacto (ahora incluye sucursales)
-    let objetoUsuario = { pin: pin, tabs: tabs, sucursales_permitidas: sucursalesSeleccionadas };
+    // 🎯 CORRECCIÓN: Recolectamos el estado de las casillas especiales
+    let permisos = [];
+    if (document.getElementById('perm_inv_ciego') && document.getElementById('perm_inv_ciego').checked) permisos.push('inv_ciego');
+    if (document.getElementById('perm_auditoria') && document.getElementById('perm_auditoria').checked) permisos.push('auditoria');
 
-    // 🛡️ ACTUALIZACIÓN INMEDIATA: Guardamos primero en la memoria local
+    // Preparar el objeto incluyendo la propiedad 'permisos'
+    let objetoUsuario = { 
+        pin: pin, 
+        tabs: tabs, 
+        sucursales_permitidas: sucursalesSeleccionadas,
+        permisos: permisos // <-- ¡Esto es lo que faltaba guardar!
+    };
+
+    // Actualización inmediata local
     usuariosData[nom] = objetoUsuario;
     localStorage.setItem("pos_usuarios_v9", JSON.stringify(usuariosData));
     
@@ -720,25 +730,24 @@ function guardarUsuario() {
     .then(() => {
         alert("✅ Usuario guardado y sincronizado en la NUBE."); 
         
-        // Limpiamos los campos del formulario
         document.getElementById('u_nombre').value = ''; 
         document.getElementById('u_pin').value = ''; 
         document.getElementById('u_nombre').readOnly = false;
         document.getElementById('u_nombre').style.background = '#fff';
         
-        // Desmarcar absolutamente TODOS los checks para evitar confusiones visuales
+        // Limpiar checks estándar
         ['v-tab', 'c-tab', 'prov-tab', 'k-tab', 'i-tab', 'cli-tab', 'pro-tab', 'rec-tab', 'r-tab', 'u-tab', 'kardex-tab'].forEach(t => {
             let chk = document.getElementById('chk_' + t);
             if(chk) chk.checked = false;
         });
 
-        // 🏢 NUEVO: Desmarcar las sucursales al terminar
+        // 🎯 CORRECCIÓN: Limpiar los nuevos checks especiales
+        if (document.getElementById('perm_inv_ciego')) document.getElementById('perm_inv_ciego').checked = false;
+        if (document.getElementById('perm_auditoria')) document.getElementById('perm_auditoria').checked = false;
+
         document.querySelectorAll('.cb-sucursal').forEach(cb => cb.checked = false);
 
-        // Redibujamos la tabla de usuarios registrados
         if(typeof renderUsuarios === 'function') renderUsuarios();
-        
-        // Actualizamos el menú de login
         initLoginSelect();
     })
     .catch(error => { 
@@ -5371,22 +5380,36 @@ function seleccionarTodosAuditoria(value) {
 
 function mandarARevisionSecundaria() {
     let checkboxes = document.querySelectorAll('.chk_item_auditoria:checked');
-    if(checkboxes.length === 0) return alert("⚠️ Selecciona artículos para recontar.");
+    if(checkboxes.length === 0) return alert("⚠️ Selecciona las casillas de los productos que deseas mandar a recontar.");
 
-    if(!confirm(`¿Mandar estos ${checkboxes.length} artículos a revisión secundaria?`)) return;
+    if(!confirm(`¿Deseas mandar estos ${checkboxes.length} artículos a una segunda revisión?`)) return;
 
-    checkboxes.forEach(chk => {
-        let idx = parseInt(chk.getAttribute('data-index'));
-        sesionEnRevisionActiva.conteo[idx].can_fisica = 0; 
-    });
+    // 🛡️ REFUERZO DE SEGURIDAD: Jalamos los datos más frescos de la memoria para no borrar al 'cajeroAsignado'
+    let pendientes = JSON.parse(localStorage.getItem('pos_sesiones_inventario') || "[]");
+    let index = pendientes.findIndex(b => b.id === sesionEnRevisionActiva.id);
 
-    sesionEnRevisionActiva.estado = "Asignado"; // Se reactiva para el cajero
+    if (index !== -1) {
+        checkboxes.forEach(chk => {
+            let idx = parseInt(chk.getAttribute('data-index'));
+            let itemMalo = sesionEnRevisionActiva.conteo[idx];
+            
+            // Buscamos el producto exacto dentro del archivo fresco
+            let itemEnFresco = pendientes[index].conteo.find(x => x.cod === itemMalo.cod);
+            if (itemEnFresco) {
+                itemEnFresco.can_fisica = 0;
+                itemEnFresco.requiere_reconteo = true; // Colocamos la marca de auditoría
+            }
+        });
 
-    let index = sesionesPendientesGlobales.findIndex(s => s.id === sesionEnRevisionActiva.id);
-    if (index !== -1) sesionesPendientesGlobales[index] = sesionEnRevisionActiva;
-    localStorage.setItem("pos_sesiones_inventario", JSON.stringify(sesionesPendientesGlobales));
+        pendientes[index].estado = "Asignado"; // Mantiene el estado activo para el cajero
+        localStorage.setItem("pos_sesiones_inventario", JSON.stringify(pendientes));
+        
+        // Sincronizamos la memoria del Administrador
+        sesionesPendientesGlobales = pendientes;
+        sesionEnRevisionActiva = pendientes[index];
+    }
 
-    alert("🔍 Borrador devuelto a la sección del cajero.");
+    alert("🔍 Productos enviados a revisión secundaria.\nEl borrador se ha devuelto a la sección del cajero.");
     document.getElementById('panel_detalle_auditoria').style.display = 'none';
     cargarBorradoresPendientes();
 }
@@ -5429,32 +5452,63 @@ function abrirModalInventarioCiego() {
     document.getElementById('modalInventarioCiego').style.display = 'flex';
     
     conteoActualCiego = [];
-    actualizarTablaCiego();
     idRevisionActivaCajero = null;
-    modoCamaraCiegoActivo = false; // Inicia apagada por defecto
+    modoCamaraCiegoActivo = false;
 
-    // Radar de tareas asignadas por el Admin
     let pendientes = JSON.parse(localStorage.getItem('pos_sesiones_inventario') || "[]");
     let cajeroSesionActual = usuarioActual ? usuarioActual.trim() : 'Desconocido'; 
 
+    // Buscamos si hay una tarea asignada con tu nombre
     let revisionPendiente = pendientes.find(b => b.cajeroAsignado === cajeroSesionActual && b.estado === 'Asignado');
-    let tituloModal = document.querySelector('#modalInventarioCiego h2');
+    let tituloModal = document.getElementById('modalInventarioCiegoTitulo');
 
     if (revisionPendiente) {
         idRevisionActivaCajero = revisionPendiente.id;
         if (tituloModal) tituloModal.innerText = `📋 Segunda Revisión - Control Asignado`;
-        alert("🚨 ¡ATENCIÓN! Tienes una revisión de auditoría asignada por el Administrador.");
+        
+        // Filtramos y cargamos únicamente los productos que el Admin mandó a auditar
+        conteoActualCiego = revisionPendiente.conteo.filter(item => item.requiere_reconteo === true);
+        
+        alert("🚨 ¡ATENCIÓN! El Administrador te asignó recontar en específico los productos que aparecen en la lista.");
     } else {
         if (tituloModal) tituloModal.innerText = `📦 Escaneo con Celular / Pistola`;
     }
     
-    // Autofoco inmediato al input manual/pistola al abrir
+    actualizarTablaCiego();
+    
     setTimeout(() => {
         let input = document.getElementById('input_escaneo_ciego');
         if(input) { input.value = ''; input.focus(); }
     }, 200);
 }
 
+function actualizarTablaCiego() {
+    let tbody = document.getElementById('lista_escaneo_ciego');
+    if (!tbody) return;
+
+    let html = '';
+    conteoActualCiego.forEach((item, index) => {
+        // 🛡️ ESCUDO DE PROPIEDADES: Lee de forma segura tanto '.nom' como '.nombre'
+        let nombreProducto = item.nom || item.nombre || 'Producto';
+
+        html += `
+            <tr style="border-bottom:1px solid #eee;">
+                <td style="padding:10px; text-align:left;"><b>${nombreProducto}</b><br><small style="color:#888;">${item.cod}</small></td>
+                <td style="padding:10px; text-align:center;">
+                    <input type="number" 
+                           id="cant_ciego_${index}" 
+                           value="${item.can_fisica}" 
+                           onchange="modificarCantCiego(${index}, this.value)" 
+                           onkeydown="regresarAlEscaner(event)"
+                           style="width:70px; text-align:center; padding:5px; font-size:16px; font-weight:bold; color:#0d6efd; border:1px solid #ccc; border-radius:4px;">
+                </td>
+                <td style="padding:10px; text-align:center;">
+                    <button onclick="eliminarItemCiego(${index})" style="background:none; border:none; cursor:pointer; color:#dc3545; font-size:16px;">✖</button>
+                </td>
+            </tr>`;
+    });
+    tbody.innerHTML = html;
+}
 // 🪄 FUNCIÓN DEL ENTER DE LA CANTIDAD: Decide a dónde regresar el foco según el modo activo
 function regresarAlEscaner(e) {
     if (e.key === 'Enter') {
@@ -5568,8 +5622,17 @@ function enviarInventarioCiego() {
     if (idRevisionActivaCajero) {
         let index = pendientes.findIndex(b => b.id === idRevisionActivaCajero);
         if (index !== -1) {
+            
+            // 🎯 FUSIÓN DE DATOS: Conservamos el reporte original y actualizamos únicamente lo que se auditó
+            conteoActualCiego.forEach(itemAuditado => {
+                let itemOriginal = pendientes[index].conteo.find(x => x.cod === itemAuditado.cod);
+                if (itemOriginal) {
+                    itemOriginal.can_fisica = itemAuditado.can_fisica;
+                    delete itemOriginal.requiere_reconteo; // Quitamos la marca para liberarlo
+                }
+            });
+
             pendientes[index].estado = '2da Revisión Lista';
-            pendientes[index].conteo = conteoActualCiego;
             localStorage.setItem('pos_sesiones_inventario', JSON.stringify(pendientes));
             alert("✅ ¡Segunda revisión enviada con éxito!");
         }
