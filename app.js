@@ -5323,7 +5323,12 @@ function actualizarTablaCiego() {
             <tr style="border-bottom:1px solid #eee;">
                 <td style="padding:10px;"><b>${item.nom}</b><br><small style="color:#888;">${item.cod}</small></td>
                 <td style="padding:10px; text-align:center;">
-                    <input type="number" value="${item.can_fisica}" onchange="modificarCantCiego(${index}, this.value)" style="width:60px; text-align:center; padding:5px; border:1px solid #ccc; border-radius:4px;">
+                    <input type="number" 
+                           id="cant_ciego_${index}" 
+                           value="${item.can_fisica}" 
+                           onchange="modificarCantCiego(${index}, this.value)" 
+                           onkeypress="regresarAlEscaner(event)"
+                           style="width:70px; text-align:center; padding:8px; font-size:16px; border:1px solid #ccc; border-radius:4px; font-weight:bold;">
                 </td>
                 <td style="padding:10px; text-align:center;">
                     <button onclick="eliminarItemCiego(${index})" style="background:none; border:none; cursor:pointer; color:#dc3545; font-size:16px;">✖</button>
@@ -5333,6 +5338,21 @@ function actualizarTablaCiego() {
     document.getElementById('lista_escaneo_ciego').innerHTML = html;
 }
 
+// 🪄 Función ayudante: Cuando el usuario escribe la cantidad y presiona Enter, regresa el cursor arriba
+function regresarAlEscaner(e) {
+    if (e.key === 'Enter') {
+        e.preventDefault();
+        
+        let inputEscaner = document.getElementById('input_escaneo_ciego');
+        if (inputEscaner) {
+            inputEscaner.focus();
+            inputEscaner.value = '';
+        }
+
+        // 🎥 ¡MAGIA MÓVIL! Volvemos a encender la cámara automáticamente para el siguiente artículo
+        encenderCamaraCiego();
+    }
+}
 function modificarCantCiego(index, val) {
     let cant = parseFloat(val);
     if (isNaN(cant) || cant < 0) cant = 0;
@@ -5379,22 +5399,33 @@ function encenderCamaraCiego() {
     let contenedorCamara = document.getElementById('lector_camara_ciego');
     contenedorCamara.style.display = 'block';
 
-    // Configuramos la cámara: Buscamos formatos comunes de código de barras
     html5QrcodeScannerCiego = new Html5Qrcode("lector_camara_ciego");
     
     html5QrcodeScannerCiego.start(
-        { facingMode: "environment" }, // 📱 Fuerza el uso de la cámara TRASERA
+        { facingMode: "environment" }, // Cámara trasera obligatoria
         {
-            fps: 15,                  // Velocidad de lectura por segundo
-            qrbox: { width: 250, height: 150 } // Cuadro de enfoque en pantalla
+            fps: 20, // Aumentamos los cuadros por segundo para que sea más fluido
+            qrbox: { width: 280, height: 130 }, // Ajustamos el cuadro para que sea alargado como un código de barras
+            // 🎯 LA CLAVE: Le decimos que SOLO lea códigos de barras de productos (EAN_13, EAN_8, CODE_128)
+            formatsToSupport: [ 
+                Html5QrcodeSupportedFormats.EAN_13, 
+                Html5QrcodeSupportedFormats.EAN_8, 
+                Html5QrcodeSupportedFormats.CODE_128,
+                Html5QrcodeSupportedFormats.UPC_A
+            ]
         },
         (codigoDetectado) => {
-            // 🎯 ¡ÉXITO! Cuando detecta un código, vibra y ejecuta el escaneo
-            if (navigator.vibrate) navigator.vibrate(100); 
+            // Cuando detecte un código...
+            if (navigator.vibrate) navigator.vibrate(80); // Vibra el cel
+            
+            // 🛑 APAGAMOS la cámara un microsegundo para que no se quede leyendo en bucle el mismo producto
+            apagarCamaraCiego(); 
+            
+            // Procesamos el producto y mandamos el cursor a la cantidad
             ejecutarEscaneoDirecto(codigoDetectado);
         },
         (error) => {
-            // Error silencioso de escaneo continuo (ignorar para no saturar consola)
+            // Ignorar errores de escaneo continuo
         }
     ).catch(err => {
         alert("🔒 Error al acceder a la cámara. Asegúrate de dar permisos.");
@@ -5425,23 +5456,38 @@ function ejecutarEscaneoDirecto(cod) {
 
     let prod = inv[cod]; 
     if (!prod) {
-        // Un pitido o alerta sutil si el producto no existe
         alert(`❌ Código: ${cod}\nNo se encuentra en tu catálogo.`);
         return;
     }
 
+    // 1. Buscamos si el producto ya estaba en la lista del conteo actual
     let existe = conteoActualCiego.find(item => item.cod === cod);
+    let indexAEditar;
+
     if (existe) {
-        existe.can_fisica += 1;
+        // Si ya existe, lo dejamos igual por ahora para editar su cantidad
+        indexAEditar = conteoActualCiego.indexOf(existe);
     } else {
+        // Si es nuevo, lo agregamos empezando en 1
         conteoActualCiego.push({
             cod: cod,
             nom: prod.nom,
             can_fisica: 1
         });
+        indexAEditar = conteoActualCiego.length - 1;
     }
 
+    // 2. Redibujamos la tabla para que aparezca el nuevo producto en pantalla
     actualizarTablaCiego();
+
+    // 3. LA MAGIA: Buscamos el cuadro de texto (input) de la cantidad de ese producto específico
+    setTimeout(() => {
+        let inputCantidad = document.getElementById(`cant_ciego_${indexAEditar}`);
+        if (inputCantidad) {
+            inputCantidad.focus();    // Mandamos el cursor ahí directamente
+            inputCantidad.select();   // Seleccionamos el número "1" para que al escribir se borre solo
+        }
+    }, 80); // Un microsegundo de pausa para que el HTML alcance a pintarse
 }
 
 // 5. Ajustamos tu función original de teclado para que use el motor unificado
