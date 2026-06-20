@@ -76,36 +76,81 @@
     
     <div style="display:flex; gap:20px; margin-top:20px; align-items: flex-start;">
         
-        <div style="width:300px; background:white; padding:15px; border-radius:8px; box-shadow:0px 4px 10px rgba(0,0,0,0.1);">
-            <h4 style="margin-top:0; color:#6c757d;">📥 Recibidos recientemente</h4>
-            <div id="lista_sesiones_pendientes" style="display:flex; flex-direction:column; gap:10px;">
-                </div>
+        <div style="background:white; padding:20px; border-radius:8px; box-shadow:0px 4px 10px rgba(0,0,0,0.1); width:45%; min-width: 400px; max-height: 80vh; overflow-y: auto;">
+    
+    <div style="display:flex; justify-content:space-between; align-items:center; border-bottom: 2px solid #eee; padding-bottom: 10px;">
+        <h4 style="margin:0; color:#495057;">📥 Recibidos recientemente</h4>
+        <button onclick="limpiarTodasLasAuditorias()" style="background:#dc3545; color:white; border:none; padding:5px 10px; border-radius:4px; font-size:12px; font-weight:bold; cursor:pointer;">🧹 LIMPIAR TODO</button>
+    </div>
+    
+    <table style="width:100%; border-collapse:collapse; text-align:left; margin-top:10px;">
+        <thead style="background:#f8f9fa; border-bottom:2px solid #dee2e6; color:#495057; font-size:14px;">
+            <tr>
+                <th style="padding:10px;">Fecha/Hora</th>
+                <th style="padding:10px;">Cajero</th>
+                <th style="padding:10px;">Cant.</th>
+                <th style="padding:10px;">Estado</th>
+                <th style="padding:10px;">Revisor</th>
+                <th style="padding:10px; text-align:center;">🗑️</th>
+            </tr>
+        </thead>
+        <tbody id="tablaAuditoriasAdmin" style="font-size:14px;">
+            </tbody>
+    </table>
+</div>
+
+        <div id="panel_detalle_auditoria" style="flex:1; background:white; padding:20px; border-radius:8px; box-shadow:0px 4px 10px rgba(0,0,0,0.1); display:none; max-height:85vh; overflow-y:auto;">
+    
+    <div style="display:flex; justify-content:space-between; align-items:center; border-bottom:2px solid #eee; padding-bottom:10px; margin-bottom:15px;">
+        <h3 style="margin:0; color:#1a365d;" id="titulo_detalle_auditoria">Detalle del Conteo</h3>
+        <span id="badge_auditoria_estado" style="background:#ffc107; color:#856404; padding:5px 15px; border-radius:20px; font-weight:bold; font-size:12px;">Pendiente</span>
+    </div>
+
+    <div style="display:grid; grid-template-columns: repeat(3, 1fr); gap:15px; margin-bottom:20px;">
+        <div style="background:#f1f3f5; padding:12px; border-radius:6px; border-left:4px solid #28a745;">
+            <small style="color:#6c757d; font-weight:bold; display:block;">VALOR STOCK TEÓRICO</small>
+            <span id="audi_val_sistema" style="font-size:18px; font-weight:bold; color:#212529;">$0.00</span>
         </div>
-
-        <div id="panel_detalle_auditoria" style="flex:1; background:white; padding:20px; border-radius:8px; box-shadow:0px 4px 10px rgba(0,0,0,0.1); display:none;">
-            <div style="display:flex; justify-content:space-between; align-items:center; border-bottom:2px solid #eee; padding-bottom:10px; margin-bottom:15px;">
-                <h3 style="margin:0; color:#1a365d;" id="titulo_detalle_auditoria">Detalle del Conteo</h3>
-                <span id="badge_auditoria_estado" style="background:#ffc107; color:#856404; padding:5px 15px; border-radius:20px; font-weight:bold; font-size:12px;">Pendiente de Revisión</span>
-            </div>
-
-            <table style="width:100%; border-collapse:collapse; text-align:left;">
-                <thead style="background:#343a40; color:white;">
-                    <tr>
-                        <th style="padding:10px; border-radius:6px 0 0 0;">Producto</th>
-                        <th style="padding:10px; text-align:center;">Stock Sistema</th>
-                        <th style="padding:10px; text-align:center;">Conteo Físico</th>
-                        <th style="padding:10px; text-align:center;">Diferencia</th>
-                        <th style="padding:10px; border-radius:0 6px 0 0; text-align:right;">Impacto ($)</th>
-                    </tr>
-                </thead>
-                <tbody id="tabla_cruce_auditoria">
-                    </tbody>
-            </table>
-
-            <div style="margin-top:20px; text-align:right;">
-                <button id="btn_aprobar_auditoria" style="background:#28a745; color:white; border:none; padding:12px 25px; border-radius:6px; font-size:16px; font-weight:bold; cursor:pointer; display:none;" onclick="aprobarYAjustarInventario()">✅ APROBAR Y AJUSTAR INVENTARIO</button>
-            </div>
+        <div style="background:#f1f3f5; padding:12px; border-radius:6px; border-left:4px solid #dc3545;">
+            <small style="color:#6c757d; font-weight:bold; display:block;">PÉRDIDA MONETARIA</small>
+            <span id="audi_val_perdida" style="font-size:18px; font-weight:bold; color:#dc3545;">$0.00</span>
         </div>
+        <div style="background:#fff5f5; padding:12px; border-radius:6px; border:1px solid #ffe3e3; text-align:center;">
+            <small style="color:#c92a2a; font-weight:bold; display:block;">% MERMA / PÉRDIDA</small>
+            <span id="audi_porcentaje_perdida" style="font-size:20px; font-weight:bold; color:#c92a2a;">0.00%</span>
+        </div>
+    </div>
+
+    <div style="display:flex; gap:5px; margin-bottom:15px; border-bottom:1px solid #dee2e6; padding-bottom:5px;">
+        <button onclick="filtrarTablaAuditoria('faltante')" id="tab_audi_faltante" style="padding:8px 16px; border:none; background:#dc3545; color:white; font-weight:bold; border-radius:4px; cursor:pointer;">❌ Faltantes (<span id="count_faltantes">0</span>)</button>
+        <button onclick="filtrarTablaAuditoria('sobrante')" id="tab_audi_sobrante" style="padding:8px 16px; border:none; background:#f1f3f5; color:#495057; font-weight:bold; border-radius:4px; cursor:pointer;">➕ Sobrantes (<span id="count_sobrantes">0</span>)</button>
+        <button onclick="filtrarTablaAuditoria('exacto')" id="tab_audi_exacto" style="padding:8px 16px; border:none; background:#f1f3f5; color:#495057; font-weight:bold; border-radius:4px; cursor:pointer;">✅ Exactos (<span id="count_exactos">0</span>)</button>
+    </div>
+
+    <table style="width:100%; border-collapse:collapse; text-align:left;">
+        <thead style="background:#343a40; color:white;">
+            <tr>
+                <th style="padding:10px; width:40px; text-align:center;"><input type="checkbox" id="chk_audi_master" onclick="seleccionarTodosAuditoria(this.checked)"></th>
+                <th style="padding:10px;">Producto</th>
+                <th style="padding:10px; text-align:center;">Sistema</th>
+                <th style="padding:10px; text-align:center;">Físico</th>
+                <th style="padding:10px; text-align:center;">DIF</th>
+                <th style="padding:10px; text-align:right;">Impacto ($)</th>
+            </tr>
+        </thead>
+        <tbody id="tabla_cruce_auditoria">
+            </tbody>
+    </table>
+
+    <div style="margin-top:15px; background:#f8f9fa; padding:15px; border-radius:6px; text-align:right; font-weight:bold; font-size:16px;">
+        IMPACTO NETO EN CAJA: <span id="audi_total_impacto" style="font-size:18px;">$0.00</span>
+    </div>
+
+    <div style="margin-top:20px; display:flex; justify-content:space-between; gap:10px;">
+        <button id="btn_mandar_revision" style="background:#fd7e14; color:white; border:none; padding:12px 20px; border-radius:6px; font-weight:bold; cursor:pointer; display:none;" onclick="mandarARevisionSecundaria()">🔍 MANDAR SELECCIONADOS A RECONTEO</button>
+        <button id="btn_aprobar_auditoria" style="background:#28a745; color:white; border:none; padding:12px 25px; border-radius:6px; font-weight:bold; cursor:pointer; display:none;" onclick="aprobarYAjustarInventario()">✅ APROBAR Y ASENTAR INVENTARIO</button>
+    </div>
+</div>
 
     </div>
 </div>
@@ -122,6 +167,11 @@
                     <button style="background:var(--warning); border:none; padding:8px 15px; border-radius:5px; font-weight:bold; cursor:pointer; white-space: nowrap;" onclick="preguntarPausar()">⏸️ Pausar [F8]</button>
                     <button style="background:var(--info); color:white; border:none; padding:8px 15px; border-radius:5px; font-weight:bold; cursor:pointer; white-space: nowrap;" onclick="abrirPausadas()">📋 Ver Pausadas [F7] (<span id="count_pausadas">0</span>)</button>
                     <button style="background:#dc3545; color:white; border:none; padding:8px 15px; border-radius:5px; font-weight:bold; cursor:pointer; white-space: nowrap;" onclick="registrarGasto()">💸 Registrar Gasto</button>
+                    <div id="alertaRevisionContenedor" style="display: none; margin: 10px 0;">
+    <button id="btnIrARevision" onclick="abrirRevisionAsignada()" class="btn-animado-alerta" style="background-color: #e67e22; color: white; border: none; padding: 12px 20px; font-weight: bold; border-radius: 5px; cursor: pointer; width: 100%; box-shadow: 0 4px 15px rgba(230,126,34,0.4);">
+        🚨 TIENES (1) REVISIÓN DE INVENTARIO ASIGNADA ¡DAR CLIC AQUÍ!
+    </button>
+</div>
                 </div>
                 <button style="background:var(--danger); color:white; border:none; padding:8px 15px; border-radius:5px; font-weight:bold; cursor:pointer; white-space: nowrap;" onclick="abrirVisorTickets()">🧾 Historial [F9]</button>
             </div>
@@ -1396,23 +1446,23 @@
             <button onclick="cerrarModalInventarioCiego()" style="background:none; border:none; font-size:20px; cursor:pointer; color:#dc3545; font-weight:bold;">✖</button>
         </div>
 
-        <div style="background:#f8f9fa; border:1px dashed #17a2b8; border-radius:8px; padding:10px; text-align:center; margin-bottom:15px;">
+        <div style="background:#f8f9fa; border:1px dashed #17a2b8; border-radius:8px; padding:10px; text-align:center; margin-bottom:15px; box-sizing: border-box;">
             <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
                 <span style="font-size:13px; font-weight:bold; color:#6c757d;">📷 Escáner de Cámara:</span>
                 <div>
-                    <button onclick="encenderCamaraCiego()" style="background:#0d6efd; color:white; border:none; padding:5px 10px; border-radius:4px; cursor:pointer; font-size:12px; font-weight:bold;">🟢 Encender</button>
-                    <button onclick="apagarCamaraCiego()" style="background:#6c757d; color:white; border:none; padding:5px 10px; border-radius:4px; cursor:pointer; font-size:12px; font-weight:bold;">🔴 Apagar</button>
+                    <button type="button" onclick="encenderCamaraCiego()" style="background:#0d6efd; color:white; border:none; padding:5px 10px; border-radius:4px; cursor:pointer; font-size:12px; font-weight:bold;">🟢 Encender</button>
+                    <button type="button" onclick="apagarCamaraCiego()" style="background:#6c757d; color:white; border:none; padding:5px 10px; border-radius:4px; cursor:pointer; font-size:12px; font-weight:bold;">🔴 Apagar</button>
                 </div>
             </div>
             <div id="lector_camara_ciego" style="width:100%; max-width:350px; margin:0 auto; background:#000; border-radius:6px; overflow:hidden; display:none;"></div>
         </div>
 
-        <div style="margin-bottom:15px;">
-            <label style="font-weight:bold; color:#555;">Entrada Manual / Pistola Láser:</label>
-            <input type="text" id="input_escaneo_ciego" onkeypress="procesarEscaneoCiego(event)" placeholder="Escanea o escribe el código aquí..." style="width:100%; padding:10px; font-size:16px; border:2px solid #17a2b8; border-radius:6px; margin-top:5px; outline:none; box-sizing: border-box;">
+        <div style="margin-bottom: 15px;">
+            <label style="font-weight: bold; color: #555;">Entrada Manual / Pistola Láser:</label>
+            <input type="text" id="input_escaneo_ciego" placeholder="Escanea o escribe el código aquí..." style="width: 100%; padding: 10px; font-size: 16px; border: 2px solid #17a2b8; border-radius: 6px; margin-top: 5px; outline: none; box-sizing: border-box;" onkeydown="if(event.keyCode === 13) { event.preventDefault(); agregarProductoCiegoManual(this.value); }">
         </div>
 
-        <div style="flex:1; overflow-y:auto; border:1px solid #ddd; border-radius:6px; min-height:150px;">
+        <div style="width: 100%; overflow-y:auto; border:1px solid #ddd; border-radius:6px; max-height: 200px; margin-bottom: 15px; box-sizing: border-box; background: #fff;">
             <table style="width:100%; border-collapse:collapse; text-align:left;">
                 <thead style="background:#f8f9fa; position:sticky; top:0; z-index:10;">
                     <tr>

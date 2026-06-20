@@ -505,6 +505,10 @@ window.changeTab = function(evt, tabName) {
         if (tabName === 'kardex-tab' && typeof window.renderKardex === 'function') {
             window.renderKardex();
         }
+        // 📋 DETECTOR: Si el admin abre Auditorías, cargamos los datos de inmediato
+if (tabName === 'audi-tab' && typeof cargarBorradoresPendientes === 'function') {
+    cargarBorradoresPendientes();
+}
 
         // 🎯 NUEVO: Posicionar el cursor automáticamente
         setTimeout(() => {
@@ -575,6 +579,9 @@ function intentarLogin() {
         document.getElementById('ui_current_user').innerText = u; 
         document.getElementById('login-screen').style.display = 'none'; 
         
+        // 👉 AQUI GUARDAMOS EL USUARIO GLOBAL PARA EL RADAR DE AUDITORÍAS
+        window.usuarioActivoGlobal = u;
+
         if (u === "Admin") { 
             document.getElementById('ui_sucursal').disabled = false; 
             if(document.getElementById('corte_sucursal')) document.getElementById('corte_sucursal').disabled = false;
@@ -587,7 +594,6 @@ function intentarLogin() {
         
         document.querySelectorAll('.t-btn').forEach(btn => btn.style.display = 'none');
         
-        // 🌟 AQUÍ ESTABA EL ERROR: Solo debe existir UNA vez la palabra "let" para esta variable
         let allowedTabs = usuariosData[u].tabs || [];
         
         // 🔒 SEGURO ANTI-BLOQUEO DEL ADMIN: 
@@ -596,27 +602,27 @@ function intentarLogin() {
             if (!allowedTabs.includes("kardex-tab")) allowedTabs.push("kardex-tab"); 
             if (!allowedTabs.includes("audi-tab")) allowedTabs.push("audi-tab"); 
         }
-
+        
         // =================================================================
         // 🛡️ GUARDIÁN DE PERMISOS: INVENTARIO CIEGO Y AUDITORÍAS
         // =================================================================
         setTimeout(() => {
-            // Obtenemos los permisos del usuario (si es Admin, tiene acceso a todo)
-            let misPermisos = datosUsuario.permisos || []; 
+            // ⚠️ CORRECCIÓN: Leemos los permisos correctamente de la base de datos
+            let misPermisos = usuariosData[u].permisos || []; 
             let esAdmin = (u === "Admin");
 
-            // 1. Control del Botón "Hacer Inventario Ciego" (Para Cajeros)
+            // 1. Control del Botón "Hacer Inventario Ciego"
             let btnInvCiego = document.getElementById('btn_hacer_inv_ciego');
             if (btnInvCiego) {
                 btnInvCiego.style.display = (esAdmin || misPermisos.includes('inv_ciego')) ? 'inline-block' : 'none';
             }
 
-            // 2. Control de la Pestaña "Auditorías" (Para el Administrador)
+            // 2. Control de la Pestaña "Auditorías"
             let btnAuditoria = document.getElementById('btn_audi-tab');
             if (btnAuditoria) {
                 btnAuditoria.style.display = (esAdmin || misPermisos.includes('auditoria')) ? 'inline-block' : 'none';
             }
-        }, 300); // Pequeña pausa para asegurar que el diseño HTML ya cargó
+        }, 300);
         
         allowedTabs.forEach(tabId => { 
             let btn = document.getElementById('btn_' + tabId); 
@@ -631,7 +637,7 @@ function intentarLogin() {
     } else { 
         alert("PIN Incorrecto"); 
     }
-    }
+}
 
 window.filtrarUsuariosPorSucursal = function() {
     let selectorSucursal = document.getElementById('login_sucursal');
@@ -5168,191 +5174,382 @@ async function guardarCompraMixtaFinal() {
         isGuardandoCompra = false;
     }
 }
-// ======================================================================
+/// ======================================================================
 // 🕵️ MÓDULO DE INVENTARIO CIEGO (FASE 2: ADMINISTRADOR)
 // ======================================================================
-
 let sesionesPendientesGlobales = [];
-let sesionEnRevisionActiva = null; // Para saber qué conteo estás viendo
-
-// 1. Cargar las sesiones en la columna izquierda
+let sesionEnRevisionActiva = null; 
+let filtroAuditoriaActual = 'faltante'; 
 function cargarBorradoresPendientes() {
-    let contenedor = document.getElementById('lista_sesiones_pendientes');
-    if (!contenedor) return;
+    try {
+        let pendientes = JSON.parse(localStorage.getItem('pos_sesiones_inventario') || "[]");
+        sesionesPendientesGlobales = pendientes; 
 
-    // Leemos de la memoria local (Temporalmente, luego lo atamos a PocketBase si prefieres)
-    sesionesPendientesGlobales = JSON.parse(localStorage.getItem("pos_sesiones_inventario") || "[]");
-    
-    // Filtramos solo las pendientes
-    let pendientes = sesionesPendientesGlobales.filter(s => s.estado === "Pendiente");
+        let tabla = document.getElementById('tablaAuditoriasAdmin'); 
+        if (!tabla) return;
 
-    if (pendientes.length === 0) {
-        contenedor.innerHTML = '<div style="padding:15px; background:#e9ecef; border-radius:6px; text-align:center; color:#6c757d; font-size:14px;">No hay inventarios pendientes de revisión.</div>';
-        document.getElementById('panel_detalle_auditoria').style.display = 'none';
-        return;
+        // Limpiamos la tabla antes de dibujar para evitar duplicados
+        tabla.innerHTML = '';
+
+        let listaCajeros = [];
+        if (typeof usuariosData !== 'undefined' && usuariosData) {
+            for (let nombreUsuario in usuariosData) {
+                let datos = usuariosData[nombreUsuario];
+                if (datos && datos.sucursales_permitidas && datos.sucursales_permitidas.includes(sucursalActual)) {
+                    listaCajeros.push(nombreUsuario);
+                }
+            }
+        }
+        if (listaCajeros.length === 0) listaCajeros.push("Admin");
+
+        // Si realmente no hay nada guardado en la memoria
+        if (pendientes.length === 0) {
+            tabla.innerHTML = '<tr><td colspan="6" style="text-align:center; padding:20px; color:#888;">📋 No hay inventarios pendientes de revisar.</td></tr>';
+            return;
+        }
+
+        pendientes.forEach(b => {
+            if (!b || b.estado === 'Aplicado') return;
+
+            let opcionesCajeros = `<option value="">-- Asignar Revisor --</option>`;
+            listaCajeros.forEach(cajero => {
+                let selected = b.cajeroAsignado === cajero ? 'selected' : '';
+                opcionesCajeros += `<option value="${cajero}" ${selected}>${cajero}</option>`;
+            });
+
+            // 🛡️ ESCUDO DE SEGURIDAD ABSOLUTO: Si el conteo no existe, vale 0 y no tumba el sistema
+            let totalArticulos = (b.conteo && Array.isArray(b.conteo)) ? b.conteo.length : 0;
+
+            let fila = document.createElement('tr');
+            fila.style.borderBottom = '1px solid #f1f3f5';
+            
+            fila.innerHTML = `
+                <td style="cursor:pointer;" onclick="abrirAuditoriaDetalle(${b.id})">${b.fecha || ''} <br> <small>${b.hora || ''}</small></td>
+                <td style="cursor:pointer;" onclick="abrirAuditoriaDetalle(${b.id})"><b>${b.cajeroOrigen || b.cajero || 'Desconocido'}</b></td>
+                <td style="cursor:pointer;" onclick="abrirAuditoriaDetalle(${b.id})">${totalArticulos} Items</td>
+                <td style="cursor:pointer;" onclick="abrirAuditoriaDetalle(${b.id})"><span style="background:#ffc107; color:#856404; padding:3px 8px; border-radius:10px; font-weight:bold; font-size:12px;">${b.estado || 'Pendiente'}</span></td>
+                <td>
+                    <select id="select_cajero_${b.id}" onchange="asignarRevisor(${b.id}, this.value)" style="padding:5px; border-radius:4px; max-width:150px;" ${b.estado === '2da Revisión Lista' ? 'disabled' : ''}>
+                        ${opcionesCajeros}
+                    </select>
+                </td>
+                <td style="text-align:center;">
+                    <button onclick="borrarAuditoriaIndividual(${b.id})" style="background:#dc3545; color:white; border:none; padding:5px 8px; border-radius:4px; cursor:pointer;" title="Eliminar reporte">✖</button>
+                </td>
+            `;
+            tabla.appendChild(fila);
+        });
+    } catch (error) {
+        console.error("Error al renderizar el panel de auditorías:", error);
     }
-
-    contenedor.innerHTML = pendientes.reverse().map(sesion => `
-        <div onclick="abrirAuditoriaDetalle(${sesion.id})" style="background:#f8f9fa; border:1px solid #dee2e6; border-left:4px solid #17a2b8; padding:12px; border-radius:6px; cursor:pointer; transition:0.2s;">
-            <b style="color:#343a40; font-size:14px;">Cajero: ${sesion.cajero}</b><br>
-            <small style="color:#6c757d;">📅 ${sesion.fecha} - ⏰ ${sesion.hora}</small><br>
-            <span style="display:inline-block; margin-top:5px; background:#17a2b8; color:white; font-size:11px; padding:2px 6px; border-radius:10px;">${sesion.conteo.length} items contados</span>
-        </div>
-    `).join('');
 }
 
-// 2. Abrir un borrador y cruzar los datos
+function asignarRevisor(idBorrador, cajeroElegido) {
+    if (!cajeroElegido) return;
+    let pendientes = JSON.parse(localStorage.getItem('pos_sesiones_inventario') || "[]");
+    let index = pendientes.findIndex(b => b.id === idBorrador);
+
+    if (index !== -1) {
+        pendientes[index].cajeroAsignado = cajeroElegido;
+        pendientes[index].estado = 'Asignado'; 
+        localStorage.setItem('pos_sesiones_inventario', JSON.stringify(pendientes));
+        alert(`🎯 Auditoría asignada a ${cajeroElegido}`);
+        cargarBorradoresPendientes();
+    }
+}
+
+function borrarAuditoriaIndividual(idBorrador) {
+    if (!confirm("⚠️ ¿Estás seguro de eliminar este reporte?")) return;
+    let pendientes = JSON.parse(localStorage.getItem('pos_sesiones_inventario') || "[]");
+    pendientes = pendientes.filter(b => b.id !== idBorrador);
+    localStorage.setItem('pos_sesiones_inventario', JSON.stringify(pendientes));
+
+    if (sesionEnRevisionActiva && sesionEnRevisionActiva.id === idBorrador) {
+        document.getElementById('panel_detalle_auditoria').style.display = 'none';
+    }
+    cargarBorradoresPendientes();
+}
+
+function limpiarTodasLasAuditorias() {
+    if (!confirm("🚨 ¿Borrar todos los reportes pendientes?")) return;
+    localStorage.setItem('pos_sesiones_inventario', JSON.stringify([]));
+    document.getElementById('panel_detalle_auditoria').style.display = 'none';
+    cargarBorradoresPendientes();
+}
+
 function abrirAuditoriaDetalle(idSesion) {
     sesionEnRevisionActiva = sesionesPendientesGlobales.find(s => s.id === idSesion);
     if (!sesionEnRevisionActiva) return;
 
-    document.getElementById('titulo_detalle_auditoria').innerText = `Auditoría de: ${sesionEnRevisionActiva.cajero} (${sesionEnRevisionActiva.fecha})`;
+    document.getElementById('titulo_detalle_auditoria').innerText = `Auditoría: ${sesionEnRevisionActiva.cajeroOrigen || 'Cajero'} (${sesionEnRevisionActiva.fecha})`;
+    document.getElementById('badge_auditoria_estado').innerText = sesionEnRevisionActiva.estado;
     document.getElementById('panel_detalle_auditoria').style.display = 'block';
-    
+
+    let chkMaster = document.getElementById('chk_audi_master');
+    if(chkMaster) chkMaster.checked = false;
+
+    inyectarMatrizAuditoria();
+}
+
+function inyectarMatrizAuditoria() {
     let tbody = document.getElementById('tabla_cruce_auditoria');
     let htmlTabla = "";
-    let totalImpacto = 0;
+    let totalImpactoNeto = 0, costoTotalSistema = 0, costoTotalPerdido = 0;
+    let exactos = 0, sobrantes = 0, faltantes = 0;
 
-    // LA MAGIA: Cruzamos lo que contó el cajero vs lo que dice tu sistema
-    sesionEnRevisionActiva.conteo.forEach(itemCajero => {
-        let cod = itemCajero.cod;
-        let prodSistema = inv[cod]; // Buscamos tu producto real
-        
-        let stockSistema = 0;
-        let costoProd = 0;
+    sesionEnRevisionActiva.conteo.forEach((item, index) => {
+        let prodSistema = inv[item.cod];
+        let stockSistema = prodSistema ? ((prodSistema.stock && prodSistema.stock[sucursalActual]) || 0) : 0;
+        let costoProd = prodSistema ? (prodSistema.cos || 0) : 0;
 
-        if (prodSistema) {
-            stockSistema = (prodSistema.stock && prodSistema.stock[sucursalActual]) ? prodSistema.stock[sucursalActual] : 0;
-            costoProd = prodSistema.cos || 0; // Usamos tu costo para ver cuánto dinero pierdes
-        }
-
-        let cantFisica = parseFloat(itemCajero.can_fisica) || 0;
-        let diferencia = cantFisica - stockSistema; // Si es negativo, FALTAN. Si es positivo, SOBRAN.
-        
+        let cantFisica = parseFloat(item.can_fisica) || 0;
+        let diferencia = cantFisica - stockSistema;
         let impactoDinero = diferencia * costoProd;
-        totalImpacto += impactoDinero;
 
-        // Estilos para que resalte si te están robando o si todo está bien
-        let colorDif = diferencia === 0 ? '#28a745' : (diferencia < 0 ? '#dc3545' : '#fd7e14');
-        let textDif = diferencia > 0 ? `+${diferencia}` : diferencia;
-        
-        htmlTabla += `
-            <tr style="border-bottom:1px solid #eee;">
-                <td style="padding:12px;"><b>${itemCajero.nom}</b><br><small style="color:#888;">${cod}</small></td>
-                <td style="padding:12px; text-align:center; background:#f8f9fa;">${stockSistema}</td>
-                <td style="padding:12px; text-align:center; font-weight:bold; color:#17a2b8;">${cantFisica}</td>
-                <td style="padding:12px; text-align:center; font-weight:bold; color:${colorDif};">${textDif}</td>
-                <td style="padding:12px; text-align:right; font-weight:bold; color:${impactoDinero < 0 ? '#dc3545' : '#666'};">$${impactoDinero.toFixed(2)}</td>
-            </tr>
-        `;
+        totalImpactoNeto += impactoDinero;
+        costoTotalSistema += (stockSistema * costoProd);
+
+        let tipo = 'exacto';
+        if (diferencia < 0) { tipo = 'faltante'; faltantes++; costoTotalPerdido += Math.abs(impactoDinero); }
+        else if (diferencia > 0) { tipo = 'sobrante'; sobrantes++; }
+        else { exactos++; }
+
+        item.audi_tipo = tipo;
+
+        if (tipo === filtroAuditoriaActual) {
+            let colorDif = diferencia === 0 ? '#28a745' : (diferencia < 0 ? '#dc3545' : '#fd7e14');
+            let textDif = diferencia > 0 ? `+${diferencia}` : diferencia;
+            htmlTabla += `
+                <tr style="border-bottom:1px solid #eee;">
+                    <td style="padding:12px; text-align:center;"><input type="checkbox" class="chk_item_auditoria" data-index="${index}" ${tipo==='exacto'?'disabled':''}></td>
+                    <td style="padding:12px;"><b>${item.nom || 'Desconocido'}</b><br><small style="color:#888;">${item.cod}</small></td>
+                    <td style="padding:12px; text-align:center; background:#f8f9fa;">${stockSistema}</td>
+                    <td style="padding:12px; text-align:center; font-weight:bold; color:#17a2b8;">${cantFisica}</td>
+                    <td style="padding:12px; text-align:center; font-weight:bold; color:${colorDif};">${textDif}</td>
+                    <td style="padding:12px; text-align:right; font-weight:bold;">$${impactoDinero.toFixed(2)}</td>
+                </tr>`;
+        }
     });
 
-    // Fila de total de dinero perdido/sobrante
-    htmlTabla += `
-        <tr style="background:#f4f6f9;">
-            <td colspan="4" style="padding:15px; text-align:right; font-weight:bold; font-size:16px;">IMPACTO TOTAL EN DINERO:</td>
-            <td style="padding:15px; text-align:right; font-weight:bold; font-size:18px; color:${totalImpacto < 0 ? '#dc3545' : '#28a745'};">$${totalImpacto.toFixed(2)}</td>
-        </tr>
-    `;
+    document.getElementById('count_faltantes').innerText = faltantes;
+    document.getElementById('count_sobrantes').innerText = sobrantes;
+    document.getElementById('count_exactos').innerText = exactos;
 
-    tbody.innerHTML = htmlTabla;
-    document.getElementById('btn_aprobar_auditoria').style.display = 'inline-block';
+    document.getElementById('audi_val_sistema').innerText = `$${costoTotalSistema.toFixed(2)}`;
+    document.getElementById('audi_val_perdida').innerText = `$${costoTotalPerdido.toFixed(2)}`;
+    document.getElementById('audi_porcentaje_perdida').innerText = `${(costoTotalSistema > 0 ? (costoTotalPerdido / costoTotalSistema) * 100 : 0).toFixed(2)}%`;
+    document.getElementById('audi_total_impacto').innerText = `$${totalImpactoNeto.toFixed(2)}`;
+
+    tbody.innerHTML = htmlTabla || `<tr><td colspan="6" style="padding:30px; text-align:center; color:#888;">No hay productos.</td></tr>`;
+
+    // 🔘 ¡EL PARCHE FINALES! Devolvemos la visibilidad inteligente a tus botones de acción
+    let btnRevision = document.getElementById('btn_mandar_revision');
+    let btnAprobar = document.getElementById('btn_aprobar_auditoria');
+    
+    if (btnRevision) {
+        btnRevision.style.display = filtroAuditoriaActual !== 'exacto' && (faltantes > 0 || sobrantes > 0) ? 'inline-block' : 'none';
+    }
+    if (btnAprobar) {
+        btnAprobar.style.display = 'inline-block';
+    }
+}
+function filtrarTablaAuditoria(tipo) {
+    filtroAuditoriaActual = tipo;
+    ['faltante', 'sobrante', 'exacto'].forEach(t => {
+        let btn = document.getElementById(`tab_audi_${t}`);
+        if(btn) {
+            btn.style.background = t === tipo ? (t === 'faltante' ? '#dc3545' : (t === 'sobrante' ? '#fd7e14' : '#28a745')) : '#f1f3f5';
+            btn.style.color = t === tipo ? 'white' : '#495057';
+        }
+    });
+    inyectarMatrizAuditoria();
 }
 
-// 3. Un pequeño truco para cargar la lista en cuanto abras la pestaña
-document.getElementById('btn_audi-tab').addEventListener('click', () => {
-    cargarBorradoresPendientes();
-});
-// ======================================================================
-// 📦 MÓDULO DE INVENTARIO CIEGO (FASE 1: CAJERO)
-// ======================================================================
+function seleccionarTodosAuditoria(value) {
+    document.querySelectorAll('.chk_item_auditoria:not([disabled])').forEach(chk => chk.checked = value);
+}
 
+function mandarARevisionSecundaria() {
+    let checkboxes = document.querySelectorAll('.chk_item_auditoria:checked');
+    if(checkboxes.length === 0) return alert("⚠️ Selecciona artículos para recontar.");
+
+    if(!confirm(`¿Mandar estos ${checkboxes.length} artículos a revisión secundaria?`)) return;
+
+    checkboxes.forEach(chk => {
+        let idx = parseInt(chk.getAttribute('data-index'));
+        sesionEnRevisionActiva.conteo[idx].can_fisica = 0; 
+    });
+
+    sesionEnRevisionActiva.estado = "Asignado"; // Se reactiva para el cajero
+
+    let index = sesionesPendientesGlobales.findIndex(s => s.id === sesionEnRevisionActiva.id);
+    if (index !== -1) sesionesPendientesGlobales[index] = sesionEnRevisionActiva;
+    localStorage.setItem("pos_sesiones_inventario", JSON.stringify(sesionesPendientesGlobales));
+
+    alert("🔍 Borrador devuelto a la sección del cajero.");
+    document.getElementById('panel_detalle_auditoria').style.display = 'none';
+    cargarBorradoresPendientes();
+}
+
+function aprobarYAjustarInventario() {
+    if (!sesionEnRevisionActiva) return;
+    if (!confirm("🚨 Accion Crítica: ¿Sobreescribir el inventario del sistema con este reporte?")) return;
+
+    sesionEnRevisionActiva.conteo.forEach(item => {
+        let prod = inv[item.cod];
+        if (prod) {
+            if (!prod.stock) prod.stock = {};
+            prod.stock[sucursalActual] = parseFloat(item.can_fisica) || 0;
+            if (typeof db !== 'undefined') db.collection("inventario").doc(item.cod).set(prod);
+        }
+    });
+
+    let pendientes = JSON.parse(localStorage.getItem('pos_sesiones_inventario') || "[]");
+    let index = pendientes.findIndex(b => b.id === sesionEnRevisionActiva.id);
+    if (index !== -1) {
+        pendientes[index].estado = 'Aplicado';
+        localStorage.setItem('pos_sesiones_inventario', JSON.stringify(pendientes));
+    }
+
+    alert("✅ Inventario ajustado con éxito.");
+    document.getElementById('panel_detalle_auditoria').style.display = 'none';
+    cargarBorradoresPendientes();
+    if (typeof renderI === 'function') renderI(); 
+}
+
+// ======================================================================
+// 📦 MÓDULO DE INVENTARIO CIEGO (FASE 1: CAJERO UNIFICADO MULTI-ESCANER)
+// ======================================================================
+let idRevisionActivaCajero = null;
 let conteoActualCiego = [];
+let html5QrcodeScannerCiego = null;
+let modoCamaraCiegoActivo = false; // 🧠 Variable memoria: Recuerda si el cajero está usando la cámara
 
 function abrirModalInventarioCiego() {
+    document.getElementById('modalInventarioCiego').style.display = 'flex';
+    
     conteoActualCiego = [];
-    document.getElementById('lista_escaneo_ciego').innerHTML = '';
-    document.getElementById('input_escaneo_ciego').value = '';
+    actualizarTablaCiego();
+    idRevisionActivaCajero = null;
+    modoCamaraCiegoActivo = false; // Inicia apagada por defecto
+
+    // Radar de tareas asignadas por el Admin
+    let pendientes = JSON.parse(localStorage.getItem('pos_sesiones_inventario') || "[]");
+    let cajeroSesionActual = usuarioActual ? usuarioActual.trim() : 'Desconocido'; 
+
+    let revisionPendiente = pendientes.find(b => b.cajeroAsignado === cajeroSesionActual && b.estado === 'Asignado');
+    let tituloModal = document.querySelector('#modalInventarioCiego h2');
+
+    if (revisionPendiente) {
+        idRevisionActivaCajero = revisionPendiente.id;
+        if (tituloModal) tituloModal.innerText = `📋 Segunda Revisión - Control Asignado`;
+        alert("🚨 ¡ATENCIÓN! Tienes una revisión de auditoría asignada por el Administrador.");
+    } else {
+        if (tituloModal) tituloModal.innerText = `📦 Escaneo con Celular / Pistola`;
+    }
     
-    let modal = document.getElementById('modalInventarioCiego');
-    modal.style.display = 'flex';
-    
-    // Enfocamos el escáner automáticamente
-    setTimeout(() => document.getElementById('input_escaneo_ciego').focus(), 100);
+    // Autofoco inmediato al input manual/pistola al abrir
+    setTimeout(() => {
+        let input = document.getElementById('input_escaneo_ciego');
+        if(input) { input.value = ''; input.focus(); }
+    }, 200);
 }
 
-function cerrarModalInventarioCiego() {
-    document.getElementById('modalInventarioCiego').style.display = 'none';
-}
-
-function procesarEscaneoCiego(e) {
-    // Si presiona Enter (como lo hace una pistola de código de barras)
+// 🪄 FUNCIÓN DEL ENTER DE LA CANTIDAD: Decide a dónde regresar el foco según el modo activo
+function regresarAlEscaner(e) {
     if (e.key === 'Enter') {
-        let cod = e.target.value.trim();
-        if (!cod) return;
-
-        let prod = inv[cod]; 
-        if (!prod) {
-            alert("❌ Producto no encontrado en el sistema.");
-            e.target.value = '';
-            return;
+        e.preventDefault();
+        
+        // 1. Siempre limpiamos y enfocamos el input manual/pistola láser por seguridad
+        let inputEscaner = document.getElementById('input_escaneo_ciego');
+        if (inputEscaner) { 
+            inputEscaner.value = ''; 
+            inputEscaner.focus(); 
         }
 
-        // Revisamos si ya lo escaneó antes para solo sumarle 1
-        let existe = conteoActualCiego.find(item => item.cod === cod);
-        if (existe) {
-            existe.can_fisica += 1;
-        } else {
-            conteoActualCiego.push({
-                cod: cod,
-                nom: prod.nom,
-                can_fisica: 1
-            });
+        // 2. ⚡ LA MAGIA: Si el modo cámara estaba activo, la re-encendemos automáticamente para el siguiente artículo
+        if (modoCamaraCiegoActivo) {
+            encenderCamaraCiego();
         }
-
-        actualizarTablaCiego();
-        e.target.value = ''; // Limpiamos para el siguiente escaneo
-        e.target.focus();
     }
 }
 
+// FUNCIÓN UNIFICADA DE BÚSQUEDA: Inserta el producto y brinca el cursor a la cantidad
+function ejecutarEscaneoDirecto(cod) {
+    cod = String(cod).trim();
+    if (!cod) return;
+
+    if (typeof inv === 'undefined' || !inv) {
+        alert("❌ Error: Catálogo de productos no disponible.");
+        return;
+    }
+
+    let producto = inv[cod]; 
+    if (!producto) {
+        alert(`⚠️ El código [${cod}] no existe en tu catálogo.`);
+        let input = document.getElementById('input_escaneo_ciego');
+        if (input) { input.value = ''; input.focus(); }
+        return;
+    }
+
+    // Buscamos si el producto ya estaba en la lista del conteo actual para saber qué celda enfocar
+    let existe = conteoActualCiego.find(item => item.cod === cod);
+    let indexAEditar;
+
+    if (existe) {
+        indexAEditar = conteoActualCiego.indexOf(existe);
+    } else {
+        conteoActualCiego.push({
+            cod: cod,
+            nom: producto.nom || 'Desconocido',
+            can_fisica: 1 // Arranca en 1 por defecto
+        });
+        indexAEditar = conteoActualCiego.length - 1;
+    }
+
+    // Redibujamos la tabla para pintar la nueva fila
+    actualizarTablaCiego();
+
+    // Mandamos el cursor directo a la celda de cantidad y seleccionamos el texto para sobreescribir rápido
+    setTimeout(() => {
+        let inputCantidad = document.getElementById(`cant_ciego_${indexAEditar}`);
+        if (inputCantidad) {
+            inputCantidad.focus();    
+            inputCantidad.select();   
+        }
+    }, 100); 
+}
+
 function actualizarTablaCiego() {
+    let tbody = document.getElementById('lista_escaneo_ciego');
+    if (!tbody) return;
+
     let html = '';
     conteoActualCiego.forEach((item, index) => {
         html += `
             <tr style="border-bottom:1px solid #eee;">
-                <td style="padding:10px;"><b>${item.nom}</b><br><small style="color:#888;">${item.cod}</small></td>
+                <td style="padding:10px; text-align:left;"><b>${item.nom}</b><br><small style="color:#888;">${item.cod}</small></td>
                 <td style="padding:10px; text-align:center;">
                     <input type="number" 
                            id="cant_ciego_${index}" 
                            value="${item.can_fisica}" 
                            onchange="modificarCantCiego(${index}, this.value)" 
-                           onkeypress="regresarAlEscaner(event)"
-                           style="width:70px; text-align:center; padding:8px; font-size:16px; border:1px solid #ccc; border-radius:4px; font-weight:bold;">
+                           onkeydown="regresarAlEscaner(event)"
+                           style="width:70px; text-align:center; padding:5px; font-size:16px; font-weight:bold; color:#0d6efd; border:1px solid #ccc; border-radius:4px;">
                 </td>
                 <td style="padding:10px; text-align:center;">
                     <button onclick="eliminarItemCiego(${index})" style="background:none; border:none; cursor:pointer; color:#dc3545; font-size:16px;">✖</button>
                 </td>
             </tr>`;
     });
-    document.getElementById('lista_escaneo_ciego').innerHTML = html;
+    tbody.innerHTML = html;
 }
 
-// 🪄 Función ayudante: Cuando el usuario escribe la cantidad y presiona Enter, regresa el cursor arriba
-function regresarAlEscaner(e) {
-    if (e.key === 'Enter') {
-        e.preventDefault();
-        
-        let inputEscaner = document.getElementById('input_escaneo_ciego');
-        if (inputEscaner) {
-            inputEscaner.focus();
-            inputEscaner.value = '';
-        }
-
-        // 🎥 ¡MAGIA MÓVIL! Volvemos a encender la cámara automáticamente para el siguiente artículo
-        encenderCamaraCiego();
-    }
+function agregarProductoCiegoManual(codigo) {
+    // Redirige al motor unificado directo
+    ejecutarEscaneoDirecto(codigo);
 }
+
 function modificarCantCiego(index, val) {
     let cant = parseFloat(val);
     if (isNaN(cant) || cant < 0) cant = 0;
@@ -5366,47 +5563,58 @@ function eliminarItemCiego(index) {
 
 function enviarInventarioCiego() {
     if (conteoActualCiego.length === 0) return alert("⚠️ No has escaneado ningún producto.");
-    
-    // Empaquetamos el reporte
-    let cajeroActivo = typeof usuarioActual !== 'undefined' ? usuarioActual : 'Desconocido';
-    let fechaHoy = new Date().toLocaleDateString();
-    let horaHoy = new Date().toLocaleTimeString();
-
-    let nuevoBorrador = {
-        id: Date.now(),
-        cajero: cajeroActivo,
-        fecha: fechaHoy,
-        hora: horaHoy,
-        estado: 'Pendiente',
-        conteo: conteoActualCiego
-    };
-
-    // Guardamos en la memoria
     let pendientes = JSON.parse(localStorage.getItem('pos_sesiones_inventario') || "[]");
-    pendientes.push(nuevoBorrador);
-    localStorage.setItem('pos_sesiones_inventario', JSON.stringify(pendientes));
 
-    alert("✅ ¡Conteo enviado a Auditoría con éxito!");
+    if (idRevisionActivaCajero) {
+        let index = pendientes.findIndex(b => b.id === idRevisionActivaCajero);
+        if (index !== -1) {
+            pendientes[index].estado = '2da Revisión Lista';
+            pendientes[index].conteo = conteoActualCiego;
+            localStorage.setItem('pos_sesiones_inventario', JSON.stringify(pendientes));
+            alert("✅ ¡Segunda revisión enviada con éxito!");
+        }
+    } else {
+        let cajeroActivo = usuarioActual ? usuarioActual.trim() : 'Desconocido';
+        let nuevoBorrador = {
+            id: Date.now(),
+            cajeroOrigen: cajeroActivo,
+            cajeroAsignado: null,
+            fecha: new Date().toLocaleDateString(),
+            hora: new Date().toLocaleTimeString(),
+            estado: 'Pendiente',
+            conteo: conteoActualCiego
+        };
+        pendientes.push(nuevoBorrador);
+        localStorage.setItem('pos_sesiones_inventario', JSON.stringify(pendientes));
+        alert("✅ ¡Conteo enviado a Auditoría con éxito!");
+    }
+
     cerrarModalInventarioCiego();
-    
-    // Si el Admin está conectado, actualizamos su tabla roja
-    if(typeof cargarBorradoresPendientes === 'function') cargarBorradoresPendientes();
 }
-let html5QrcodeScannerCiego = null; // Guardará el motor de la cámara
 
-// 1. Encender la cámara del celular
+function cerrarModalInventarioCiego() {
+    modoCamaraCiegoActiva = false;
+    apagarCamaraCiego();
+    document.getElementById('modalInventarioCiego').style.display = 'none';
+    conteoActualCiego = [];
+    actualizarTablaCiego();
+    idRevisionActivaCajero = null;
+    if (typeof cargarBorradoresPendientes === 'function') cargarBorradoresPendientes();
+}
+
 function encenderCamaraCiego() {
     let contenedorCamara = document.getElementById('lector_camara_ciego');
+    if(!contenedorCamara) return;
     contenedorCamara.style.display = 'block';
 
+    modoCamaraCiegoActivo = true; // 🔥 Encendemos el interruptor de memoria
+
     html5QrcodeScannerCiego = new Html5Qrcode("lector_camara_ciego");
-    
     html5QrcodeScannerCiego.start(
-        { facingMode: "environment" }, // Cámara trasera obligatoria
+        { facingMode: "environment" }, 
         {
-            fps: 20, // Aumentamos los cuadros por segundo para que sea más fluido
-            qrbox: { width: 280, height: 130 }, // Ajustamos el cuadro para que sea alargado como un código de barras
-            // 🎯 LA CLAVE: Le decimos que SOLO lea códigos de barras de productos (EAN_13, EAN_8, CODE_128)
+            fps: 20,
+            qrbox: { width: 280, height: 130 },
             formatsToSupport: [ 
                 Html5QrcodeSupportedFormats.EAN_13, 
                 Html5QrcodeSupportedFormats.EAN_8, 
@@ -5415,94 +5623,57 @@ function encenderCamaraCiego() {
             ]
         },
         (codigoDetectado) => {
-            // Cuando detecte un código...
-            if (navigator.vibrate) navigator.vibrate(80); // Vibra el cel
+            if (navigator.vibrate) navigator.vibrate(80);
             
-            // 🛑 APAGAMOS la cámara un microsegundo para que no se quede leyendo en bucle el mismo producto
-            apagarCamaraCiego(); 
-            
-            // Procesamos el producto y mandamos el cursor a la cantidad
-            ejecutarEscaneoDirecto(codigoDetectado);
+            // Pausamos el lector de video en la pantalla para procesar la celda
+            if (html5QrcodeScannerCiego) {
+                html5QrcodeScannerCiego.stop().then(() => {
+                    document.getElementById('lector_camara_ciego').style.display = 'none';
+                    html5QrcodeScannerCiego = null;
+                    
+                    // Mandamos el código al flujo directo (foco en celda)
+                    ejecutarEscaneoDirecto(codigoDetectado);
+                }).catch(err => console.error(err));
+            }
         },
-        (error) => {
-            // Ignorar errores de escaneo continuo
-        }
-    ).catch(err => {
-        alert("🔒 Error al acceder a la cámara. Asegúrate de dar permisos.");
-        console.error(err);
-    });
+        (error) => { /* Silenciar errores de lectura */ }
+    ).catch(err => console.warn("Camara bloqueada o sin permisos.", err));
 }
 
-// 2. Apagar la cámara para ahorrar batería
 function apagarCamaraCiego() {
+    // Si el usuario da clic al botón rojo "Apagar", cancelamos la memoria de la cámara
+    if (arguments.length === 0 || arguments[0] !== 'automatico') {
+        modoCamaraCiegoActivo = false;
+    }
     if (html5QrcodeScannerCiego) {
         html5QrcodeScannerCiego.stop().then(() => {
-            document.getElementById('lector_camara_ciego').style.display = 'none';
+            let lector = document.getElementById('lector_camara_ciego');
+            if(lector) lector.style.display = 'none';
             html5QrcodeScannerCiego = null;
         }).catch(err => console.error(err));
     }
 }
 
-// 3. Modificamos la función de cierre del modal para apagar la cámara automáticamente si se sale
-function cerrarModalInventarioCiego() {
-    apagarCamaraCiego();
-    document.getElementById('modalInventarioCiego').style.display = 'none';
-}
+// 🎯 CONTROLADOR BLINDADO RAÍZ DE TECLADO PARA EL INPUT PRINCIPAL
+document.addEventListener("DOMContentLoaded", () => { conectarInputCiegoManual(); });
+setTimeout(conectarInputCiegoManual, 1200);
 
-// 4. Función unificada que busca en tu inventario e inserta el producto
-function ejecutarEscaneoDirecto(cod) {
-    cod = String(cod).trim();
-    if (!cod) return;
-
-    let prod = inv[cod]; 
-    if (!prod) {
-        alert(`❌ Código: ${cod}\nNo se encuentra en tu catálogo.`);
-        return;
-    }
-
-    // 1. Buscamos si el producto ya estaba en la lista del conteo actual
-    let existe = conteoActualCiego.find(item => item.cod === cod);
-    let indexAEditar;
-
-    if (existe) {
-        // Si ya existe, lo dejamos igual por ahora para editar su cantidad
-        indexAEditar = conteoActualCiego.indexOf(existe);
-    } else {
-        // Si es nuevo, lo agregamos empezando en 1
-        conteoActualCiego.push({
-            cod: cod,
-            nom: prod.nom,
-            can_fisica: 1
+function conectarInputCiegoManual() {
+    let inputCiego = document.getElementById('input_escaneo_ciego');
+    if (inputCiego) {
+        inputCiego.onkeydown = null; 
+        inputCiego.addEventListener('keydown', function(event) {
+            if (event.key === 'Enter' || event.keyCode === 13) {
+                event.preventDefault(); 
+                let codigoEscaneado = this.value.trim();
+                if (codigoEscaneado) {
+                    ejecutarEscaneoDirecto(codigoEscaneado);
+                }
+            }
         });
-        indexAEditar = conteoActualCiego.length - 1;
-    }
-
-    // 2. Redibujamos la tabla para que aparezca el nuevo producto en pantalla
-    actualizarTablaCiego();
-
-    // 3. LA MAGIA: Buscamos el cuadro de texto (input) de la cantidad de ese producto específico
-    setTimeout(() => {
-        let inputCantidad = document.getElementById(`cant_ciego_${indexAEditar}`);
-        if (inputCantidad) {
-            inputCantidad.focus();    // Mandamos el cursor ahí directamente
-            inputCantidad.select();   // Seleccionamos el número "1" para que al escribir se borre solo
-        }
-    }, 80); // Un microsegundo de pausa para que el HTML alcance a pintarse
-}
-
-// 5. Ajustamos tu función original de teclado para que use el motor unificado
-function procesarEscaneoCiego(e) {
-    if (e.key === 'Enter') {
-        ejecutarEscaneoDirecto(e.target.value);
-        e.target.value = '';
-        e.target.focus();
     }
 }
 
-
-
-
-
-
-
-
+// Aseguramos la recarga del trigger de pestañas de Admin
+let btnAudiTab = document.getElementById('btn_audi-tab');
+if(btnAudiTab) { btnAudiTab.addEventListener('click', () => { cargarBorradoresPendientes(); }); }
