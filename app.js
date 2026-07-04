@@ -70,30 +70,41 @@ const db = {
                             }
 
                             // 🛡️ ESCUDO ANTI-PRECIOS FANTASMA (Solo para el inventario)
-                            if (colName === "inventario" && record && record.data) {
-                                let nube = record.data;
+                            if (colName === "inventario") {
                                 let tiempoLocal = dataObj.updatedAt || 0;
-                                let tiempoNube = nube.updatedAt || 0;
 
-                                // Si la Nube tiene una edición de precio/datos más reciente que la tuya...
-                                if (tiempoNube > tiempoLocal) {
-                                    // Rescatamos los datos reales de la Nube para que tu venta no los aplaste
-                                    dataObj.nom = nube.nom;
-                                    dataObj.cos = nube.cos;
-                                    dataObj.iva = nube.iva;
-                                    dataObj.pv = nube.pv;
-                                    dataObj.pm = nube.pm;
-                                    dataObj.gan = nube.gan;
-                                    dataObj.dep = nube.dep;
-                                    dataObj.updatedAt = nube.updatedAt; // Heredamos su marca de tiempo
+                                if (record && record.data) {
+                                    let nube = record.data;
+                                    let tiempoNube = nube.updatedAt || 0;
 
-                                    // Curamos la memoria de esta computadora al instante
-                                    if(typeof inv !== 'undefined') {
-                                        inv[docId] = dataObj;
-                                        localStorage.setItem("pos_precision_v6", JSON.stringify(inv));
+                                    // Si la Nube tiene una edición de precio/datos más reciente que la tuya...
+                                    if (tiempoNube > tiempoLocal) {
+                                        // Rescatamos los datos reales de la Nube para que tu venta no los aplaste
+                                        dataObj.nom = nube.nom;
+                                        dataObj.cos = nube.cos;
+                                        dataObj.iva = nube.iva;
+                                        dataObj.pv = nube.pv;
+                                        dataObj.pm = nube.pm;
+                                        dataObj.gan = nube.gan;
+                                        dataObj.dep = nube.dep;
+                                        dataObj.updatedAt = nube.updatedAt; // Heredamos su marca de tiempo
+
+                                        // Curamos la memoria de esta computadora al instante
+                                        if(typeof inv !== 'undefined') {
+                                            inv[docId] = dataObj;
+                                            localStorage.setItem("pos_precision_v6", JSON.stringify(inv));
+                                        }
+                                    } else {
+                                        // 🚀 ESTO FALTABA: Si tu cambio es legítimo, le clavamos la hora EXACTA de ahorita
+                                        dataObj.updatedAt = Date.now();
                                     }
+                                } else {
+                                    // 🚀 ESTO TAMBIÉN FALTABA: Si es un producto totalmente nuevo
+                                    dataObj.updatedAt = Date.now();
                                 }
                             }
+                                
+                            
 
                             // Subimos el paquete (ahora sí, combinado y seguro)
                             if (record) {
@@ -233,6 +244,7 @@ let searchResultsList = [];
 let focusSearchIndex = 0;
 var listaSucursales = ["Matriz", "Sucursal 1", "Sucursal 2"]; 
 
+
 // ====================================================================
 // === RECUPERACIÓN DE DATOS LOCALES (Fallback) ===
 // ====================================================================
@@ -312,9 +324,12 @@ db.collection("config").doc("sucursales").onSnapshot((doc) => {
 db.collection("clientes").onSnapshot((querySnapshot) => {
     clientes = {};
     querySnapshot.forEach((doc) => { clientes[doc.id] = doc.data(); });
+    
+    // 🎯 CORRECCIÓN: Mantener el menú de fiados actualizado siempre en segundo plano
+    actualizarSelectClientesCobro();
+    
     if (tabActual === 'cli-tab') renderClientes();
 });
-
 // Proveedores
 db.collection("proveedores").onSnapshot((querySnapshot) => {
     proveedores = {};
@@ -331,11 +346,56 @@ db.collection("movimientos").onSnapshot((querySnapshot) => {
     if (tabActual === 'r-tab') renderCorte();
 });
 
-// Ventas (¡CORREGIDO EL ERROR DE SINTAXIS!)
-db.collection("ventas").onSnapshot((querySnapshot) => {
-    ventas = [];
-    querySnapshot.forEach((doc) => { ventas.push(doc.data()); });
-});
+// 🚀 RADAR ULTRARRÁPIDO DE VENTAS (Cero demoras al abrir)
+// 🚀 RADAR ULTRARRÁPIDO DE VENTAS CORREGIDO (Filtro por JSON integrado)
+async function iniciarRadarVentasVeloz() {
+    let mapa = {};
+    
+    // 🛡️ 1. Primero cargamos lo local de inmediato para tener datos en pantalla y que no se quede en cero
+    let ventasLocales = JSON.parse(localStorage.getItem("pos_ventas_v6") || "[]");
+    ventasLocales.forEach(v => { if(v && v.id) mapa[v.id] = v; });
+    ventas = Object.values(mapa).sort((a,b) => a.id - b.id);
+    if (typeof renderCorte === 'function') renderCorte();
+
+    try {
+        let hoy = typeof getFechaLocal === 'function' ? getFechaLocal() : new Date().toLocaleString("sv-SE", { timeZone: "America/Mexico_City" }).substring(0, 10);
+        
+        // 🎯 CORRECCIÓN CRÍTICA: Filtramos por 'data.fecha' porque la fecha vive adentro del objeto JSON
+        let records = await pb.collection('ventas').getList(1, 500, {
+            filter: `data.fecha >= "${hoy}"`,
+            requestKey: null
+        });
+        
+        // 2. Mezclamos los datos frescos de la nube con los locales
+        records.items.forEach(r => {
+            if(r && r.data) mapa[r.data.id] = r.data;
+        });
+        
+        ventas = Object.values(mapa).sort((a,b) => a.id - b.id);
+        if (typeof renderCorte === 'function') renderCorte();
+        console.log("☁️ Sincronización rápida completada exitosamente.");
+    } catch(e) {
+        console.warn("Error al conectar con la nube, operando con datos locales:", e);
+    }
+
+    // 📡 Mantenemos la oreja parada para ventas nuevas en vivo
+    pb.collection("ventas").subscribe('*', function(e) {
+        if (e.action === 'create' || e.action === 'update') {
+            if (e.record && e.record.data) {
+                let idx = ventas.findIndex(x => String(x.id) === String(e.record.data.id));
+                if (idx > -1) ventas[idx] = e.record.data;
+                else ventas.push(e.record.data);
+            }
+        } else if (e.action === 'delete') {
+            if (e.record && e.record.data) {
+                ventas = ventas.filter(x => String(x.id) !== String(e.record.data.id));
+            }
+        }
+        localStorage.setItem("pos_ventas_v6", JSON.stringify(ventas.slice(-300))); // RAM ligera
+        if (tabActual === 'r-tab' && typeof renderCorte === 'function') renderCorte();
+    });
+}
+iniciarRadarVentasVeloz();
 
 // Compras
 db.collection("compras").onSnapshot((querySnapshot) => {
@@ -1576,6 +1636,11 @@ function quitarPagoVenta(index) {
 
 function abrirCobro() { 
     if(carV.length === 0) return; 
+    // 🎯 DOBLE SEGURO: Forzamos la carga de clientes al centavo justo antes de abrir la ventana
+    if (typeof actualizarSelectClientesCobro === 'function') {
+        actualizarSelectClientesCobro();
+    }
+
     let total = parseFloat(document.getElementById('v_total').innerText);
     pagosCobro = []; restanteCobro = total;
     document.getElementById('m_total').innerText = "$" + total.toFixed(2); 
@@ -1588,153 +1653,138 @@ function abrirCobro() {
     setTimeout(() => document.getElementById('m_recibido').select(), 100); 
 }
 
+// ====================================================================
+// 📊 MOTOR ANALÍTICO: ACUMULADOR DIARIO EN TIEMPO REAL
+// ====================================================================
+async function actualizarAcumuladorDiario(venta, esAnulacion = false) {
+    let docId = venta.fecha + "_" + (venta.sucursal || "Matriz");
+    let factor = esAnulacion ? -1 : 1; // Si es anulación, el factor resta en lugar de sumar
+
+    let tot = parseFloat(venta.total) || 0;
+    let esAbono = (venta.metodo || '').toLowerCase().includes('abono');
+    
+    // Los abonos no suman como "venta nueva" ni generan ganancia
+    let numV = (esAnulacion || esAbono) ? 0 : 1; 
+    if (!esAnulacion && !esAbono) numV = 1;
+    if (esAnulacion && !esAbono) numV = -1;
+
+    let ganancia = 0;
+    if(venta.detalles && !esAbono) {
+        venta.detalles.forEach(d => {
+            let costo = parseFloat(d.costo) || 0;
+            ganancia += (parseFloat(d.subtotal) || 0) - (costo * parseFloat(d.can || 1));
+        });
+    }
+
+    let ef = 0, ta = 0, tr = 0, cr = 0;
+    if (venta.pagos && Array.isArray(venta.pagos) && venta.pagos.length > 0) {
+        venta.pagos.forEach(p => {
+            let m = parseFloat(p.montoAplicado) || 0;
+            if(p.metodo === 'Efectivo') ef += m;
+            else if(p.metodo === 'Tarjeta') ta += m;
+            else if(p.metodo === 'Transferencia') tr += m;
+            else if(p.metodo === 'Crédito') cr += m;
+        });
+    } else {
+        let mStr = venta.metodo || '';
+        if(mStr.includes('Efectivo')) ef += tot;
+        else if(mStr.includes('Tarjeta')) ta += tot;
+        else if(mStr.includes('Transferencia')) tr += tot;
+        else if(mStr.includes('Crédito')) cr += tot;
+    }
+
+    // 1. Cargamos de la memoria local para no depender del internet y evitar sobrescrituras
+    let memoriaAcumuladores = JSON.parse(localStorage.getItem('pos_resumenes_diarios') || "{}");
+    let acumulador = memoriaAcumuladores[docId] || {
+        fecha: venta.fecha, sucursal: venta.sucursal || "Matriz",
+        ventas_totales: 0, ganancia_neta: 0, num_ventas: 0,
+        efectivo: 0, tarjeta: 0, transferencia: 0, credito: 0
+    };
+
+    // 2. Ejecutamos la suma (o resta) matemática
+    if(!esAbono) acumulador.ventas_totales = (parseFloat(acumulador.ventas_totales) || 0) + (tot * factor);
+    acumulador.ganancia_neta = (parseFloat(acumulador.ganancia_neta) || 0) + (ganancia * factor);
+    acumulador.num_ventas = (parseInt(acumulador.num_ventas) || 0) + numV;
+
+    acumulador.efectivo = (parseFloat(acumulador.efectivo) || 0) + (ef * factor);
+    acumulador.tarjeta = (parseFloat(acumulador.tarjeta) || 0) + (ta * factor);
+    acumulador.transferencia = (parseFloat(acumulador.transferencia) || 0) + (tr * factor);
+    acumulador.credito = (parseFloat(acumulador.credito) || 0) + (cr * factor);
+
+    // 3. Guardamos los nuevos totales en el disco duro (por seguridad)
+    memoriaAcumuladores[docId] = acumulador;
+    localStorage.setItem('pos_resumenes_diarios', JSON.stringify(memoriaAcumuladores));
+
+    // 4. Disparamos la actualización a PocketBase de forma silenciosa e instantánea
+    db.collection("resumenes_diarios").doc(docId).set(acumulador);
+    console.log(`📊 Acumulador Analítico [${docId}] actualizado en tiempo real.`);
+}
+
+
+// ====================================================================
+// 🛒 CONFIRMAR VENTA (CONECTADA AL ACUMULADOR)
+// ====================================================================
 window.confirmarVenta = function(cambioFinal = 0) {
     try {
-        let tot = parseFloat(document.getElementById('v_total').innerText); 
-        if(tot <= 0 || isNaN(tot)) return;
-
-        let nombresClientes = [];
-        if (typeof pagosCobro !== 'undefined' && Array.isArray(pagosCobro)) {
-            for (let p of pagosCobro) {
-                if(p.metodo === 'Crédito') {
-                    let c = clientes[p.cliente_tel];
-                    if(!c) return alert("Error: Cliente no encontrado.");
-                    if((c.saldo + p.montoAplicado) > (c.limite || 0)) { 
-                        if(!confirm(`⚠️ El cliente ${c.nom} superará su límite de crédito. ¿Autorizar?`)) return; 
-                    }
-                    c.saldo += p.montoAplicado;
-                    if (typeof db !== 'undefined') db.collection("clientes").doc(p.cliente_tel).set(c).catch(e => console.warn("Cliente a mochila."));
-                    nombresClientes.push(c.nom);
-                }
+        let tot = parseFloat(document.getElementById('v_total').innerText); if(tot <= 0 || isNaN(tot)) return;
+        let nombresCli = [];
+        
+        pagosCobro.forEach(p => {
+            if(p.metodo === 'Crédito') {
+                let c = clientes[p.cliente_tel]; if(!c) return alert("Cliente no encontrado");
+                if(c.saldo + p.montoAplicado > (c.limite||0)) { if(!confirm(`¿Autorizar sobregiro para ${c.nom}?`)) return; }
+                c.saldo += p.montoAplicado; db.collection("clientes").doc(p.cliente_tel).set(c); nombresCli.push(c.nom);
             }
-        }
-        
-        let nomClienteTicket = nombresClientes.length > 0 ? nombresClientes.join(', ') : "Público General";
-        let metodosStr = (typeof pagosCobro !== 'undefined' && pagosCobro.length > 0) ? pagosCobro.map(p => p.metodo).join(' + ') : 'Efectivo';
-        let hoy = getFechaLocal(); let itemsTicketHtml = ''; let detallesParaGuardar = [];
-        
-        for (let x of carV) { 
-            let pO = inv[x.cod] || {}; 
-            
-            // 1. Descontamos el stock físico
-            if(pO.tipo === 'kit') { if(pO.comp) pO.comp.forEach(c => descontarStock(c.cod, (c.can || 1) * (x.can || 1))); } 
-            else { descontarStock(x.cod, x.can || 1); }
-            
-            // 2. Precios base
-            let minM = pO.md || 10; 
-            let precioVentaReal = pO.pv || 0;
-            if (pO.pre_sucursales && pO.pre_sucursales[sucursalActual] !== undefined) precioVentaReal = pO.pre_sucursales[sucursalActual];
-            let p = (typeof forceWholesale !== 'undefined' && forceWholesale && (x.can||1) >= minM) ? (pO.pm || precioVentaReal) : precioVentaReal; 
-            
-            let sub = (x.can||1) * p; 
+        });
 
-            // 🔥 3. LÓGICA DE PROMOCIONES INCORPORADA Y CONTEO 🔥
-            let promoActiva = null;
-            if(Array.isArray(promociones)) {
-                promoActiva = promociones.find(pr => pr && pr.cod === x.cod && (!pr.sucursal || pr.sucursal === 'Todas' || pr.sucursal === sucursalActual) && pr.fecha_ini <= hoy && (!pr.fecha_fin || pr.fecha_fin >= hoy) && (pr.limite === 0 || (pr.usadas||0) < pr.limite));
+        let labelCliente = nombresCli.length > 0 ? nombresCli.join(', ') : "Público General";
+        let metodosStr = pagosCobro.map(p => p.metodo).join(' + ') || 'Efectivo';
+        let hoy = getFechaLocal(); let itemsHtml = ''; let detalles = [];
+
+        carV.forEach(x => {
+            let pO = inv[x.cod] || {};
+            if(pO.tipo === 'kit') { if(pO.comp) pO.comp.forEach(c => descontarStock(c.cod, c.can * x.can)); }
+            else descontarStock(x.cod, x.can);
+
+            if(x.promo_ref) {
+                x.promo_ref.usadas = (x.promo_ref.usadas||0) + x.usos_promo;
+                db.collection("promociones").doc(String(x.promo_ref.id)).set(x.promo_ref);
             }
 
-            if (promoActiva && x.esGranelMontoExacto === undefined && x.precioManual === undefined) {
-                let subtotalPromo = sub;
-                let usosAAgregar = 0;
-                
-                if (promoActiva.tipo === 'desc') {
-                    let cantA = x.can||1; 
-                    if((promoActiva.limite||0) > 0) { 
-                        let disp = promoActiva.limite - (promoActiva.usadas||0); 
-                        if(cantA > disp) cantA = disp; 
-                    } 
-                    subtotalPromo = (cantA * (precioVentaReal * (1 - (promoActiva.desc||0)/100))) + (((x.can||1) - cantA) * precioVentaReal); 
-                    usosAAgregar = cantA; // Suma 1 uso por cada pieza vendida con descuento
-                } else if (promoActiva.tipo === 'nxm') {
-                    let nVal = promoActiva.n || 1; 
-                    let grupos = Math.floor((x.can||1) / nVal); 
-                    let sueltos = (x.can||1) % nVal; 
-                    if((promoActiva.limite||0) > 0) { 
-                        let disp = promoActiva.limite - (promoActiva.usadas||0); 
-                        if(grupos > disp) { sueltos += (grupos - disp) * nVal; grupos = disp; } 
-                    } 
-                    subtotalPromo = (grupos * (promoActiva.m||0) * precioVentaReal) + (sueltos * precioVentaReal); 
-                    usosAAgregar = grupos; // Suma 1 uso por cada "Grupo" de promoción aplicado
-                }
+            let cReal = (pO.cos_promedio !== undefined ? parseFloat(pO.cos_promedio) : parseFloat(pO.cos || 0)) * (1 + (parseFloat(pO.iva)||0)/100);
+            
+            // 🛡️ ESCUDO ANTI-CRASH: Forzamos a que siempre lea un número válido para el ticket
+            let subtotalSeguro = parseFloat(x.final_subtotal) || parseFloat(x.subtotal) || 0;
+            
+            registrarEnKardex(x.cod, x.nom, "VENTA", -x.can, subtotalSeguro / (parseFloat(x.can)||1), pO.cos||0);
 
-                if (subtotalPromo < sub) { 
-                    sub = subtotalPromo; 
-                    // 📈 SUMAMOS EL CONTADOR A LA BASE DE DATOS
-                    promoActiva.usadas = (promoActiva.usadas || 0) + usosAAgregar;
-                    if (typeof db !== 'undefined') db.collection("promociones").doc(String(promoActiva.id)).set(promoActiva);
-                }
-            }
+            // Ahora usamos subtotalSeguro, que jamás estará vacío
+            itemsHtml += `<tr><td>${x.can}</td><td>${(x.nom||'').substring(0,15)}</td><td style="text-align:right">$${subtotalSeguro.toFixed(2)}</td></tr>`;
+            detalles.push({ cod: x.cod, nom: x.nom, can: x.can, subtotal: subtotalSeguro, costo: cReal, dep: pO.dep||"General" });
+        });
 
-            // Si se editó el precio manualmente, sobreescribe la promo
-            if (x.precioManual !== undefined) sub = (x.can||1) * x.precioManual;
-            if (x.esGranelMontoExacto !== undefined) sub = parseFloat(x.esGranelMontoExacto);
-
-            // 4. Congelamos el Costo Promedio en el ticket
-            let costoAUsar = pO.cos_promedio !== undefined ? parseFloat(pO.cos_promedio) : parseFloat(pO.cos);
-            let costoCongelado = (costoAUsar || 0) * (1 + (parseFloat(pO.iva) || 0)/100);
-            
-            registrarEnKardex(x.cod, x.nom, "VENTA", -(x.can || 1), (sub / (x.can || 1)), pO.cos || 0);
-            
-            let printName = (x.nom || 'Producto').substring(0,15); 
-            itemsTicketHtml += `<tr><td>${x.can||1}</td><td>${printName}</td><td style="text-align:right">$${sub.toFixed(2)}</td></tr>`;
-            
-            detallesParaGuardar.push({ cod: x.cod, nom: x.nom || 'Producto', can: x.can || 1, subtotal: sub, costo: costoCongelado, dep: pO.dep || "General" });
-            
-            if (typeof db !== 'undefined' && x.cod) {
-                db.collection("inventario").doc(x.cod).set(inv[x.cod] || {nom: x.nom}).catch(e => console.warn("Inventario a mochila."));
-            }
-        }
-        
-        document.getElementById('ticket_fecha').innerText = new Date().toLocaleString() + " - " + sucursalActual + "\nCliente: " + nomClienteTicket;
-        document.getElementById('ticket_items').innerHTML = itemsTicketHtml; 
-        document.getElementById('ticket_total').innerText = tot.toFixed(2); 
-        document.getElementById('ticket_metodo').innerText = metodosStr; 
-        
-        let celdaCambio = document.getElementById('ticket_cambio');
-        if (celdaCambio) {
-            let filaCambio = celdaCambio.closest('tr');
-            if (filaCambio && !document.getElementById('fila_ticket_pagado')) {
-                let trPagado = document.createElement('tr');
-                trPagado.id = 'fila_ticket_pagado';
-                trPagado.innerHTML = `<th style="text-align:left;">Pagó con:</th><td style="text-align:right;">$<span id="ticket_pagado">0.00</span></td>`;
-                filaCambio.parentNode.insertBefore(trPagado, filaCambio);
-            }
-        }
-        
-        let totalPagado = (typeof pagosCobro !== 'undefined' && pagosCobro.length > 0) ? pagosCobro.reduce((sum, p) => sum + parseFloat(p.montoEntregado || 0), 0) : (tot + parseFloat(cambioFinal || 0));
-        let spanPagado = document.getElementById('ticket_pagado');
-        if (spanPagado) spanPagado.innerText = totalPagado.toFixed(2);
-        
-        document.getElementById('ticket_cambio').innerText = parseFloat(cambioFinal).toFixed(2); 
+        document.getElementById('ticket_fecha').innerText = new Date().toLocaleString() + " - " + sucursalActual + "\nCliente: " + labelCliente;
+        document.getElementById('ticket_items').innerHTML = itemsHtml;
+        document.getElementById('ticket_total').innerText = tot.toFixed(2);
+        document.getElementById('ticket_metodo').innerText = metodosStr;
+        // Otro escudo por si el cambio viene vacío
+        document.getElementById('ticket_cambio').innerText = (parseFloat(cambioFinal) || 0).toFixed(2);
         document.getElementById('ticket_cajero').innerText = usuarioActual;
-        
-        let idVentaNueva = Date.now() + Math.floor(Math.random()*1000);
-        let nuevaVenta = { 
-            id: idVentaNueva, fecha: hoy, hora: new Date().toLocaleTimeString(), 
-            cajero: usuarioActual, sucursal: sucursalActual, total: tot, 
-            pagoCon: Number(totalPagado.toFixed(2)), cambio: Number(parseFloat(cambioFinal).toFixed(2)),
-            metodo: metodosStr, pagos: pagosCobro, 
-            items: carV.map(x=>x.nom||'').join(','), detalles: detallesParaGuardar, anulada: false 
-        };
 
-        if (typeof ventas === 'undefined') window.ventas = [];
-        ventas.push(nuevaVenta);
-        try { localStorage.setItem("pos_ventas_v6", JSON.stringify(ventas.slice(-200))); } catch(e) { localStorage.setItem("pos_ventas_v6", JSON.stringify(ventas.slice(-50))); }
+        let idV = Date.now() + Math.floor(Math.random()*1000);
+        let nuevaV = { id: idV, fecha: hoy, hora: new Date().toLocaleTimeString(), cajero: usuarioActual, sucursal: sucursalActual, total: tot, metodo: metodosStr, pagos: pagosCobro, items: carV.map(x=>x.nom).join(','), detalles, anulada: false };
+        ventas.push(nuevaV); localStorage.setItem("pos_ventas_v6", JSON.stringify(ventas.slice(-200)));
+        db.collection("ventas").doc(String(idV)).set(nuevaV);
 
-        if (typeof db !== 'undefined') db.collection("ventas").doc(String(idVentaNueva)).set(nuevaVenta).catch(e => console.warn("Venta a mochila."));
-        
-        carV = []; nombreVentaActual = ""; forceWholesale = false; 
-        
-        let badgeMayoreo = document.getElementById('v_mayoreo_status');
-        if(badgeMayoreo) { badgeMayoreo.innerText = "MAYOREO: DESACTIVADO"; badgeMayoreo.style.background = "#444"; badgeMayoreo.style.color = "#bbb"; }
+        // 🎯 AQUI OCURRE LA MAGIA: Le avisamos al Acumulador que se hizo una venta para que sume
+        if (typeof actualizarAcumuladorDiario === 'function') {
+            actualizarAcumuladorDiario(nuevaV, false);
+        }
 
-        window.renderV();
-        document.getElementById('modalCobro').style.display = 'none'; 
-        document.getElementById('modalTicket').style.display = 'block'; 
-        setTimeout(() => { let btnCerrar = document.getElementById('btnCerrarTicket'); if(btnCerrar) btnCerrar.focus(); }, 100);
-        
-    } catch(err) { alert("⚠️ Error al procesar la venta: " + err.message); }
+        carV = []; nombreVentaActual = ""; forceWholesale = false; renderV();
+        document.getElementById('modalCobro').style.display = 'none';
+        document.getElementById('modalTicket').style.display = 'block';
+    } catch(err) { console.error("Error al cobrar:", err); }
 };
 
 // Granel
@@ -1875,6 +1925,63 @@ function actualizarCalculosCompra() {
     calcVentaDesdeGanancia();
 }
 
+// ==========================================
+// 🪄 MOTOR AUTOMÁTICO DE COMBOS (KITS)
+// ==========================================
+function autoArmarCombos() {
+    // 1. Buscamos todos los combos/kits que tienes guardados en tu inventario
+    let todosLosKits = Object.values(inv).filter(p => p.tipo === 'kit' && p.comp && p.comp.length > 0);
+
+    todosLosKits.forEach(kit => {
+        let cantidadDeCombosAFormar = Infinity;
+
+        // 2. Revisamos si el cliente trae todos los artículos sueltos necesarios
+        kit.comp.forEach(c => {
+            let articuloEnCarrito = carV.find(x => x.cod === c.cod);
+            if (articuloEnCarrito) {
+                // Vemos para cuántos combos nos alcanza con este producto
+                let alcances = Math.floor(articuloEnCarrito.can / c.can);
+                if (alcances < cantidadDeCombosAFormar) cantidadDeCombosAFormar = alcances;
+            } else {
+                cantidadDeCombosAFormar = 0; // Falta este producto, abortamos el combo
+            }
+        });
+
+        // 3. ¡Bingo! El cliente tiene todo lo necesario para armar el combo
+        if (cantidadDeCombosAFormar > 0 && cantidadDeCombosAFormar !== Infinity) {
+            
+            // A. Descontamos los artículos individuales (para no cobrarlos doble)
+            kit.comp.forEach(c => {
+                let articuloEnCarrito = carV.find(x => x.cod === c.cod);
+                articuloEnCarrito.can -= (c.can * cantidadDeCombosAFormar);
+                articuloEnCarrito.subtotal = articuloEnCarrito.can * parseFloat(articuloEnCarrito.pre);
+                articuloEnCarrito.final_subtotal = articuloEnCarrito.subtotal;
+            });
+
+            // B. Borramos de la pantalla los artículos que quedaron en cero
+            carV = carV.filter(x => x.can > 0);
+
+            // C. Insertamos el Combo estrella con su precio rebajado
+            let comboExistente = carV.find(x => x.cod === kit.cod);
+            let precioCombo = parseFloat(kit.pre) || 0; // Aquí toma el precio del Kit
+
+            if (comboExistente) {
+                comboExistente.can += cantidadDeCombosAFormar;
+                comboExistente.subtotal = comboExistente.can * precioCombo;
+                comboExistente.final_subtotal = comboExistente.subtotal;
+            } else {
+                carV.push({
+                    cod: kit.cod,
+                    nom: "✨ " + kit.nom,
+                    can: cantidadDeCombosAFormar,
+                    pre: precioCombo,
+                    subtotal: precioCombo * cantidadDeCombosAFormar,
+                    final_subtotal: precioCombo * cantidadDeCombosAFormar
+                });
+            }
+        }
+    });
+}
 function calcVentaDesdeGanancia() {
     let costoReal = parseFloat(document.getElementById('c_real').value) || 0; let porcentajeGanancia = parseFloat(document.getElementById('c_gan').value) || 0;
     let precioVenta = costoReal * (1 + (porcentajeGanancia / 100));
@@ -2688,7 +2795,7 @@ function renderClientes() {
         }
     }); 
     if(document.getElementById('cli_lista')) document.getElementById('cli_lista').innerHTML = count > 0 ? html : `<tr><td colspan="5" style="text-align:center;">Vacio</td></tr>`; 
-    let selectAbono = document.getElementById('m_cliente_select'); if(selectAbono) selectAbono.innerHTML = selectHtml; 
+    actualizarSelectClientesCobro();
 }
 function filtrarClientes() { let txt = document.getElementById('buscar_cli').value.toLowerCase(); let trs = document.getElementById('cli_lista').getElementsByTagName('tr'); for(let tr of trs) { if(tr.cells.length > 1) { tr.style.display = (tr.cells[0].innerText.toLowerCase().includes(txt) || tr.cells[1].innerText.toLowerCase().includes(txt)) ? '' : 'none'; } } }
 function abrirModalCliente() { document.getElementById('cli_tel').value = ''; document.getElementById('cli_tel').readOnly = false; document.getElementById('cli_nom').value = ''; document.getElementById('cli_limite').value = '1000'; document.getElementById('modalCliente').style.display = 'block'; setTimeout(()=>document.getElementById('cli_tel').focus(), 100); }
@@ -2893,67 +3000,106 @@ window.verificarPinYCancelar = function() {
 };
 
 
+// ====================================================================
+// 📊 MOTOR DEL DASHBOARD: DETALLE TOTAL CON GRÁFICAS Y CAJEROS
+// ====================================================================
 function renderCorte() { 
     try {
-        let fInicio = document.getElementById('corte_fecha_inicio').value; let fFin = document.getElementById('corte_fecha_fin').value; 
-        let fCajero = document.getElementById('corte_cajero').value; let fSuc = document.getElementById('corte_sucursal').value; 
+        let fInicio = document.getElementById('corte_fecha_inicio').value; 
+        let fFin = document.getElementById('corte_fecha_fin').value; 
+        let fCajero = document.getElementById('corte_cajero').value; 
+        let fSuc = document.getElementById('corte_sucursal').value; 
         let hoy = getFechaLocal();
-        // 🌟 MINI SCRIPT PARA LLENAR LA LISTA DE CAJEROS AUTOMÁTICAMENTE 🌟
+
+      
+
+        // 🎯 FUSIÓN INTELIGENTE: Unimos ventas vivas con las descargadas sin duplicar
+        let mapaVentas = {};
+        (window.ventas || []).forEach(v => { if(v && v.id) mapaVentas[v.id] = v; });
+        (window.ventasHistoricasTemporales || []).forEach(v => { if(v && v.id) mapaVentas[v.id] = v; });
+        let todasLasVentas = Object.values(mapaVentas).sort((a,b) => a.id - b.id);
+
+        let mapaMovs = {};
+        (window.movimientos || []).forEach(m => { if(m && m.id) mapaMovs[m.id] = m; });
+        (window.movsHistoricosTemporales || []).forEach(m => { if(m && m.id) mapaMovs[m.id] = m; });
+        let todosLosMovs = Object.values(mapaMovs).sort((a,b) => a.id - b.id);
+
         let selectCajero = document.getElementById('corte_cajero');
-        if(selectCajero && selectCajero.options.length <= 1 && ventas && ventas.length > 0) {
-            // Saca los nombres de las ventas, quita los vacíos y borra los duplicados
-            let cajerosUnicos = [...new Set(ventas.map(v => v.cajero).filter(Boolean))];
-            // Agrega cada cajero al menú desplegable
+        if(selectCajero && selectCajero.options.length <= 1 && todasLasVentas.length > 0) {
+            let cajerosUnicos = [...new Set(todasLasVentas.map(v => v.cajero).filter(Boolean))];
             cajerosUnicos.forEach(c => selectCajero.innerHTML += `<option value="${c}">${c}</option>`);
         }
-        // ------------------------------------------------------------------
+        
         let ef=0, ta=0, trans=0, cr=0; let tVentas = 0, tUtilidad = 0, numVentas = 0;
         let ventasPorDia = {}, utilPorDia = {}, depsHash = {}, cajerosHash = {}, horasHash = {}, metricasCajero = {}, topProductosHash = {}; 
-
         let operacionesHTML = []; 
 
-        if (!ventas || ventas.length === 0 && movimientos.length === 0) {
+        if (todasLasVentas.length === 0 && todosLosMovs.length === 0) {
             if(document.getElementById('r_lista_ventas')) document.getElementById('r_lista_ventas').innerHTML = "<tr><td colspan='6' style='text-align:center'>Vacio</td></tr>";
+            if (typeof actualizarGraficasBI === 'function') actualizarGraficasBI({}, {}, {}, {}, {});
             return;
         }
 
-        let filteredVentas = ventas.filter(v => { let vFecha = v.fecha || hoy; return (vFecha >= fInicio && vFecha <= fFin) && (!fCajero || v.cajero === fCajero) && (!fSuc || v.sucursal === fSuc || (fSuc === "Matriz" && !v.sucursal)); });
+        let filteredVentas = todasLasVentas.filter(v => { 
+            let vFecha = v.fecha || hoy; 
+            return (vFecha >= fInicio && vFecha <= fFin) && 
+                   (!fCajero || v.cajero === fCajero) && 
+                   (!fSuc || v.sucursal === fSuc || (fSuc === "Matriz" && !v.sucursal)); 
+        });
         
         filteredVentas.forEach(v => {
             if(!v.anulada) {
-                numVentas++; let tVentaTicket = parseFloat(v.total) || 0; tVentas += tVentaTicket;
-                let dStr = v.fecha || hoy; let nomCajero = v.cajero || 'Desconocido';
-                let fechaObj = new Date(v.id); let horaMilitar = fechaObj.getHours().toString().padStart(2, '0') + ":00"; 
-                horasHash[horaMilitar] = (horasHash[horaMilitar] || 0) + tVentaTicket;
-                if (!metricasCajero[nomCajero]) metricasCajero[nomCajero] = { total: 0, tickets: 0, horasUnicas: new Set() };
-                metricasCajero[nomCajero].total += tVentaTicket; metricasCajero[nomCajero].tickets += 1; metricasCajero[nomCajero].horasUnicas.add(dStr + "-" + horaMilitar);
-                ventasPorDia[dStr] = (ventasPorDia[dStr] || 0) + tVentaTicket; cajerosHash[nomCajero] = (cajerosHash[nomCajero] || 0) + tVentaTicket;
+                let tVentaTicket = parseFloat(v.total) || 0; 
+                let dStr = v.fecha || hoy; 
+                let nomCajero = v.cajero || 'Desconocido';
+                let esAbono = (v.metodo || '').toLowerCase().includes('abono');
 
-                if (v.pagos && Array.isArray(v.pagos) && v.pagos.length > 0) { v.pagos.forEach(p => { let m = parseFloat(p.montoAplicado) || 0; if(p.metodo === 'Efectivo') ef += m; else if(p.metodo === 'Tarjeta') ta += m; else if(p.metodo === 'Transferencia') trans += m; else if(p.metodo === 'Crédito') cr += m; }); } 
-                else { let mStr = v.metodo || ''; if(mStr.includes('Efectivo')) ef += tVentaTicket; else if(mStr.includes('Tarjeta')) ta += tVentaTicket; else if(mStr.includes('Transferencia')) trans += tVentaTicket; else if(mStr.includes('Crédito')) cr += tVentaTicket; }
+                if (!esAbono) {
+                    numVentas++; 
+                    tVentas += tVentaTicket;
+                    let fechaObj = new Date(v.id); let horaMilitar = fechaObj.getHours().toString().padStart(2, '0') + ":00"; 
+                    horasHash[horaMilitar] = (horasHash[horaMilitar] || 0) + tVentaTicket;
+                    
+                    if (!metricasCajero[nomCajero]) metricasCajero[nomCajero] = { total: 0, tickets: 0, horasUnicas: new Set() };
+                    metricasCajero[nomCajero].total += tVentaTicket; 
+                    metricasCajero[nomCajero].tickets += 1; 
+                    metricasCajero[nomCajero].horasUnicas.add(dStr + "-" + horaMilitar);
+                    
+                    ventasPorDia[dStr] = (ventasPorDia[dStr] || 0) + tVentaTicket; 
+                    cajerosHash[nomCajero] = (cajerosHash[nomCajero] || 0) + tVentaTicket;
+                }
+
+                if (v.pagos && Array.isArray(v.pagos) && v.pagos.length > 0) { 
+                    v.pagos.forEach(p => { 
+                        let m = parseFloat(p.montoAplicado) || 0; 
+                        if(p.metodo === 'Efectivo') ef += m; else if(p.metodo === 'Tarjeta') ta += m; else if(p.metodo === 'Transferencia') trans += m; else if(p.metodo === 'Crédito') cr += m; 
+                    }); 
+                } else { 
+                    let mStr = v.metodo || ''; 
+                    if(mStr.includes('Efectivo')) ef += tVentaTicket; else if(mStr.includes('Tarjeta')) ta += tVentaTicket; else if(mStr.includes('Transferencia')) trans += tVentaTicket; else if(mStr.includes('Crédito')) cr += tVentaTicket; 
+                }
 
                 let utilTicket = 0;
-                if (v.detalles) { 
+                if (v.detalles && !esAbono) { 
                     v.detalles.forEach(d => { 
                         if(d.can > 0) { 
-                            let itemInv = inv[d.cod] || {}; let cosUnit = parseFloat(itemInv.cos || 0) * (1 + (parseFloat(itemInv.iva || 0)/100));
-                            utilTicket += (parseFloat(d.subtotal) || 0) - (cosUnit * parseFloat(d.can || 1));
+                            let costoUnitario = parseFloat(d.costo) || 0; // Lee el costo real que se guardó en su momento
+                            utilTicket += (parseFloat(d.subtotal) || 0) - (costoUnitario * parseFloat(d.can || 1));
+                            
                             depsHash[d.dep || "General"] = (depsHash[d.dep || "General"] || 0) + parseFloat(d.subtotal || 0); 
-                            if (!topProductosHash[d.cod]) topProductosHash[d.cod] = { nombre: d.nom || itemInv.nom || '?', cantidad: 0, total: 0 };
-                            topProductosHash[d.cod].cantidad += parseFloat(String(d.can)) || 0; topProductosHash[d.cod].total += parseFloat(d.subtotal) || 0;
+                            
+                            if (!topProductosHash[d.cod]) topProductosHash[d.cod] = { nombre: d.nom || '?', cantidad: 0, total: 0 };
+                            topProductosHash[d.cod].cantidad += parseFloat(String(d.can)) || 0; 
+                            topProductosHash[d.cod].total += parseFloat(d.subtotal) || 0;
                         }
                     }); 
                 }
-                tUtilidad += utilTicket; utilPorDia[dStr] = (utilPorDia[dStr] || 0) + utilTicket;
+                tUtilidad += utilTicket; 
+                utilPorDia[dStr] = (utilPorDia[dStr] || 0) + utilTicket;
             }
             
             let classes = v.anulada ? 'anulada-row' : ''; let tag = v.anulada ? '<span style="color:red; font-weight:bold;">[ANULADA]</span> ' : '';
-            
-            // 🛠️ PARCHE AQUÍ: Formateamos el texto para mostrar con cuánto pagó y su cambio de forma compacta en la descripción
-            let detallePagoText = '';
-            if(!v.anulada && v.pagoCon !== undefined && v.cambio !== undefined && v.pagoCon > 0) {
-                detallePagoText = `<br><small style="color:#666; font-style:italic;">(Pagó: $${parseFloat(v.pagoCon).toFixed(2)} | Cambio: $${parseFloat(v.cambio).toFixed(2)})</small>`;
-            }
+            let detallePagoText = v.pagoCon !== undefined && v.pagoCon > 0 ? `<br><small style="color:#666; font-style:italic;">(Pagó: $${parseFloat(v.pagoCon).toFixed(2)} | Cambio: $${parseFloat(v.cambio).toFixed(2)})</small>` : '';
 
             operacionesHTML.push({
                 id: v.id,
@@ -2962,19 +3108,23 @@ function renderCorte() {
         }); 
 
         let ing_efectivo = 0, ret_efectivo = 0, flujo_ing_otros = 0, flujo_out_compras = 0, flujo_out_otros = 0;
-        movimientos.forEach(m => {
+        
+        todosLosMovs.forEach(m => {
             let mFecha = m.fecha || hoy; 
             if(mFecha >= fInicio && mFecha <= fFin && (!fCajero || m.cajero === fCajero) && (!fSuc || m.sucursal === fSuc)) { 
                 let montoM = parseFloat(m.monto) || 0; let mMotivo = (m.motivo || '').toLowerCase();
-                if(m.tipo === 'Ingreso') { ing_efectivo += montoM; flujo_ing_otros += montoM; } 
-                else if(m.tipo === 'Retiro') { ret_efectivo += montoM; if (mMotivo.includes('compra') || mMotivo.includes('proveedor')) flujo_out_compras += montoM; else flujo_out_otros += montoM; }
+                
+                if(m.tipo === 'Ingreso') { 
+                    ing_efectivo += montoM; flujo_ing_otros += montoM; 
+                } else if(m.tipo === 'Retiro') { 
+                    ret_efectivo += montoM; 
+                    if (mMotivo.includes('compra') || mMotivo.includes('proveedor')) flujo_out_compras += montoM; else flujo_out_otros += montoM; 
+                }
                 
                 let isIngreso = m.tipo === 'Ingreso';
-                let colorMonto = isIngreso ? 'var(--s)' : 'var(--danger)';
-                let signo = isIngreso ? '+' : '-';
                 operacionesHTML.push({
                     id: m.id,
-                    html: `<tr style="background:#fcfcfc;"><td>${m.fecha} ${m.hora}</td><td>${m.cajero || 'Admin'}</td><td>${m.sucursal || 'Matriz'}</td><td style="font-weight:bold; color:${colorMonto};">${signo}$${montoM.toFixed(2)}</td><td><span class="badge-kit" style="background:${isIngreso?'var(--info)':'var(--danger)'}">${m.tipo.toUpperCase()}</span></td><td>${m.motivo}</td></tr>`
+                    html: `<tr style="background:#fcfcfc;"><td>${m.fecha} ${m.hora}</td><td>${m.cajero || 'Admin'}</td><td>${m.sucursal || 'Matriz'}</td><td style="font-weight:bold; color:${isIngreso?'var(--s)':'var(--danger)'};">${isIngreso?'+':'-'}$$${montoM.toFixed(2)}</td><td><span class="badge-kit" style="background:${isIngreso?'var(--info)':'var(--danger)'}">${m.tipo.toUpperCase()}</span></td><td>${m.motivo}</td></tr>`
                 });
             } 
         });
@@ -2985,6 +3135,14 @@ function renderCorte() {
         if(document.getElementById('kpi_tabla_cajeros')) document.getElementById('kpi_tabla_cajeros').innerHTML = Object.keys(metricasCajero).sort((a,b) => metricasCajero[b].total - metricasCajero[a].total).map(nom => { let d = metricasCajero[nom]; return `<tr><td><b>${nom}</b></td><td>$${d.total.toFixed(2)}</td><td>$${(d.total / d.tickets).toFixed(2)}</td><td>$${(d.total / (d.horasUnicas.size || 1)).toFixed(2)}/hr</td></tr>`; }).join('') || '<tr><td colspan="4">Vacio</td></tr>';
 
         let efectivoEnCaja = ef + ing_efectivo - ret_efectivo;
+        
+        currentCorteData = {
+            ventasTotales: tVentas, gananciaNeta: tUtilidad, numVentas: numVentas,     
+            efectivoVentas: ef, tarjeta: ta, transferencia: trans, credito: cr,
+            ingresos: ing_efectivo, retiros: ret_efectivo, esperado: efectivoEnCaja,
+            cajeroCorte: fCajero || "Todos", fechaInicio: fInicio, fechaFin: fFin
+        };
+
         document.getElementById('kpi_ventas').innerText = "$" + tVentas.toLocaleString('es-MX', {minimumFractionDigits: 2});
         document.getElementById('kpi_ganancia').innerText = "$" + tUtilidad.toLocaleString('es-MX', {minimumFractionDigits: 2});
         document.getElementById('kpi_no_ventas').innerText = numVentas;
@@ -2992,29 +3150,74 @@ function renderCorte() {
         document.getElementById('kpi_margen').innerText = (tVentas > 0 ? ((tUtilidad / tVentas) * 100) : 0).toFixed(2) + "%";
         
         document.getElementById('r_efectivo').innerText = "$"+efectivoEnCaja.toFixed(2); document.getElementById('r_tarjeta').innerText = "$"+ta.toFixed(2); document.getElementById('r_transferencia').innerText = "$"+trans.toFixed(2); document.getElementById('r_credito').innerText = "$"+cr.toFixed(2); document.getElementById('r_total').innerText = "$"+(ef + ta + trans).toFixed(2); 
-        
-        document.getElementById('r_lista_ventas').innerHTML = operacionesHTML.map(op => op.html).join('') || "<tr><td colspan='6' style='text-align:center'>No hay operaciones en este periodo</td></tr>";
+        document.getElementById('r_lista_ventas').innerHTML = operacionesHTML.map(op => op.html).join('') || "<tr><td colspan='6' style='text-align:center'>No hay operaciones en este rango</td></tr>";
 
         if(document.getElementById('flujo_in_efectivo')) {
             document.getElementById('flujo_in_efectivo').innerText = "$" + ef.toFixed(2); document.getElementById('flujo_in_digital').innerText = "$" + (ta + trans).toFixed(2); document.getElementById('flujo_in_otros').innerText = "$" + flujo_ing_otros.toFixed(2); document.getElementById('flujo_in_total').innerText = "$" + (ef + ta + trans + flujo_ing_otros).toFixed(2);
             document.getElementById('flujo_out_compras').innerText = "$" + flujo_out_compras.toFixed(2); document.getElementById('flujo_out_otros').innerText = "$" + flujo_out_otros.toFixed(2); document.getElementById('flujo_out_total').innerText = "$" + (flujo_out_compras + flujo_out_otros).toFixed(2);
         }
 
-        if (typeof transferencias !== 'undefined' && document.getElementById('d_trans_env_val')) {
-            let tEnvVal = 0, tRecVal = 0, tPenVal = 0; let sucFiltroTrans = fSuc || sucursalActual;
-            let htmlTrans = transferencias.filter(t => { let td = new Date(t.id); return `${td.getFullYear()}-${String(td.getMonth() + 1).padStart(2, '0')}-${String(td.getDate()).padStart(2, '0')}` >= fInicio && `${td.getFullYear()}-${String(td.getMonth() + 1).padStart(2, '0')}-${String(td.getDate()).padStart(2, '0')}` <= fFin; }).map(t => {
-                if (fSuc !== "" && t.origen !== sucFiltroTrans && t.destino !== sucFiltroTrans) return '';
-                let val = parseFloat(t.valor) || 0;
-                if (fSuc === "") { tEnvVal += val; } else { if (t.origen === sucFiltroTrans) tEnvVal += val; if (t.destino === sucFiltroTrans) { if (t.estado === 'completada') tRecVal += val; else tPenVal += val; } }
-                return `<tr><td>${t.fecha.split(',')[0]}</td><td><b>${t.origen}</b> ➡️ <b>${t.destino}</b></td><td>${t.estado}</td><td>$${val.toFixed(2)}</td></tr>`;
-            }).join('');
-            document.getElementById('d_trans_env_val').innerText = "$" + tEnvVal.toFixed(2); document.getElementById('d_trans_rec_val').innerText = "$" + tRecVal.toFixed(2); document.getElementById('d_trans_pen_val').innerText = "$" + tPenVal.toFixed(2);
-            document.getElementById('d_lista_transferencias').innerHTML = htmlTrans || '<tr><td colspan="4">Vacio</td></tr>';
-        }
-
-        actualizarGraficasBI(ventasPorDia, utilPorDia, depsHash, cajerosHash, horasHash);
+        if (typeof actualizarGraficasBI === 'function') actualizarGraficasBI(ventasPorDia, utilPorDia, depsHash, cajerosHash, horasHash);
     } catch(err) { console.error("Error Dashboard:", err); }
 }
+
+// ====================================================================
+// ☁️ DESCARGAR ESTADÍSTICAS DEL PASADO DE FORMA INDEPENDIENTE
+// ====================================================================
+// ====================================================================
+// ☁️ DESCARGAR TICKETS DEL PASADO (POR BLOQUES PARA NO SATURAR)
+// ====================================================================
+window.descargarVentasNube = async function() {
+    let fInicio = document.getElementById('corte_fecha_inicio').value; 
+    let fFin = document.getElementById('corte_fecha_fin').value; 
+    let btn = document.getElementById('btn_analizar_nube');
+    
+    if (!fInicio || !fFin) return alert("⚠️ Por favor, selecciona primero un rango de fechas.");
+    
+    btn.innerText = "⏳ DESCARGANDO TICKETS..."; 
+    btn.disabled = true;
+
+    try {
+        // 1. Descargamos las VENTAS en bloques de 500
+        let ventasNube = [];
+        let pagV = 1; let totalPagV = 1;
+        while(pagV <= totalPagV) {
+            let resV = await pb.collection('ventas').getList(pagV, 500, {
+                filter: `data.fecha >= "${fInicio}" && data.fecha <= "${fFin}"`,
+                requestKey: null
+            });
+            if(pagV === 1) totalPagV = resV.totalPages;
+            ventasNube.push(...resV.items.map(r => r.data));
+            pagV++;
+        }
+
+        // 2. Descargamos los MOVIMIENTOS (Ingresos/Gastos) en bloques de 500
+        let movsNube = [];
+        let pagM = 1; let totalPagM = 1;
+        while(pagM <= totalPagM) {
+            let resM = await pb.collection('movimientos').getList(pagM, 500, {
+                filter: `data.fecha >= "${fInicio}" && data.fecha <= "${fFin}"`,
+                requestKey: null
+            });
+            if(pagM === 1) totalPagM = resM.totalPages;
+            movsNube.push(...resM.items.map(r => r.data));
+            pagM++;
+        }
+
+        // 3. Guardamos los datos en la RAM temporalmente (no saturamos el disco duro)
+        window.ventasHistoricasTemporales = ventasNube;
+        window.movsHistoricosTemporales = movsNube;
+        
+        alert(`✅ Éxito: Se descargaron ${ventasNube.length} ventas y ${movsNube.length} movimientos.\n\nGráficas y detalles listos.`); 
+        renderCorte();
+        
+    } catch(err) { 
+        alert("❌ Error al consultar la nube: " + err.message); 
+    } finally {
+        btn.innerText = "☁️ DESCARGAR DE LA NUBE"; 
+        btn.disabled = false;
+    }
+};
 function actualizarGraficasBI(vDia, uDia, deps, cajs, horas) {
     if (chartBarInstance) chartBarInstance.destroy(); if (chartDeptInstance) chartDeptInstance.destroy(); if (chartCajeroInstance) chartCajeroInstance.destroy(); if (chartHorasInstance) chartHorasInstance.destroy(); 
     let fc = Object.keys(vDia).sort();
@@ -3025,16 +3228,9 @@ function actualizarGraficasBI(vDia, uDia, deps, cajs, horas) {
     let ctx4 = document.getElementById('chartHoras'); if(ctx4) chartHorasInstance = new Chart(ctx4.getContext('2d'), { type: 'bar', data: { labels: hc, datasets: [{ label: 'Ventas por Hora', data: hc.map(h => horas[h]), backgroundColor: '#fd7e14' }] }, options: { responsive: true, maintainAspectRatio: false } });
 }
 
-window.descargarVentasNube = async function() {
-    let fInicio = document.getElementById('corte_fecha_inicio').value; let fFin = document.getElementById('corte_fecha_fin').value; let btn = document.getElementById('btn_analizar_nube');
-    btn.innerText = "⏳ DESCARGANDO..."; btn.disabled = true;
-    try {
-        let records = await pb.collection('ventas').getFullList({ requestKey: null }); let vNube = records.map(r => r.data).filter(v => v.fecha >= fInicio && v.fecha <= fFin);
-        let mapa = {}; ventas.forEach(v => mapa[v.id] = v); vNube.forEach(v => mapa[v.id] = v); ventas = Object.values(mapa).sort((a,b) => a.id - b.id);
-        alert(`✅ ${vNube.length} ventas descargadas.`); renderCorte();
-    } catch(err) { alert("❌ Error: " + err.message); }
-    btn.innerText = "☁️ DESCARGAR DE LA NUBE"; btn.disabled = false;
-};
+// ====================================================================
+// ☁️ DESCARGAR ESTADÍSTICAS DEL PASADO DE FORMA INDEPENDIENTE
+// ====================================================================
 
 // ====================================================================
 // === VISORES Y TICKETS (VENTAS Y COMPRAS) ===
@@ -3105,43 +3301,40 @@ function renderVisorActivo() {
     }
 }
 
+// ====================================================================
+// 🗑️ ANULAR VENTA DESDE EL VISOR (CONECTADA AL ACUMULADOR)
+// ====================================================================
 function anularVentaVisor() {
-    let vRef = visorIndices[currentVisorPos]; 
-    let vReal = ventas[vRef.indexGlobal]; 
-    if(vReal.anulada) return;
+    let vReal = ventas[visorIndices[currentVisorPos].indexGlobal]; 
+    if(vReal.anulada || !confirm("¿Anular esta venta?\nSe devolverá el stock al sistema y se ajustarán las gráficas.")) return;
     
-    if(!confirm("¿ESTÁS SEGURO DE ANULAR ESTA VENTA?")) return;
-    
-    // Recorremos los detalles de la venta para devolver stock y auditar
     if(vReal.detalles) { 
         vReal.detalles.forEach(d => { 
-            let item = inv[d.cod]; 
-            if(item) { 
-                if(!item.stock) item.stock = {}; 
-                let sucDestino = vReal.sucursal || sucursalActual;
-                item.stock[sucDestino] = (item.stock[sucDestino] || 0) + (d.can || 1); 
-                
-                // Actualizamos el inventario en la nube
-                db.collection("inventario").doc(d.cod).set(item); 
+            let it = inv[d.cod]; 
+            if(it) { 
+                if(!it.stock) it.stock={}; 
+                it.stock[vReal.sucursal||sucursalActual] = (it.stock[vReal.sucursal||sucursalActual]||0) + d.can; 
+                db.collection("inventario").doc(d.cod).set(it); 
             } 
-            
-            // 📊 KARDEX INTEGRADO: Adentro del ciclo para que registre cada producto anulado
-            registrarEnKardex(d.cod, d.nom, "ANULACIÓN", (d.can || 1), 0, 0);
+            registrarEnKardex(d.cod, d.nom, "ANULACIÓN", d.can, 0, 0); 
         }); 
-    } 
+    }
     
-    // Ajuste de saldo si fue venta a crédito
-    if(vReal.metodo && vReal.metodo.includes('Crédito') && vReal.cliente_tel && clientes[vReal.cliente_tel]) { 
-        clientes[vReal.cliente_tel].saldo -= (vReal.total || 0); 
-        if(clientes[vReal.cliente_tel].saldo < 0) clientes[vReal.cliente_tel].saldo = 0; 
+    if(vReal.metodo.includes('Crédito') && vReal.cliente_tel && clientes[vReal.cliente_tel]) { 
+        clientes[vReal.cliente_tel].saldo = Math.max(0, clientes[vReal.cliente_tel].saldo - vReal.total); 
         db.collection("clientes").doc(vReal.cliente_tel).set(clientes[vReal.cliente_tel]); 
     }
     
-    // Marcamos la venta como anulada en la base de datos
     vReal.anulada = true; 
-    db.collection("ventas").doc(String(vReal.id)).set(vReal).then(() => { 
-        alert("✅ Venta Anulada."); 
-        visorIndices[currentVisorPos].anulada = true; 
+    
+    db.collection("ventas").doc(String(vReal.id)).set(vReal).then(() => {
+        // 🎯 AQUÍ OCURRE LA MAGIA DE REVERSIÓN:
+        // Le mandamos la venta al acumulador pero con la bandera "true" para que RESTA todo el dinero y la ganancia
+        if (typeof actualizarAcumuladorDiario === 'function') {
+            actualizarAcumuladorDiario(vReal, true);
+        }
+        
+        alert("✅ Venta anulada y restada de las estadísticas correctamente."); 
         renderVisorActivo(); 
         renderCorte(); 
         renderI(); 
@@ -4116,20 +4309,37 @@ window.abrirCorteCaja = async function() {
     // DESCARGAMOS LA NUBE
     try {
         if (typeof pb !== 'undefined') {
-            let records = await pb.collection('ventas').getFullList({ requestKey: null });
-            let vNube = records.map(r => r.data);
+            // 1. Descargamos Ventas
+            let recordsVentas = await pb.collection('ventas').getFullList({ requestKey: null });
+            // FORZAMOS EL GUARDADO EN LA VARIABLE GLOBAL
+            window.ventas = recordsVentas.map(r => r.data); 
+
+       // 2. Descargamos Movimientos
+            let recordsMovs = await pb.collection('movimientos').getFullList({ requestKey: null });
+            // FORZAMOS EL GUARDADO EN LA VARIABLE GLOBAL
+            window.movimientos = recordsMovs.map(r => r.data);
             
-            let mapa = {};
-            ventas.forEach(v => mapa[v.id] = v);
-            vNube.forEach(v => mapa[v.id] = v);
-            ventas = Object.values(mapa).sort((a,b) => a.id - b.id);
+            console.log("☁️ Datos sincronizados. Ventas:", window.ventas.length, "Movs:", window.movimientos.length);
+
+            // ⚡ REFRESCAMOS EL MENÚ DE CAJEROS A LA FUERZA
+            let selectMenu = document.getElementById('cc_filtro_cajero');
+            if(selectMenu) {
+                let cajerosActivos = new Set();
+                window.ventas.forEach(v => { if(v.cajero) cajerosActivos.add(v.cajero.trim()); });
+                window.movimientos.forEach(m => { if(m.cajero) cajerosActivos.add(m.cajero.trim()); });
+                
+                // Mantenemos la opción por defecto y agregamos los encontrados
+                selectMenu.innerHTML = '<option value="">👤 Todos los cajeros</option>';
+                [...cajerosActivos].forEach(c => {
+                    selectMenu.innerHTML += `<option value="${c}">${c}</option>`;
+                });
+            }
         }
     } catch(e) {
-        console.warn("Sin internet. Calculando local.");
+        console.warn("Sin internet o error al descargar:", e);
     }
     
     if (btnConfirmar) btnConfirmar.disabled = false;
-
     // ARMAMOS LA LISTA DE CAJEROS
     if(selectMenu) {
         let htmlCajeros = '<option value="">👤 Todos los cajeros</option>';
@@ -4252,8 +4462,14 @@ window.calcularTotalesCorte = function() {
             
             if(!v.anulada && v.sucursal === sucursalActual && cumpleCajero && cumpleFechas) {
                 let tVentaTicket = parseFloat(v.total) || 0;
-                totalVentas += tVentaTicket;
+                
+                // 🎯 LA SOLUCIÓN: Evitamos que el abono se sume a "Ventas Totales"
+                let esAbono = (v.metodo || '').toLowerCase().includes('abono');
+                if (!esAbono) {
+                    totalVentas += tVentaTicket;
+                }
 
+                // El dinero sí se cuenta para cuadrar la caja
                 if (v.pagos && Array.isArray(v.pagos) && v.pagos.length > 0) {
                     v.pagos.forEach(p => {
                         let monto = parseFloat(p.montoAplicado) || 0;
@@ -4274,7 +4490,7 @@ window.calcularTotalesCorte = function() {
 
         let ing_efectivo = 0, ret_efectivo = 0;
         let listaRetirosGastos = []; 
-        let listaIngresosExtra = []; // 🌟 NUEVA LISTA
+        let listaIngresosExtra = []; 
 
         movimientos.forEach(m => {
             let cumpleCajero = (cajeroSel === "" || (m.cajero && m.cajero.trim() === cajeroSel));
@@ -4286,7 +4502,7 @@ window.calcularTotalesCorte = function() {
                 let montoM = parseFloat(m.monto) || 0;
                 if(m.tipo === 'Ingreso') {
                     ing_efectivo += montoM;
-                    listaIngresosExtra.push(m); // 🌟 GUARDAMOS EL INGRESO
+                    listaIngresosExtra.push(m);
                 } else if(m.tipo === 'Retiro') {
                     ret_efectivo += montoM;
                     listaRetirosGastos.push(m);
@@ -4310,12 +4526,10 @@ window.calcularTotalesCorte = function() {
             fechaFin: inputFin ? inputFin.value : ""
         };
 
-        // 🌟 RENDERIZAMOS LA TABLA DE GASTOS
         let htmlGastos = listaRetirosGastos.map(g => `<tr><td>${g.hora}</td><td>${g.motivo}</td><td style="text-align:right; color:red;">-$${parseFloat(g.monto).toFixed(2)}</td></tr>`).join('');
         document.getElementById('cc_lista_gastos').innerHTML = htmlGastos || '<tr><td colspan="3" style="text-align:center; color:#888;">No hubo retiros</td></tr>';
         document.getElementById('cc_detalle_gastos').style.display = 'none'; 
 
-        // 🌟 RENDERIZAMOS LA TABLA DE INGRESOS EXTRA
         let htmlIngresos = listaIngresosExtra.map(g => `<tr><td>${g.hora}</td><td>${g.motivo}</td><td style="text-align:right; color:#28a745;">+$${parseFloat(g.monto).toFixed(2)}</td></tr>`).join('');
         let tablaIng = document.getElementById('cc_lista_ingresos');
         if (tablaIng) tablaIng.innerHTML = htmlIngresos || '<tr><td colspan="3" style="text-align:center; color:#888;">No hubo ingresos extra</td></tr>';
@@ -4393,15 +4607,32 @@ window.guardarCorteCaja = function() {
 
     let idCorte = Date.now();
     let objetoCorte = {
-        id: idCorte, fecha: getFechaLocal(), hora: new Date().toLocaleTimeString(), cajero: currentCorteData.cajeroCorte,
-        tipo: nombreCorte, sucursal: sucursalActual, ventas_totales: currentCorteData.ventasTotales,
-        efectivo_ventas: currentCorteData.efectivoVentas, ingresos: currentCorteData.ingresos,
-        gastos: currentCorteData.retiros, efectivo_esperado: esperado, efectivo_real: fisico, diferencia: diferencia
+        id: idCorte, 
+        doc_id: String(idCorte), // Obligatorio para PocketBase
+        fecha: getFechaLocal(), 
+        hora: new Date().toLocaleTimeString(), 
+        cajero: currentCorteData.cajeroCorte,
+        tipo: nombreCorte, 
+        sucursal: sucursalActual, 
+        ventas_totales: currentCorteData.ventasTotales,
+        efectivo_ventas: currentCorteData.efectivoVentas, 
+        ingresos: currentCorteData.ingresos,
+        gastos: currentCorteData.retiros, 
+        efectivo_esperado: esperado, 
+        efectivo_real: fisico, 
+        diferencia: diferencia
     };
     
     if (typeof historialCortesZ === 'undefined') window.historialCortesZ = [];
     historialCortesZ.push(objetoCorte);
     localStorage.setItem("pos_cortes_z_v1", JSON.stringify(historialCortesZ));
+
+    // ☁️ ¡LA MAGIA! Guardamos los Totales Independientes en PocketBase
+    if (typeof db !== 'undefined') {
+        db.collection("cortes_z").doc(String(idCorte)).set(objetoCorte)
+        .then(() => console.log("☁️ Totales del Corte guardados exitosamente en la nube."))
+        .catch(e => console.warn("Error al subir el corte a la nube:", e));
+    }
 
     cerrarModales();
     procesarRetiroCaja(fisico, `RETIRO POR CORTE CAJA (Fondo a caja fuerte)`);
@@ -5414,18 +5645,81 @@ function mandarARevisionSecundaria() {
     cargarBorradoresPendientes();
 }
 
-function aprobarYAjustarInventario() {
+async function aprobarYAjustarInventario() {
     if (!sesionEnRevisionActiva) return;
-    if (!confirm("🚨 Accion Crítica: ¿Sobreescribir el inventario del sistema con este reporte?")) return;
 
+    // 1. CANDADO DE SEGURIDAD
+    let pass = prompt("🔒 ACCIÓN CRÍTICA: Ingrese el PIN de Administrador para asentar la auditoría:");
+    
+    // Si el usuario cancela la ventana o la deja vacía, detenemos todo
+    if (!pass) return; 
+
+    try {
+        // Buscamos exactamente "Admin" (respetando la mayúscula)
+        let adminDoc = await db.collection("usuarios").doc("Admin").get(); 
+        
+        // Obtenemos el campo "pin" (convertimos a texto por si está guardado como número)
+        let passGuardada = adminDoc.pin || (adminDoc.data && adminDoc.data().pin); 
+
+        // Comparamos lo que escribió el usuario con el PIN en la base de datos
+        if (String(pass) !== String(passGuardada)) {
+            alert("❌ PIN incorrecto. Operación cancelada por seguridad.");
+            return;
+        }
+    } catch (error) {
+        console.error("Error al consultar la base de datos:", error);
+        alert("❌ Error: No se pudo verificar el PIN del Admin. Revise su conexión.");
+        return;
+    }
+
+    if (!confirm("🚨 ¿Está completamente seguro de sobreescribir el inventario SÓLO de los artículos seleccionados?")) return;
+
+    let itemsAplicados = [];
+
+    // 2. FILTRO ESTRICTO (Solo casillas seleccionadas)
     sesionEnRevisionActiva.conteo.forEach(item => {
-        let prod = inv[item.cod];
-        if (prod) {
-            if (!prod.stock) prod.stock = {};
-            prod.stock[sucursalActual] = parseFloat(item.can_fisica) || 0;
-            if (typeof db !== 'undefined') db.collection("inventario").doc(item.cod).set(prod);
+        let casilla = document.getElementById('chk_audit_' + item.cod);
+        
+        if (casilla && casilla.checked) {
+            let prod = inv[item.cod];
+            if (prod) {
+                let stockAnterior = prod.stock ? (prod.stock[sucursalActual] || 0) : 0;
+                let nuevoStock = parseFloat(item.can_fisica) || 0;
+
+                if (!prod.stock) prod.stock = {};
+                prod.stock[sucursalActual] = nuevoStock;
+                
+                if (typeof db !== 'undefined') db.collection("inventario").doc(item.cod).set(prod);
+
+                itemsAplicados.push({
+                    cod: item.cod,
+                    nom: prod.nom || "Producto Desconocido",
+                    stock_anterior: stockAnterior,
+                    stock_nuevo: nuevoStock,
+                    diferencia: nuevoStock - stockAnterior
+                });
+            }
         }
     });
+
+    if (itemsAplicados.length === 0) {
+        alert("⚠️ No seleccionaste ninguna casilla. El inventario no sufrió cambios.");
+        return;
+    }
+
+    // 3. HISTORIAL PERMANENTE
+    let registroHistorico = {
+        id_sesion: sesionEnRevisionActiva.id || Date.now(),
+        fecha_aplicacion: new Date().toLocaleString(),
+        sucursal: sucursalActual,
+        usuario_aprobador: "Admin",
+        articulos_modificados: itemsAplicados
+    };
+
+    if (typeof db !== 'undefined') {
+        let idAuditoria = "AUDIT_" + Date.now();
+        db.collection("historial_auditorias").doc(idAuditoria).set(registroHistorico);
+    }
 
     let pendientes = JSON.parse(localStorage.getItem('pos_sesiones_inventario') || "[]");
     let index = pendientes.findIndex(b => b.id === sesionEnRevisionActiva.id);
@@ -5434,9 +5728,9 @@ function aprobarYAjustarInventario() {
         localStorage.setItem('pos_sesiones_inventario', JSON.stringify(pendientes));
     }
 
-    alert("✅ Inventario ajustado con éxito.");
+    alert(`✅ Auditoría exitosa. Se actualizaron exactamente ${itemsAplicados.length} artículos elegidos.`);
     document.getElementById('panel_detalle_auditoria').style.display = 'none';
-    cargarBorradoresPendientes();
+    if (typeof cargarBorradoresPendientes === 'function') cargarBorradoresPendientes();
     if (typeof renderI === 'function') renderI(); 
 }
 
@@ -5740,3 +6034,42 @@ function conectarInputCiegoManual() {
 // Aseguramos la recarga del trigger de pestañas de Admin
 let btnAudiTab = document.getElementById('btn_audi-tab');
 if(btnAudiTab) { btnAudiTab.addEventListener('click', () => { cargarBorradoresPendientes(); }); }
+// 👥 FUNCIÓN CONTROLADORA: Llena el menú de clientes fiados con datos frescos
+function actualizarSelectClientesCobro() {
+    let selectAbono = document.getElementById('m_cliente_select');
+    if (!selectAbono) return;
+    
+    let selectHtml = '<option value="">-- Selecciona Cliente a Fiar --</option>';
+    let count = 0;
+    
+    Object.keys(clientes).forEach(tel => {
+        let c = clientes[tel];
+        // Validamos que pertenezca a la sucursal activa
+        if (c && (c.sucursal === sucursalActual || (!c.sucursal && sucursalActual === 'Matriz'))) {
+            selectHtml += `<option value="${tel}">👤 ${c.nom} (${tel})</option>`;
+            count++;
+        }
+    });
+    
+    selectAbono.innerHTML = selectHtml;
+    console.log(`👥 Buscador de Créditos: ${count} clientes cargados en el menú.`);
+}
+// ==========================================
+// 🛡️ ESCUDO ANTI-CIERRE ACCIDENTAL
+// ==========================================
+window.addEventListener('beforeunload', function (e) {
+    // 1. Verificamos si hay productos en el carrito de ventas
+    let hayVentaActiva = (typeof carV !== 'undefined' && carV.length > 0);
+    
+    // 2. Verificamos si hay productos en tu variable de compras 
+    // (Si tu variable de compras se llama diferente a 'carC', cámbiala aquí)
+    let hayCompraActiva = (typeof carC !== 'undefined' && carC.length > 0);
+
+    // Si hay algo a medias, activamos la alarma
+    if (hayVentaActiva || hayCompraActiva) {
+        // Bloquea el cierre o retroceso inmediato
+        e.preventDefault();
+        // Lanza el mensaje de advertencia del navegador
+        e.returnValue = 'Tienes una venta o compra en proceso. ¿Seguro que quieres salir y perder los datos?';
+    }
+});

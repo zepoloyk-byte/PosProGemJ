@@ -1,0 +1,15 @@
+{
+  "name": "Punto de Venta Pro",
+  "short_name": "POS Pro",
+  "start_url": "./index.html",
+  "display": "standalone",
+  "background_color": "#ffffff",
+  "theme_color": "#007bff",
+  "icons": [
+    {
+      "src": "https://cdn-icons-png.flaticon.com/512/2933/2933116.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    }
+  ]
+}

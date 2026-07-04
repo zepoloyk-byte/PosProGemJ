@@ -15,25 +15,73 @@
     <link rel="stylesheet" href="styles.css">
 
     <style>
+        /* 📱 BARRA DE PESTAÑAS SUPERIOR */
         .tab {
-            display: flex;
-            flex-wrap: nowrap;
-            overflow-x: auto;
-            -webkit-overflow-scrolling: touch;
-            scrollbar-width: thin;
+            display: flex !important;
+            flex-wrap: nowrap !important;
+            overflow-x: auto !important;
+            -webkit-overflow-scrolling: touch !important;
+            scrollbar-width: thin !important;
+            width: 100% !important;
+            box-sizing: border-box !important;
         }
         .tab .t-btn {
-            flex: 0 0 auto;
-            white-space: nowrap;
+            flex: 0 0 auto !important;
+            white-space: nowrap !important;
         }
         .tab::-webkit-scrollbar { height: 6px; }
         .tab::-webkit-scrollbar-thumb { background: #888; border-radius: 10px; }
         .tab::-webkit-scrollbar-track { background: #1a1d20; }
         
-        @media screen and (max-width: 768px) {
-            .split-container { flex-direction: column; }
-            .panel-izq, .panel-der { width: 100%; }
-            .panel-der { border-left: none; border-top: 2px solid #eee; }
+        /* 🛡️ CONTENEDOR MAESTRO BLINDADO ANTI-DESBORDES */
+        .split-container {
+            display: flex !important;
+            flex-direction: row !important;
+            width: 100% !important;
+            max-width: 100% !important;
+            box-sizing: border-box !important;
+            gap: 15px !important;
+        }
+
+        /* 🛒 PANEL IZQUIERDO (Lista de productos) */
+        .panel-izq {
+            flex: 1 !important;
+            min-width: 0 !important; /* Evita que el panel se estire hacia la derecha */
+            width: auto !important;
+            box-sizing: border-box !important;
+        }
+
+        /* 💵 PANEL DERECHO (Total y botones de cobro fijados) */
+        .panel-der {
+            width: 340px !important;
+            max-width: 340px !important;
+            flex-shrink: 0 !important; /* Evita que el panel se encoja o se deforme */
+            box-sizing: border-box !important;
+        }
+
+        /* 📊 ESCUDO PARA LA TABLA (Evita que los nombres largos estiren la pantalla) */
+        .tabla-pos {
+            width: 100% !important;
+            max-width: 100% !important;
+            table-layout: fixed !important; /* Fuerza a las columnas a respetar el ancho de pantalla */
+            word-wrap: break-word !important; /* Si un nombre es muy largo, lo pasa al siguiente renglón */
+        }
+        
+        /* 📱 INTELIGENCIA PARA PANTALLAS MEDIANAS Y CELULARES */
+        @media screen and (max-width: 1024px) {
+            .split-container { 
+                flex-direction: column !important; 
+                gap: 20px !important; 
+            }
+            .panel-izq, .panel-der { 
+                width: 100% !important; 
+                max-width: 100% !important;
+            }
+            .panel-der { 
+                border-left: none !important; 
+                border-top: 2px solid #eee !important; 
+                padding-top: 15px !important;
+            }
         }
     </style>
 </head>
@@ -1484,6 +1532,15 @@
         </div>
     </div>
 </div>
+<script>
+    if ('serviceWorker' in navigator) {
+        window.addEventListener('load', () => {
+            navigator.serviceWorker.register('./sw.js')
+            .then(reg => console.log('✅ Service Worker registrado con éxito'))
+            .catch(err => console.log('❌ Error en Service Worker:', err));
+        });
+    }
+</script>
 
 <script src="app.js?v=28"></script>
 
