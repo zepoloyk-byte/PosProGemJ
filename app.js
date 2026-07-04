@@ -3011,8 +3011,6 @@ function renderCorte() {
         let fSuc = document.getElementById('corte_sucursal').value; 
         let hoy = getFechaLocal();
 
-      
-
         // 🎯 FUSIÓN INTELIGENTE: Unimos ventas vivas con las descargadas sin duplicar
         let mapaVentas = {};
         (window.ventas || []).forEach(v => { if(v && v.id) mapaVentas[v.id] = v; });
@@ -3083,14 +3081,26 @@ function renderCorte() {
                 if (v.detalles && !esAbono) { 
                     v.detalles.forEach(d => { 
                         if(d.can > 0) { 
-                            let costoUnitario = parseFloat(d.costo) || 0; // Lee el costo real que se guardó en su momento
-                            utilTicket += (parseFloat(d.subtotal) || 0) - (costoUnitario * parseFloat(d.can || 1));
+                            let costoUnitario = parseFloat(d.costo) || parseFloat(d.cos) || 0;
                             
-                            depsHash[d.dep || "General"] = (depsHash[d.dep || "General"] || 0) + parseFloat(d.subtotal || 0); 
+                            // 🌟 PARCHE INTEGRADOR: Si el subtotal de la base de datos es 0, lo recalculamos con 'pv'
+                            let subtotalItem = parseFloat(d.subtotal) || 0;
+                            if (subtotalItem === 0) {
+                                let precioVenta = parseFloat(d.pv) || 0;
+                                if (precioVenta === 0 && typeof inv !== 'undefined' && inv[d.cod]) {
+                                    precioVenta = parseFloat(inv[d.cod].pv) || 0;
+                                }
+                                subtotalItem = parseFloat(d.can || 1) * precioVenta;
+                            }
+                            
+                            // Calculamos la utilidad real del artículo
+                            utilTicket += subtotalItem - (costoUnitario * parseFloat(d.can || 1));
+                            
+                            depsHash[d.dep || "General"] = (depsHash[d.dep || "General"] || 0) + subtotalItem; 
                             
                             if (!topProductosHash[d.cod]) topProductosHash[d.cod] = { nombre: d.nom || '?', cantidad: 0, total: 0 };
                             topProductosHash[d.cod].cantidad += parseFloat(String(d.can)) || 0; 
-                            topProductosHash[d.cod].total += parseFloat(d.subtotal) || 0;
+                            topProductosHash[d.cod].total += subtotalItem;
                         }
                     }); 
                 }
@@ -3129,11 +3139,7 @@ function renderCorte() {
             } 
         });
 
-        operacionesHTML.sort((a,b) => b.id - a.id);
-
-        if(document.getElementById('kpi_tabla_top_productos')) document.getElementById('kpi_tabla_top_productos').innerHTML = Object.values(topProductosHash).sort((a, b) => b.cantidad - a.cantidad).slice(0, 10).map((p, i) => `<tr><td>${i + 1}</td><td><b>${p.nombre}</b></td><td>${p.cantidad}</td><td>$${p.total.toFixed(2)}</td></tr>`).join('') || '<tr><td colspan="4">Vacio</td></tr>';
-        if(document.getElementById('kpi_tabla_cajeros')) document.getElementById('kpi_tabla_cajeros').innerHTML = Object.keys(metricasCajero).sort((a,b) => metricasCajero[b].total - metricasCajero[a].total).map(nom => { let d = metricasCajero[nom]; return `<tr><td><b>${nom}</b></td><td>$${d.total.toFixed(2)}</td><td>$${(d.total / d.tickets).toFixed(2)}</td><td>$${(d.total / (d.horasUnicas.size || 1)).toFixed(2)}/hr</td></tr>`; }).join('') || '<tr><td colspan="4">Vacio</td></tr>';
-
+        // Calculamos el dinero esperado en caja antes de armar el reporte
         let efectivoEnCaja = ef + ing_efectivo - ret_efectivo;
         
         currentCorteData = {
@@ -3142,6 +3148,8 @@ function renderCorte() {
             ingresos: ing_efectivo, retiros: ret_efectivo, esperado: efectivoEnCaja,
             cajeroCorte: fCajero || "Todos", fechaInicio: fInicio, fechaFin: fFin
         };
+
+        // ... El resto del código de tu función que inyecta en el HTML continúa abajo igual ...
 
         document.getElementById('kpi_ventas').innerText = "$" + tVentas.toLocaleString('es-MX', {minimumFractionDigits: 2});
         document.getElementById('kpi_ganancia').innerText = "$" + tUtilidad.toLocaleString('es-MX', {minimumFractionDigits: 2});
@@ -3264,17 +3272,37 @@ function renderVisorActivo() {
     let clientStr = v.cliente_tel ? (clientes[v.cliente_tel] ? clientes[v.cliente_tel].nom : 'Cliente') : 'Público General';
     document.getElementById('visor_fecha').innerText = `${v.fecha||''} ${v.hora||''} - ${v.sucursal||''}\nTicket ID: ${v.id}\nCliente: ${clientStr}`;
     let html = '';
+    
     if (v.detalles && Array.isArray(v.detalles) && v.detalles.length > 0) { 
         html = v.detalles.map((d, i) => {
             let ex = !v.anulada ? (d.can > 0 ? `<div class="no-print"><button style="background:var(--warning); color:#000; font-size:9px;" onclick="devolverArticuloVisor(${i})">↩️</button></div>` : `<div style="color:var(--danger); font-size:10px;">(Devuelto)</div>`) : '';
-            return `<tr><td style="vertical-align:top;">${d.can}</td><td>${(d.nom||'').substring(0,15)} ${ex}</td><td style="text-align:right;">$${(d.subtotal||0).toFixed(2)}</td></tr>`;
+            
+            // 🌟 EL PARCHE MAESTRO: Buscamos 'pv' si el subtotal viene en 0
+            let importeItem = parseFloat(d.subtotal) || parseFloat(d.importe) || 0;
+            
+            if (importeItem === 0) {
+                // Primero intentamos extraer el 'pv' del detalle del ticket
+                let precioReal = parseFloat(d.pv) || 0;
+                
+                // Si el ticket tampoco tiene 'pv', lo vamos a buscar al inventario maestro
+                if (precioReal === 0 && typeof inv !== 'undefined' && inv[d.cod]) {
+                    precioReal = parseFloat(inv[d.cod].pv) || 0;
+                }
+                
+                // Multiplicamos cantidad x precio de venta
+                importeItem = (parseFloat(d.can) || 1) * precioReal;
+            }
+            
+            return `<tr><td style="vertical-align:top;">${d.can}</td><td>${(d.nom||'').substring(0,15)} ${ex}</td><td style="text-align:right;">$${importeItem.toFixed(2)}</td></tr>`;
         }).join(''); 
-    } else html = `<tr><td colspan="3">${v.items || ''}</td></tr>`; 
+    } else {
+        html = `<tr><td colspan="3">${v.items || ''}</td></tr>`; 
+    }
+    
     document.getElementById('visor_items').innerHTML = html; 
     document.getElementById('visor_total').innerText = (v.total||0).toFixed(2); 
     document.getElementById('visor_metodo').innerText = v.metodo || 'N/A'; 
 
-    // 🌟 NUEVO: Le ordenamos a JavaScript llenar los campos del billete y el cambio en la copia
     let pagoConVisor = v.pagoCon !== undefined ? parseFloat(v.pagoCon) : parseFloat(v.total || 0);
     let cambioVisor = v.cambio !== undefined ? parseFloat(v.cambio) : 0;
     
@@ -3284,7 +3312,6 @@ function renderVisorActivo() {
     if (document.getElementById('visor_cambio')) {
         document.getElementById('visor_cambio').innerText = cambioVisor.toFixed(2);
     }
-    // 🌟 FIN DEL NUEVO BLOQUE
 
     document.getElementById('visor_cajero').innerText = v.cajero || 'Admin';
     
@@ -5645,95 +5672,118 @@ function mandarARevisionSecundaria() {
     cargarBorradoresPendientes();
 }
 
-async function aprobarYAjustarInventario() {
+function aprobarYAjustarInventario() {
     if (!sesionEnRevisionActiva) return;
 
-    // 1. CANDADO DE SEGURIDAD
-    let pass = prompt("🔒 ACCIÓN CRÍTICA: Ingrese el PIN de Administrador para asentar la auditoría:");
-    
-    // Si el usuario cancela la ventana o la deja vacía, detenemos todo
-    if (!pass) return; 
+    pedirPinOculto("🔒 Ingrese el PIN de Administrador para guardar:", function(pass) {
+        if (!pass) return; 
 
-    try {
-        // Buscamos exactamente "Admin" (respetando la mayúscula)
-        let adminDoc = await db.collection("usuarios").doc("Admin").get(); 
+        let pinCorrecto = null;
         
-        // Obtenemos el campo "pin" (convertimos a texto por si está guardado como número)
-        let passGuardada = adminDoc.pin || (adminDoc.data && adminDoc.data().pin); 
+        // 1. EXTRACCIÓN DINÁMICA SEGURA E INVISIBLE
+        try {
+            if (typeof usuarios !== 'undefined' && usuarios) {
+                let lista = Array.isArray(usuarios) ? usuarios : Object.values(usuarios);
+                
+                for (let i = 0; i < lista.length; i++) {
+                    let u = lista[i];
+                    if (!u) continue; 
+                    
+                    let idDoc = u.doc_id ? String(u.doc_id).toUpperCase() : "";
+                    
+                    if (idDoc === 'ADMIN') {
+                        if (typeof u.data === 'string') {
+                            try { pinCorrecto = JSON.parse(u.data).pin; } catch(e){}
+                        } else if (u.data && u.data.pin) {
+                            pinCorrecto = u.data.pin;
+                        } else if (u.pin) {
+                            pinCorrecto = u.pin;
+                        }
+                        break; 
+                    }
+                }
+            }
+        } catch (err) {
+            console.error("Error silencioso evitado:", err);
+        }
 
-        // Comparamos lo que escribió el usuario con el PIN en la base de datos
-        if (String(pass) !== String(passGuardada)) {
-            alert("❌ PIN incorrecto. Operación cancelada por seguridad.");
+        // Si por alguna razón la memoria está vacía, bloqueamos la acción.
+        // ¡Cero contraseñas expuestas!
+        if (!pinCorrecto) {
+            alert("❌ El sistema no pudo cargar las credenciales de seguridad. Por favor, recarga la página (F5) e intenta de nuevo.");
             return;
         }
-    } catch (error) {
-        console.error("Error al consultar la base de datos:", error);
-        alert("❌ Error: No se pudo verificar el PIN del Admin. Revise su conexión.");
-        return;
-    }
 
-    if (!confirm("🚨 ¿Está completamente seguro de sobreescribir el inventario SÓLO de los artículos seleccionados?")) return;
-
-    let itemsAplicados = [];
-
-    // 2. FILTRO ESTRICTO (Solo casillas seleccionadas)
-    sesionEnRevisionActiva.conteo.forEach(item => {
-        let casilla = document.getElementById('chk_audit_' + item.cod);
-        
-        if (casilla && casilla.checked) {
-            let prod = inv[item.cod];
-            if (prod) {
-                let stockAnterior = prod.stock ? (prod.stock[sucursalActual] || 0) : 0;
-                let nuevoStock = parseFloat(item.can_fisica) || 0;
-
-                if (!prod.stock) prod.stock = {};
-                prod.stock[sucursalActual] = nuevoStock;
-                
-                if (typeof db !== 'undefined') db.collection("inventario").doc(item.cod).set(prod);
-
-                itemsAplicados.push({
-                    cod: item.cod,
-                    nom: prod.nom || "Producto Desconocido",
-                    stock_anterior: stockAnterior,
-                    stock_nuevo: nuevoStock,
-                    diferencia: nuevoStock - stockAnterior
-                });
-            }
+        // 2. LA VALIDACIÓN
+        if (String(pass) !== String(pinCorrecto)) {
+            alert("❌ PIN incorrecto. Operación cancelada.");
+            return;
         }
-    });
 
-    if (itemsAplicados.length === 0) {
-        alert("⚠️ No seleccionaste ninguna casilla. El inventario no sufrió cambios.");
-        return;
-    }
+        // ==========================================
+        // GUARDADO SEGURO DE AUDITORÍA
+        // ==========================================
+        if (!confirm("🚨 ¿Está seguro de sobreescribir SÓLO los artículos seleccionados?")) return;
 
-    // 3. HISTORIAL PERMANENTE
-    let registroHistorico = {
-        id_sesion: sesionEnRevisionActiva.id || Date.now(),
-        fecha_aplicacion: new Date().toLocaleString(),
-        sucursal: sucursalActual,
-        usuario_aprobador: "Admin",
-        articulos_modificados: itemsAplicados
-    };
+        let itemsAplicados = [];
 
-    if (typeof db !== 'undefined') {
-        let idAuditoria = "AUDIT_" + Date.now();
-        db.collection("historial_auditorias").doc(idAuditoria).set(registroHistorico);
-    }
+        sesionEnRevisionActiva.conteo.forEach(item => {
+            let casilla = document.getElementById('chk_audit_' + item.cod);
+            
+            if (casilla && casilla.checked) {
+                let prod = inv[item.cod];
+                if (prod) {
+                    let stockAnterior = prod.stock ? (prod.stock[sucursalActual] || 0) : 0;
+                    let nuevoStock = parseFloat(item.can_fisica) || 0;
 
-    let pendientes = JSON.parse(localStorage.getItem('pos_sesiones_inventario') || "[]");
-    let index = pendientes.findIndex(b => b.id === sesionEnRevisionActiva.id);
-    if (index !== -1) {
-        pendientes[index].estado = 'Aplicado';
-        localStorage.setItem('pos_sesiones_inventario', JSON.stringify(pendientes));
-    }
+                    if (!prod.stock) prod.stock = {};
+                    prod.stock[sucursalActual] = nuevoStock;
+                    
+                    if (typeof db !== 'undefined') db.collection("inventario").doc(item.cod).set(prod);
 
-    alert(`✅ Auditoría exitosa. Se actualizaron exactamente ${itemsAplicados.length} artículos elegidos.`);
-    document.getElementById('panel_detalle_auditoria').style.display = 'none';
-    if (typeof cargarBorradoresPendientes === 'function') cargarBorradoresPendientes();
-    if (typeof renderI === 'function') renderI(); 
+                    itemsAplicados.push({
+                        cod: item.cod,
+                        nom: prod.nom || "Desconocido",
+                        stock_anterior: stockAnterior,
+                        stock_nuevo: nuevoStock,
+                        diferencia: nuevoStock - stockAnterior
+                    });
+                }
+            }
+        });
+
+        if (itemsAplicados.length === 0) {
+            alert("⚠️ No seleccionaste ninguna casilla. El inventario no cambió.");
+            return;
+        }
+
+        let registroHistorico = {
+            id_sesion: sesionEnRevisionActiva.id || Date.now(),
+            fecha_aplicacion: new Date().toLocaleString(),
+            sucursal: sucursalActual,
+            usuario_aprobador: "Admin",
+            articulos_modificados: itemsAplicados
+        };
+
+        if (typeof db !== 'undefined') {
+            let idAuditoria = "AUDIT_" + Date.now();
+            db.collection("historial_auditorias").doc(idAuditoria).set(registroHistorico);
+        }
+
+        let pendientes = JSON.parse(localStorage.getItem('pos_sesiones_inventario') || "[]");
+        let index = pendientes.findIndex(b => b.id === sesionEnRevisionActiva.id);
+        if (index !== -1) {
+            pendientes[index].estado = 'Aplicado';
+            localStorage.setItem('pos_sesiones_inventario', JSON.stringify(pendientes));
+        }
+
+        alert(`✅ Auditoría exitosa. Se actualizaron ${itemsAplicados.length} artículos.`);
+        document.getElementById('panel_detalle_auditoria').style.display = 'none';
+        if (typeof cargarBorradoresPendientes === 'function') cargarBorradoresPendientes();
+        if (typeof renderI === 'function') renderI(); 
+
+    }); 
 }
-
 // ======================================================================
 // 📦 MÓDULO DE INVENTARIO CIEGO (FASE 1: CAJERO UNIFICADO MULTI-ESCANER)
 // ======================================================================
@@ -6073,3 +6123,49 @@ window.addEventListener('beforeunload', function (e) {
         e.returnValue = 'Tienes una venta o compra en proceso. ¿Seguro que quieres salir y perder los datos?';
     }
 });
+function pedirPinOculto(mensaje, callback) {
+    // Creamos una pantalla oscura de fondo
+    let fondo = document.createElement('div');
+    fondo.style.cssText = "position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.6); z-index:9999; display:flex; align-items:center; justify-content:center;";
+
+    // Creamos la cajita blanca
+    let caja = document.createElement('div');
+    caja.style.cssText = "background:white; padding:25px; border-radius:10px; box-shadow:0 4px 15px rgba(0,0,0,0.2); text-align:center; min-width:300px; font-family:sans-serif;";
+
+    // Título
+    let titulo = document.createElement('h3');
+    titulo.innerText = mensaje;
+    titulo.style.cssText = "margin-top:0; color:#333; font-size:16px;";
+
+    // Input de contraseña (aquí está la magia para que salgan asteriscos)
+    let input = document.createElement('input');
+    input.type = "password"; 
+    input.placeholder = "****";
+    input.style.cssText = "width:90%; padding:10px; margin:15px 0; border:2px solid #007bff; border-radius:5px; font-size:24px; text-align:center; letter-spacing: 5px;";
+
+    // Botones
+    let divBotones = document.createElement('div');
+    let btnCancelar = document.createElement('button');
+    btnCancelar.innerText = "Cancelar";
+    btnCancelar.style.cssText = "padding:10px 15px; margin-right:10px; cursor:pointer; background:#dc3545; color:white; border:none; border-radius:5px; font-weight:bold;";
+    
+    let btnAceptar = document.createElement('button');
+    btnAceptar.innerText = "Confirmar";
+    btnAceptar.style.cssText = "padding:10px 15px; cursor:pointer; background:#28a745; color:white; border:none; border-radius:5px; font-weight:bold;";
+
+    // Qué hacen los botones
+    btnCancelar.onclick = () => { document.body.removeChild(fondo); callback(null); };
+    btnAceptar.onclick = () => { document.body.removeChild(fondo); callback(input.value); };
+    input.onkeypress = (e) => { if (e.key === 'Enter') btnAceptar.click(); }; // Permite dar Enter
+
+    divBotones.appendChild(btnCancelar);
+    divBotones.appendChild(btnAceptar);
+    caja.appendChild(titulo);
+    caja.appendChild(input);
+    caja.appendChild(divBotones);
+    fondo.appendChild(caja);
+    document.body.appendChild(fondo);
+
+    // Seleccionamos la caja automáticamente para que puedas escribir de inmediato
+    input.focus(); 
+}

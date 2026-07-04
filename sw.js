@@ -15,13 +15,27 @@ self.addEventListener('install', event => {
     );
 });
 
-// Cuando no haya internet, usar la copia guardada
 self.addEventListener('fetch', event => {
+    // 🛡️ Ignoramos conexiones en vivo y extensiones de Chrome
+    if (event.request.url.includes('/api/realtime') || event.request.url.startsWith('chrome-extension')) {
+        return; 
+    }
+
     event.respondWith(
-        caches.match(event.request).then(response => {
-            return response || fetch(event.request);
-        }).catch(() => {
-            console.log("Sin internet y sin caché para:", event.request.url);
+        // 1. Intentamos ir a internet por el archivo fresco
+        fetch(event.request).catch(() => {
+            // 2. Si falla (no hay internet), buscamos en la caché local
+            return caches.match(event.request).then(response => {
+                if (response) {
+                    return response;
+                }
+                // 3. Si no hay internet y no está en la caché, devolvemos una respuesta vacía legal
+                // Esto evita el temido error "Failed to convert value to 'Response'"
+                return new Response("Archivo no disponible sin conexión", { 
+                    status: 503, 
+                    statusText: "Service Unavailable" 
+                });
+            });
         })
     );
 });
