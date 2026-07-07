@@ -1748,19 +1748,43 @@ window.confirmarVenta = function(cambioFinal = 0) {
 
             if(x.promo_ref) {
                 x.promo_ref.usadas = (x.promo_ref.usadas||0) + x.usos_promo;
-                db.collection("promociones").doc(String(x.promo_ref.id)).set(x.promo_ref);
+                if(typeof db !== 'undefined') db.collection("promociones").doc(String(x.promo_ref.id)).set(x.promo_ref);
             }
 
             let cReal = (pO.cos_promedio !== undefined ? parseFloat(pO.cos_promedio) : parseFloat(pO.cos || 0)) * (1 + (parseFloat(pO.iva)||0)/100);
             
-            // 🛡️ ESCUDO ANTI-CRASH: Forzamos a que siempre lea un número válido para el ticket
-            let subtotalSeguro = parseFloat(x.final_subtotal) || parseFloat(x.subtotal) || 0;
-            
-            registrarEnKardex(x.cod, x.nom, "VENTA", -x.can, subtotalSeguro / (parseFloat(x.can)||1), pO.cos||0);
+            // 🎯 EL MISTERIO RESUELTO: Si el producto tiene un "precioManual", ese manda. Si no, usa el normal.
+            let precioUnitarioReal = 0;
+            if (x.precioManual !== undefined) {
+                precioUnitarioReal = parseFloat(x.precioManual);
+            } else {
+                precioUnitarioReal = parseFloat(x.pv) || parseFloat(pO.pv) || 0;
+            }
 
-            // Ahora usamos subtotalSeguro, que jamás estará vacío
+            // Calculamos el subtotal multiplicando la cantidad por ese precio real
+            let subtotalSeguro = (parseFloat(x.can) || 1) * precioUnitarioReal;
+            
+            // Y por si acaso el sistema original mandó su propio subtotal (para cosas que no editaste):
+            if (x.precioManual === undefined && (parseFloat(x.final_subtotal) || parseFloat(x.subtotal))) {
+                 subtotalSeguro = parseFloat(x.final_subtotal) || parseFloat(x.subtotal);
+            }
+            
+            if (typeof registrarEnKardex === 'function') {
+                registrarEnKardex(x.cod, x.nom, "VENTA", -x.can, precioUnitarioReal, pO.cos||0);
+            }
+
+            // Inyectamos el importe matemáticamente exacto en el ticket
             itemsHtml += `<tr><td>${x.can}</td><td>${(x.nom||'').substring(0,15)}</td><td style="text-align:right">$${subtotalSeguro.toFixed(2)}</td></tr>`;
-            detalles.push({ cod: x.cod, nom: x.nom, can: x.can, subtotal: subtotalSeguro, costo: cReal, dep: pO.dep||"General" });
+            
+            detalles.push({ 
+                cod: x.cod, 
+                nom: x.nom, 
+                can: x.can, 
+                subtotal: subtotalSeguro, 
+                pv: precioUnitarioReal, 
+                costo: cReal, 
+                dep: pO.dep||"General" 
+            });
         });
 
         document.getElementById('ticket_fecha').innerText = new Date().toLocaleString() + " - " + sucursalActual + "\nCliente: " + labelCliente;
@@ -5678,75 +5702,49 @@ function aprobarYAjustarInventario() {
     pedirPinOculto("🔒 Ingrese el PIN de Administrador para guardar:", function(pass) {
         if (!pass) return; 
 
-        let pinCorrecto = null;
-        
-        // 1. EXTRACCIÓN DINÁMICA SEGURA E INVISIBLE
-        try {
-            if (typeof usuarios !== 'undefined' && usuarios) {
-                let lista = Array.isArray(usuarios) ? usuarios : Object.values(usuarios);
-                
-                for (let i = 0; i < lista.length; i++) {
-                    let u = lista[i];
-                    if (!u) continue; 
-                    
-                    let idDoc = u.doc_id ? String(u.doc_id).toUpperCase() : "";
-                    
-                    if (idDoc === 'ADMIN') {
-                        if (typeof u.data === 'string') {
-                            try { pinCorrecto = JSON.parse(u.data).pin; } catch(e){}
-                        } else if (u.data && u.data.pin) {
-                            pinCorrecto = u.data.pin;
-                        } else if (u.pin) {
-                            pinCorrecto = u.pin;
-                        }
-                        break; 
-                    }
-                }
-            }
-        } catch (err) {
-            console.error("Error silencioso evitado:", err);
-        }
-
-        // Si por alguna razón la memoria está vacía, bloqueamos la acción.
-        // ¡Cero contraseñas expuestas!
-        if (!pinCorrecto) {
-            alert("❌ El sistema no pudo cargar las credenciales de seguridad. Por favor, recarga la página (F5) e intenta de nuevo.");
+        // 🌟 VALIDACIÓN INFALIBLE (Esta ya funciona perfecto)
+        if (!usuariosData || !usuariosData["Admin"] || usuariosData["Admin"].pin !== pass) {
+            alert("❌ PIN Incorrecto. Operación cancelada.");
             return;
         }
 
-        // 2. LA VALIDACIÓN
-        if (String(pass) !== String(pinCorrecto)) {
-            alert("❌ PIN incorrecto. Operación cancelada.");
-            return;
-        }
-
-        // ==========================================
-        // GUARDADO SEGURO DE AUDITORÍA
-        // ==========================================
-        if (!confirm("🚨 ¿Está seguro de sobreescribir SÓLO los artículos seleccionados?")) return;
+        if (!confirm("🚨 ¿Está seguro de sobreescribir SÓLO los artículos seleccionados en esta pantalla?")) return;
 
         let itemsAplicados = [];
 
-        sesionEnRevisionActiva.conteo.forEach(item => {
-            let casilla = document.getElementById('chk_audit_' + item.cod);
-            
-            if (casilla && casilla.checked) {
+        // 🎯 EL NUEVO RADAR: Busca todas las casillas que tengan la "palomita" puesta en este momento
+        let casillasMarcadas = document.querySelectorAll('.chk_item_auditoria:checked');
+
+        // Recorremos solo las que están marcadas
+        casillasMarcadas.forEach(casilla => {
+            // Sacamos el número de renglón (index) para saber qué producto es
+            let index = casilla.getAttribute('data-index');
+            let item = sesionEnRevisionActiva.conteo[index];
+
+            if (item) {
                 let prod = inv[item.cod];
                 if (prod) {
                     let stockAnterior = prod.stock ? (prod.stock[sucursalActual] || 0) : 0;
                     let nuevoStock = parseFloat(item.can_fisica) || 0;
+                    let diferencia = nuevoStock - stockAnterior;
 
                     if (!prod.stock) prod.stock = {};
                     prod.stock[sucursalActual] = nuevoStock;
                     
+                    // Guarda en la nube
                     if (typeof db !== 'undefined') db.collection("inventario").doc(item.cod).set(prod);
+
+                    // Registra el movimiento en tu Kardex
+                    if (typeof registrarEnKardex === 'function') {
+                        registrarEnKardex(item.cod, prod.nom || "Desconocido", "AUDITORÍA INVENTARIO", diferencia, prod.pv || 0, prod.cos || 0);
+                    }
 
                     itemsAplicados.push({
                         cod: item.cod,
                         nom: prod.nom || "Desconocido",
                         stock_anterior: stockAnterior,
                         stock_nuevo: nuevoStock,
-                        diferencia: nuevoStock - stockAnterior
+                        diferencia: diferencia
                     });
                 }
             }
@@ -5757,6 +5755,7 @@ function aprobarYAjustarInventario() {
             return;
         }
 
+        // Registro global de la auditoría en Firebase
         let registroHistorico = {
             id_sesion: sesionEnRevisionActiva.id || Date.now(),
             fecha_aplicacion: new Date().toLocaleString(),
@@ -5770,18 +5769,19 @@ function aprobarYAjustarInventario() {
             db.collection("historial_auditorias").doc(idAuditoria).set(registroHistorico);
         }
 
+        // Marcamos la sesión como "Aplicada" para que ya no salga en pendientes
         let pendientes = JSON.parse(localStorage.getItem('pos_sesiones_inventario') || "[]");
-        let index = pendientes.findIndex(b => b.id === sesionEnRevisionActiva.id);
-        if (index !== -1) {
-            pendientes[index].estado = 'Aplicado';
+        let idx = pendientes.findIndex(b => b.id === sesionEnRevisionActiva.id);
+        if (idx !== -1) {
+            pendientes[idx].estado = 'Aplicado';
             localStorage.setItem('pos_sesiones_inventario', JSON.stringify(pendientes));
         }
 
-        alert(`✅ Auditoría exitosa. Se actualizaron ${itemsAplicados.length} artículos.`);
+        alert(`✅ Auditoría exitosa. Se actualizaron ${itemsAplicados.length} artículos en la NUBE.`);
         document.getElementById('panel_detalle_auditoria').style.display = 'none';
+        
         if (typeof cargarBorradoresPendientes === 'function') cargarBorradoresPendientes();
         if (typeof renderI === 'function') renderI(); 
-
     }); 
 }
 // ======================================================================
@@ -6168,4 +6168,84 @@ function pedirPinOculto(mensaje, callback) {
 
     // Seleccionamos la caja automáticamente para que puedas escribir de inmediato
     input.focus(); 
+}
+async function mostrarEstadisticasAuditoria() {
+    if (typeof db === 'undefined') {
+        return alert("⚠️ La base de datos en la nube no está conectada.");
+    }
+
+    // Creamos un modal dinámico si no existe
+    let modalId = "modalKPIsAuditoria";
+    let modal = document.getElementById(modalId);
+    if (!modal) {
+        modal = document.createElement('div');
+        modal.id = modalId;
+        modal.className = "modal";
+        modal.style.zIndex = "9999";
+        document.body.appendChild(modal);
+    }
+
+    modal.innerHTML = `<div class="modal-content" style="width:500px; text-align:center;">
+        <h3 style="color:var(--info); margin-top:0;">📊 Analizando Historial...</h3>
+        <p>Descargando datos de la nube...</p>
+    </div>`;
+    modal.style.display = 'block';
+
+    try {
+        // Descargamos todo el historial de auditorías
+        let snapshot = await db.collection("historial_auditorias").get();
+        
+        let mesActual = new Date().getMonth();
+        let anioActual = new Date().getFullYear();
+        
+        let totalModificados = 0;
+        let auditoriasDelMes = 0;
+
+       snapshot.forEach(doc => {
+            let data = doc.data();
+            
+            // 🌟 NUEVO: Extraemos la fecha directamente del nombre del documento (AUDIT_123456789...)
+            let timestamp = parseInt(doc.id.replace('AUDIT_', ''));
+            let fechaDoc = isNaN(timestamp) ? new Date() : new Date(timestamp); 
+            
+            if (fechaDoc.getMonth() === mesActual && fechaDoc.getFullYear() === anioActual) {
+                auditoriasDelMes++;
+                if (data.articulos_modificados && Array.isArray(data.articulos_modificados)) {
+                    totalModificados += data.articulos_modificados.length;
+                }
+            }
+        });
+
+        // HTML del Dashboard
+        modal.innerHTML = `
+        <div class="modal-content" style="width:600px; border-top: 4px solid var(--info);">
+            <h2 style="margin-top:0; color:#333;">📈 Rendimiento de Inventario</h2>
+            <p style="color:#666; font-size:14px; margin-bottom:20px;">Estadísticas globales del mes en curso</p>
+            
+            <div style="display:flex; justify-content:space-between; gap:15px; margin-bottom:25px;">
+                <div style="flex:1; background:#f8f9fa; padding:20px; border-radius:8px; border-left:4px solid #17a2b8;">
+                    <h4 style="margin:0; color:#666; font-size:12px; text-transform:uppercase;">Auditorías Realizadas</h4>
+                    <span style="font-size:32px; font-weight:bold; color:#333;">${auditoriasDelMes}</span>
+                </div>
+                <div style="flex:1; background:#f8f9fa; padding:20px; border-radius:8px; border-left:4px solid #dc3545;">
+                    <h4 style="margin:0; color:#666; font-size:12px; text-transform:uppercase;">Correcciones (Mes)</h4>
+                    <span style="font-size:32px; font-weight:bold; color:#333;">${totalModificados}</span>
+                </div>
+            </div>
+
+            <div style="background:#e9ecef; border-radius:8px; padding:15px; text-align:left; font-size:14px; color:#555;">
+                💡 <b>Nota de progreso:</b> Mantener el número de correcciones bajo significa que las ventas y el stock físico coinciden perfectamente. Revisa estas métricas al final de cada mes para medir tu pérdida o control operativo.
+            </div>
+
+            <button class="btn-final" style="background:var(--info); width:100%; margin-top:20px; font-size:16px;" onclick="document.getElementById('${modalId}').style.display='none'">CERRAR PANEL</button>
+        </div>`;
+
+    } catch (error) {
+        console.error("Error al obtener estadísticas: ", error);
+        modal.innerHTML = `<div class="modal-content" style="width:400px; text-align:center;">
+            <h3 style="color:red;">❌ Error de Conexión</h3>
+            <p>No se pudo descargar el historial.</p>
+            <button class="btn-final" style="background:#333; margin-top:15px;" onclick="document.getElementById('${modalId}').style.display='none'">Cerrar</button>
+        </div>`;
+    }
 }
