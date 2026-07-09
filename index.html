@@ -695,6 +695,23 @@
                     <button class="btn-final" style="background:#ec0000; margin-top:10px;" onclick="guardarConfigGetnet()">💾 GUARDAR CLAVES GETNET</button>
                 </div>
             </div>
+            <div class="dash-card" style="border-top:4px solid #20c997; margin-top:20px; background:#f4fcf9;">
+                <h3 style="margin-top:0; color:#20c997; display:flex; align-items:center; gap:8px;">🎨 Personalizar Fondos de Pantalla</h3>
+                <p style="font-size:12px; color:#666; margin-top:-5px;">Sube tus propias imágenes para la pantalla de inicio y el panel de ventas.</p>
+                
+                <div style="display:grid; grid-template-columns: 1fr 1fr; gap:15px; margin-bottom:15px;">
+                    <div style="background:white; padding:15px; border-radius:8px; border:1px solid #d1e7dd;">
+                        <label style="font-size:12px; font-weight:bold; color:#20c997;">🖼️ Fondo de Inicio de Sesión:</label>
+                        <input type="file" id="file_fondo_login" accept="image/png, image/jpeg, image/jpg" style="margin-top:10px; width:100%; font-size: 13px;">
+                    </div>
+                    <div style="background:white; padding:15px; border-radius:8px; border:1px solid #d1e7dd;">
+                        <label style="font-size:12px; font-weight:bold; color:#20c997;">🖼️ Fondo de Pestañas (Ventas):</label>
+                        <input type="file" id="file_fondo_panel" accept="image/png, image/jpeg, image/jpg" style="margin-top:10px; width:100%; font-size: 13px;">
+                    </div>
+                </div>
+                
+                <button class="btn-final" style="background:#20c997;" onclick="subirFondos()"><span id="btn_txt_fondos">💾 SUBIR Y APLICAR FONDOS</span></button>
+            </div>
 
         </div>
     </div>
@@ -1400,31 +1417,7 @@
     <p style="text-align:center; font-size:10px;">Firma del Cajero<br><br>_____________________</p>
 </div>
 
-<div id="ticket_corte_print_area" class="print-active" style="display:none; padding:0; background:#fff; color:#000; font-family:monospace;">
-    <h2 style="margin: 0; text-align: center;">CORTE DE CAJA</h2>
-    <p style="margin:5px 0; text-align: center; border-bottom: 2px dashed #000; padding-bottom: 5px;">
-        <span id="tk_corte_fecha"></span><br>
-        Sucursal: <span class="lbl-suc-act"></span><br>
-        Cajero: <span id="tk_corte_cajero"></span>
-    </p>
-    <div style="margin-bottom:10px; border-bottom: 2px dashed #000; padding-bottom: 5px;">
-        <div style="display:flex; justify-content:space-between;"><span>Ventas Efectivo:</span> <span id="tk_corte_vef"></span></div>
-        <div style="display:flex; justify-content:space-between;"><span>Ventas Tarjeta:</span> <span id="tk_corte_vtar"></span></div>
-        <div style="display:flex; justify-content:space-between;"><span>Ventas Transf:</span> <span id="tk_corte_vtra"></span></div>
-        <div style="display:flex; justify-content:space-between;"><span>Ventas Crédito:</span> <span id="tk_corte_vcre"></span></div>
-        <div style="display:flex; justify-content:space-between; font-weight:bold; margin-top:5px;"><span>TOTAL VENTAS:</span> <span id="tk_corte_vtot"></span></div>
-    </div>
-    <div style="margin-bottom:10px; border-bottom: 2px dashed #000; padding-bottom: 5px;">
-        <div style="display:flex; justify-content:space-between;"><span>Fondo/Ingresos:</span> <span id="tk_corte_ing"></span></div>
-        <div style="display:flex; justify-content:space-between;"><span>Gastos/Precortes:</span> <span id="tk_corte_ret"></span></div>
-    </div>
-    <div style="margin-bottom:15px;">
-        <div style="display:flex; justify-content:space-between; font-size:16px;"><span>ESPERADO:</span> <b id="tk_corte_esp"></b></div>
-        <div style="display:flex; justify-content:space-between; font-size:16px;"><span>FÍSICO (REAL):</span> <b id="tk_corte_fis"></b></div>
-        <div style="display:flex; justify-content:space-between; font-size:16px; margin-top:5px;" id="tk_corte_dif_caja"></div>
-    </div>
-    <p style="text-align:center; font-size:10px;">Firma del Cajero<br><br>_____________________</p>
-</div>
+
 <div id="modalPasswordAnular" class="modal" style="display:none; z-index:9999; align-items:center; justify-content:center;">
     <div class="modal-content" style="width:300px; text-align:center; padding: 25px; border-radius: 12px;">
         <h3 style="margin-top:0; color:#dc3545;">🔐 Confirmar Acción</h3>
@@ -1516,7 +1509,7 @@
             <input type="text" id="input_escaneo_ciego" placeholder="Escanea o escribe el código aquí..." style="width: 100%; padding: 12px; font-size: 16px; border: 2px solid #17a2b8; border-radius: 6px; margin-top: 5px; outline: none; box-sizing: border-box;" onkeydown="if(event.keyCode === 13) { event.preventDefault(); agregarProductoCiegoManual(this.value); }">
         </div>
 
-        <div style="width: 100%; overflow-y:auto; border:1px solid #ddd; border-radius:6px; max-height: 200px; margin-bottom: 15px; box-sizing: border-box; background: #fff;">
+        <div style="width: 100%; overflow-y:auto; border:1px solid #ddd; border-radius:6px; flex-grow: 1; margin-bottom: 15px; box-sizing: border-box; background: #fff;">
             <table style="width:100%; border-collapse:collapse; text-align:left;">
                 <thead style="background:#f8f9fa; position:sticky; top:0; z-index:10; box-shadow: 0 1px 2px rgba(0,0,0,0.05);">
                     <tr>
@@ -1537,6 +1530,21 @@
         </div>
     </div>
 </div>
+<div id="modalHistorialCli" class="modal">
+    <div class="modal-content" style="width:700px; max-height: 85vh;">
+        <h3 style="margin-top:0; color:var(--p);">📋 Estado de Cuenta: <span id="hist_cli_nom"></span></h3>
+        <div style="overflow-y:auto; flex-grow:1; border: 1px solid #eee; border-radius:8px; min-height: 250px;">
+            <table class="tabla-pos" style="margin:0;">
+                <thead style="background:#f8f9fa;">
+                    <tr><th>Fecha / Hora</th><th>Movimiento</th><th>Detalle</th><th style="text-align:right;">Monto</th><th style="text-align:center;">Ticket</th></tr>
+                </thead>
+                <tbody id="hist_cli_lista"></tbody>
+            </table>
+        </div>
+        <div style="text-align:right; margin-top:15px; font-size:18px;"><b>Deuda Actual: $<span id="hist_cli_saldo" style="color:var(--danger);">0.00</span></b></div>
+        <button class="btn-final" style="background:#eee; color:#333; margin-top:20px;" onclick="document.getElementById('modalHistorialCli').style.display='none'">CERRAR</button>
+    </div>
+</div>
 <script>
     if ('serviceWorker' in navigator) {
         window.addEventListener('load', () => {
@@ -1545,6 +1553,7 @@
             .catch(err => console.log('❌ Error en Service Worker:', err));
         });
     }
+    
 </script>
 
 <script src="app.js?v=28"></script>

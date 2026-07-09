@@ -7,6 +7,9 @@ pb.autoCancellation(false);
 // ====================================================================
 // === 2. ADAPTADOR FIREBASE -> POCKETBASE (CON MOCHILA OFFLINE 🎒☁️) ===
 // ====================================================================
+// ====================================================================
+// === 2. ADAPTADOR FIREBASE -> POCKETBASE (MOTOR INMORTAL 🎒☁️) ===
+// ====================================================================
 const db = {
     enablePersistence: () => Promise.resolve(),
     collection: function(colName) {
@@ -18,25 +21,38 @@ const db = {
                     return { forEach: (cb) => Object.values(mapa).forEach(r => cb({ id: r.doc_id, data: () => r.data })) };
                 } catch(e) { console.error(e); return { forEach: ()=>{} }; }
             },
+            
+            // 📡 RADAR INMORTAL PARA COLECCIONES (Inventario, Clientes, etc.)
             onSnapshot: async function(callback) {
-                try {
-                    let cache = await pb.collection(colName).getFullList({ requestKey: null });
-                    let mapa = {}; 
-                    cache.forEach(r => mapa[r.doc_id] = r);
-                    cache = Object.values(mapa); 
-                    let emit = () => { callback({ forEach: (cb) => cache.forEach(r => cb({ id: r.doc_id, data: () => r.data })) }); };
-                    emit(); 
-                    pb.collection(colName).subscribe('*', function(e) {
-                        if (e.action === 'create' || e.action === 'update') {
-                            let idx = cache.findIndex(x => x.doc_id === e.record.doc_id);
-                            if (idx > -1) cache[idx] = e.record; 
-                            else cache.push(e.record); 
-                        } else if (e.action === 'delete') {
-                            cache = cache.filter(x => x.doc_id !== e.record.doc_id);
-                        }
-                        emit();
-                    });
-                } catch (e) { console.error("Error onSnapshot:", colName, e); }
+                let intentando = false;
+                let iniciarRadar = async () => {
+                    if(intentando) return;
+                    intentando = true;
+                    try {
+                        let cache = await pb.collection(colName).getFullList({ requestKey: null });
+                        let mapa = {}; 
+                        cache.forEach(r => mapa[r.doc_id] = r);
+                        cache = Object.values(mapa); 
+                        let emit = () => { callback({ forEach: (cb) => cache.forEach(r => cb({ id: r.doc_id, data: () => r.data })) }); };
+                        emit(); 
+                        
+                        pb.collection(colName).subscribe('*', function(e) {
+                            if (e.action === 'create' || e.action === 'update') {
+                                let idx = cache.findIndex(x => x.doc_id === e.record.doc_id);
+                                if (idx > -1) cache[idx] = e.record; 
+                                else cache.push(e.record); 
+                            } else if (e.action === 'delete') {
+                                cache = cache.filter(x => x.doc_id !== e.record.doc_id);
+                            }
+                            emit();
+                        });
+                    } catch (e) { 
+                        intentando = false;
+                        console.warn(`📡 Sin internet para radar de [${colName}]. Reintentando en 5s...`);
+                        setTimeout(iniciarRadar, 5000); // 🔄 BUCLE INMORTAL SI FALLA
+                    }
+                };
+                iniciarRadar();
             },
             orderBy: function(field, direction) {
                 return {
@@ -62,24 +78,14 @@ const db = {
                     set: async function(dataObj) {
                         try {
                             let record = null;
-                            try {
-                                // Revisamos qué hay en la Nube antes de subir
-                                record = await pb.collection(colName).getFirstListItem(`doc_id="${docId}"`);
-                            } catch (e) {
-                                // No existe todavía, lo creará nuevo
-                            }
+                            try { record = await pb.collection(colName).getFirstListItem(`doc_id="${docId}"`); } catch (e) {}
 
-                            // 🛡️ ESCUDO ANTI-PRECIOS FANTASMA (Solo para el inventario)
                             if (colName === "inventario") {
                                 let tiempoLocal = dataObj.updatedAt || 0;
-
                                 if (record && record.data) {
                                     let nube = record.data;
                                     let tiempoNube = nube.updatedAt || 0;
-
-                                    // Si la Nube tiene una edición de precio/datos más reciente que la tuya...
                                     if (tiempoNube > tiempoLocal) {
-                                        // Rescatamos los datos reales de la Nube para que tu venta no los aplaste
                                         dataObj.nom = nube.nom;
                                         dataObj.cos = nube.cos;
                                         dataObj.iva = nube.iva;
@@ -87,26 +93,20 @@ const db = {
                                         dataObj.pm = nube.pm;
                                         dataObj.gan = nube.gan;
                                         dataObj.dep = nube.dep;
-                                        dataObj.updatedAt = nube.updatedAt; // Heredamos su marca de tiempo
+                                        dataObj.updatedAt = nube.updatedAt;
+                                        
+                                        // 🛡️ RESCATE DEL STOCK FÍSICO: Jamás debe sobreescribirse por accidente
+                                        dataObj.stock = (typeof inv !== 'undefined' && inv[docId]) ? inv[docId].stock : nube.stock;
+                                        dataObj.sold_without_stock = (typeof inv !== 'undefined' && inv[docId]) ? inv[docId].sold_without_stock : nube.sold_without_stock;
 
-                                        // Curamos la memoria de esta computadora al instante
                                         if(typeof inv !== 'undefined') {
                                             inv[docId] = dataObj;
                                             localStorage.setItem("pos_precision_v6", JSON.stringify(inv));
                                         }
-                                    } else {
-                                        // 🚀 ESTO FALTABA: Si tu cambio es legítimo, le clavamos la hora EXACTA de ahorita
-                                        dataObj.updatedAt = Date.now();
-                                    }
-                                } else {
-                                    // 🚀 ESTO TAMBIÉN FALTABA: Si es un producto totalmente nuevo
-                                    dataObj.updatedAt = Date.now();
-                                }
+                                    } else { dataObj.updatedAt = Date.now(); }
+                                } else { dataObj.updatedAt = Date.now(); }
                             }
                                 
-                            
-
-                            // Subimos el paquete (ahora sí, combinado y seguro)
                             if (record) {
                                 return await pb.collection(colName).update(record.id, { doc_id: docId, data: dataObj });
                             } else {
@@ -117,14 +117,11 @@ const db = {
                                 try { return await pb.collection(colName).create({ doc_id: docId, data: dataObj }); }
                                 catch (eFatal) { throw eFatal; } 
                             }
-                            
-                            // 🎒 LA MAGIA: Si no hay internet, guarda en la mochila
                             console.warn(`⏳ Sin conexión. Guardando en mochila offline: [${colName}] -> ${docId}`);
                             let mochila = JSON.parse(localStorage.getItem("pos_mochila")) || [];
                             mochila = mochila.filter(m => !(m.col === colName && m.id === docId));
                             mochila.push({ col: colName, id: docId, data: dataObj });
                             localStorage.setItem("pos_mochila", JSON.stringify(mochila));
-                            
                             return true; 
                         }
                     },
@@ -134,23 +131,33 @@ const db = {
                             return pb.collection(colName).delete(record.id);
                         } catch (e) { console.warn("Doc no existe:", docId); }
                     },
+                    
+                    // 📡 RADAR INMORTAL PARA DOCUMENTOS ÚNICOS (Configuraciones)
                     onSnapshot: async function(callback) {
                         let emit = (exists, data) => callback({ exists, data: () => data });
-                        try {
-                            let record = await pb.collection(colName).getFirstListItem(`doc_id="${docId}"`);
-                            emit(true, record.data);
-                        } catch (e) { emit(false, {}); }
-
-                        pb.collection(colName).subscribe('*', function(e) {
-                            if (e.record.doc_id === docId) {
-                                if (e.action === 'delete') emit(false, {});
-                                else emit(true, e.record.data);
+                        let intentandoDoc = false;
+                        let iniciarRadarDoc = async () => {
+                            if(intentandoDoc) return;
+                            intentandoDoc = true;
+                            try {
+                                let record = await pb.collection(colName).getFirstListItem(`doc_id="${docId}"`);
+                                emit(true, record.data);
+                                pb.collection(colName).subscribe('*', function(e) {
+                                    if (e.record.doc_id === docId) {
+                                        if (e.action === 'delete') emit(false, {});
+                                        else emit(true, e.record.data);
+                                    }
+                                });
+                            } catch (e) { 
+                                intentandoDoc = false;
+                                if(e.status === 404) { emit(false, {}); } // Es un documento nuevo, no es error de red
+                                else { setTimeout(iniciarRadarDoc, 5000); } // 🔄 BUCLE INMORTAL SI FALLA
                             }
-                        });
+                        };
+                        iniciarRadarDoc();
                     }
                 };
             }
-        
         };
     }
 };
@@ -325,9 +332,10 @@ db.collection("clientes").onSnapshot((querySnapshot) => {
     clientes = {};
     querySnapshot.forEach((doc) => { clientes[doc.id] = doc.data(); });
     
-    // 🎯 CORRECCIÓN: Mantener el menú de fiados actualizado siempre en segundo plano
-    actualizarSelectClientesCobro();
+    // 💾 PARCHE 1: Respaldo inmediato en disco duro (Offline)
+    localStorage.setItem("pos_clientes_v7", JSON.stringify(clientes));
     
+    actualizarSelectClientesCobro();
     if (tabActual === 'cli-tab') renderClientes();
 });
 // Proveedores
@@ -494,21 +502,83 @@ function updateClock() {
     }
 }
 
-async function cargarFondosDesdeNube() {
+// ====================================================================
+// === 🎨 CARGA Y SUBIDA DE FONDOS PERSONALIZADOS ===
+// ====================================================================
+window.cargarFondosDesdeNube = async function() {
     try {
-        const record = await pb.collection('config_visual').getFirstListItem('');
-        if (record.fondo_login) {
-            let urlLogin = pb.files.getUrl(record, record.fondo_login);
-            document.getElementById('login-screen').style.backgroundImage = `linear-gradient(rgba(0,0,0,0.6), rgba(0,0,0,0.6)), url('${urlLogin}')`;
+        // En lugar de buscar un ID vacío (que causaba el 404), traemos el primer registro existente
+        const records = await pb.collection('config_visual').getFullList({ requestKey: null });
+        if (records.length > 0) {
+            const record = records[0];
+            
+            // Fondo Login
+            if (record.fondo_login) {
+                let urlLogin = pb.files.getUrl(record, record.fondo_login);
+                let bgLogin = document.getElementById('login-screen');
+                if(bgLogin) bgLogin.style.backgroundImage = `linear-gradient(rgba(0,0,0,0.6), rgba(0,0,0,0.6)), url('${urlLogin}')`;
+            }
+            
+            // Fondo Panel Derecho
+            if (record.fondo_panel) {
+                let urlPanel = pb.files.getUrl(record, record.fondo_panel);
+                document.querySelectorAll('.panel-der').forEach(panel => {
+                    // Usamos un degradado del 80% para que los números siempre sean legibles
+                    panel.style.backgroundImage = `linear-gradient(rgba(0, 0, 0, 0.8), rgba(0, 0, 0, 0.8)), url('${urlPanel}')`;
+                    panel.style.backgroundSize = "cover";
+                    panel.style.backgroundPosition = "center";
+                });
+            }
         }
-        if (record.fondo_panel) {
-            let urlPanel = pb.files.getUrl(record, record.fondo_panel);
-            document.querySelectorAll('.panel-der').forEach(panel => {
-                panel.style.backgroundImage = `linear-gradient(rgba(0, 0, 0, 0.75), rgba(0, 0, 0, 0.75)), url('${urlPanel}')`;
-            });
+    } catch (e) {
+        console.warn("⚠️ No se pudieron cargar los fondos. Verifica las reglas de API.", e);
+    }
+};
+
+// El motor para enviar las imágenes desde tu sistema
+window.subirFondos = async function() {
+    let fileLogin = document.getElementById('file_fondo_login').files[0];
+    let filePanel = document.getElementById('file_fondo_panel').files[0];
+    
+    if (!fileLogin && !filePanel) return alert("⚠️ Selecciona al menos una imagen para subir.");
+
+    let btnTxt = document.getElementById('btn_txt_fondos');
+    let txtOriginal = btnTxt.innerText;
+    btnTxt.innerText = "⏳ SUBIENDO IMÁGENES A LA NUBE...";
+    
+    try {
+        // FormData es obligatorio para enviar archivos binarios por internet
+        let formData = new FormData();
+        if (fileLogin) formData.append('fondo_login', fileLogin);
+        if (filePanel) formData.append('fondo_panel', filePanel);
+
+        // Buscamos si ya tienes una configuración guardada
+        const records = await pb.collection('config_visual').getFullList({ requestKey: null });
+        
+        if (records.length > 0) {
+            // Si ya existe, la actualizamos
+            await pb.collection('config_visual').update(records[0].id, formData);
+        } else {
+            // Si es la primera vez, la creamos
+            await pb.collection('config_visual').create(formData);
         }
-    } catch (e) { console.warn("⚠️ Usando fondos locales por defecto."); }
-}
+
+        alert("✅ Fondos actualizados correctamente.");
+        
+        // Vaciamos las cajas de subida
+        document.getElementById('file_fondo_login').value = '';
+        document.getElementById('file_fondo_panel').value = '';
+        
+        // Aplicamos los cambios al instante sin tener que recargar la página
+        window.cargarFondosDesdeNube();
+        
+    } catch (error) {
+        console.error("Error al subir fondos:", error);
+        alert("❌ Ocurrió un error al subir las imágenes. Revisa tu conexión.");
+    } finally {
+        btnTxt.innerText = txtOriginal;
+    }
+};
 
 function obtenerProductoMaestro(cod) {
     let p = inv[cod];
@@ -1727,19 +1797,48 @@ async function actualizarAcumuladorDiario(venta, esAnulacion = false) {
 window.confirmarVenta = function(cambioFinal = 0) {
     try {
         let tot = parseFloat(document.getElementById('v_total').innerText); if(tot <= 0 || isNaN(tot)) return;
-        let nombresCli = [];
         
+        let hoy = getFechaLocal(); 
+        let idV = Date.now() + Math.floor(Math.random()*1000); // 🌟 ID generado arriba
+        
+        let nombresCli = [];
+        let ventaAbortada = false;
+
         pagosCobro.forEach(p => {
             if(p.metodo === 'Crédito') {
-                let c = clientes[p.cliente_tel]; if(!c) return alert("Cliente no encontrado");
-                if(c.saldo + p.montoAplicado > (c.limite||0)) { if(!confirm(`¿Autorizar sobregiro para ${c.nom}?`)) return; }
-                c.saldo += p.montoAplicado; db.collection("clientes").doc(p.cliente_tel).set(c); nombresCli.push(c.nom);
+                let c = clientes[p.cliente_tel]; 
+                if(!c) { alert("Cliente no encontrado"); ventaAbortada = true; return; }
+                
+                let saldoActual = parseFloat(c.saldo) || 0;
+                let montoCobrado = parseFloat(p.montoAplicado) || 0;
+
+                if(saldoActual + montoCobrado > (parseFloat(c.limite) || 0)) { 
+                    if(!confirm(`¿Autorizar sobregiro para ${c.nom}?`)) { ventaAbortada = true; return; } 
+                }
+                c.saldo = saldoActual + montoCobrado; 
+                
+                // 📖 GUARDAR EN LA LIBRETA DEL CLIENTE
+                if (!c.historial) c.historial = [];
+                c.historial.push({
+                    id_venta: idV, fecha: hoy, hora: new Date().toLocaleTimeString(),
+                    tipo: 'Cargo (Compra)', monto: montoCobrado, detalle: `Ticket #${idV}`
+                });
+
+                clientes[p.cliente_tel] = c; 
+                localStorage.setItem("pos_clientes_v7", JSON.stringify(clientes));
+                if(typeof db !== 'undefined') db.collection("clientes").doc(p.cliente_tel).set(c); 
+                nombresCli.push(c.nom);
             }
         });
 
+        if (ventaAbortada) return;
+        if (typeof renderClientes === 'function') renderClientes();
+
         let labelCliente = nombresCli.length > 0 ? nombresCli.join(', ') : "Público General";
         let metodosStr = pagosCobro.map(p => p.metodo).join(' + ') || 'Efectivo';
-        let hoy = getFechaLocal(); let itemsHtml = ''; let detalles = [];
+        let itemsHtml = ''; let detalles = [];
+
+        // ... El resto de tu función carV.forEach(...) queda exactamente igual hacia abajo ...
 
         carV.forEach(x => {
             let pO = inv[x.cod] || {};
@@ -1795,8 +1894,25 @@ window.confirmarVenta = function(cambioFinal = 0) {
         document.getElementById('ticket_cambio').innerText = (parseFloat(cambioFinal) || 0).toFixed(2);
         document.getElementById('ticket_cajero').innerText = usuarioActual;
 
-        let idV = Date.now() + Math.floor(Math.random()*1000);
-        let nuevaV = { id: idV, fecha: hoy, hora: new Date().toLocaleTimeString(), cajero: usuarioActual, sucursal: sucursalActual, total: tot, metodo: metodosStr, pagos: pagosCobro, items: carV.map(x=>x.nom).join(','), detalles, anulada: false };
+        // 🌟 Calculamos matemáticamente con cuánto pagó
+        let pagoCliente = tot + (parseFloat(cambioFinal) || 0);
+
+        // 🌟 Usamos el mismo 'idV' que generamos al principio (SIN la palabra 'let')
+        let nuevaV = { 
+            id: idV, 
+            fecha: hoy, 
+            hora: new Date().toLocaleTimeString(), 
+            cajero: usuarioActual, 
+            sucursal: sucursalActual, 
+            total: tot, 
+            metodo: metodosStr, 
+            pagos: pagosCobro, 
+            items: carV.map(x=>x.nom).join(','), 
+            detalles: detalles, 
+            anulada: false,
+            pagoCon: pagoCliente, // 🌟 Agregamos cuánto nos dio
+            cambio: cambioFinal   // 🌟 Agregamos cuánto le devolvimos
+        };
         ventas.push(nuevaV); localStorage.setItem("pos_ventas_v6", JSON.stringify(ventas.slice(-200)));
         db.collection("ventas").doc(String(idV)).set(nuevaV);
 
@@ -2084,63 +2200,7 @@ function renderC() {
 }
 
 
- // Variable global para recordar cuánto estamos cobrando
-let totalCompraAProcesar = 0;
 
-async function abrirPagoMixtoCompra(totalCompra) {
-    totalCompraAProcesar = parseFloat(totalCompra) || 0;
-    
-    // 🛡️ 1. Verificamos que el modal exista en el HTML
-    let inputEfectivo = document.getElementById("pago_compra_efectivo");
-    let inputTarjeta = document.getElementById("pago_compra_tarjeta");
-    let totalTexto = document.getElementById("pago_mixto_compra_total");
-    let modal = document.getElementById("modalPagoMixtoCompra");
-    let selectCajeros = document.getElementById("pago_compra_origen_efectivo");
-
-    if (!inputEfectivo || !inputTarjeta || !totalTexto || !modal) {
-        console.error("❌ ERROR: No se encontró el diseño...");
-        return; 
-    }
-
-    // 📡 2. MICRO-DESCARGA EN SILENCIO (Para que el cálculo de saldos sea perfecto)
-    try {
-        if (selectCajeros) {
-            selectCajeros.innerHTML = `<option>Sincronizando saldos reales...</option>`; // Mensaje visual temporal
-            selectCajeros.disabled = true;
-        }
-
-        let hoyLocal = typeof getFechaLocal === 'function' ? getFechaLocal() : new Date().toLocaleString("sv-SE", { timeZone: "America/Mexico_City" }).substring(0, 10);
-        
-        // Descargamos de PocketBase ÚNICAMENTE las ventas del día de hoy para no gastar internet
-        let records = await pb.collection('ventas').getFullList({ 
-            filter: `fecha >= "${hoyLocal}"`,
-            requestKey: null 
-        });
-
-        // Inyectamos las ventas descargadas al sistema temporalmente para la matemática
-        let vNube = records.map(r => r.data);
-        let mapaTemp = {};
-        if (typeof ventas !== 'undefined') ventas.forEach(v => mapaTemp[v.id] = v);
-        vNube.forEach(v => mapaTemp[v.id] = v);
-        ventas = Object.values(mapaTemp).sort((a,b) => a.id - b.id);
-
-    } catch(err) {
-        console.log("⚠️ Sincronización silenciosa omitida (Sin internet o error). Usando datos locales.", err);
-    }
-
-    // 🧮 3. AHORA SÍ: Con las ventas en memoria, cargamos los saldos exactos al centavo
-    cargarCajerosEnModal();
-    if (selectCajeros) selectCajeros.disabled = false;
-
-    // 💵 4. Asignamos los montos visuales a la ventana
-    inputEfectivo.value = totalCompraAProcesar.toFixed(2);
-    inputTarjeta.value = "0.00";
-    totalTexto.innerText = totalCompraAProcesar.toFixed(2);
-    
-    // 🚪 5. Mostramos la ventana y calculamos diferencias
-    modal.style.display = "flex";
-    calcularRestanteCompra(); 
-}
 
 
 // Controla el comportamiento al cambiar el método de pago principal
@@ -2218,11 +2278,13 @@ async function finalizarCompra() {
         // CASO B: Es pago mixto
         abrirPagoMixtoCompra(totalCompra); 
         
-    } else if (met === "Credito") {
+   } else if (met === "Credito") {
         // CASO C: Se guarda en la cuenta de deudas
         isGuardandoCompra = true;
         try {
-            let metaPago = { metodo: "Crédito", es_credito: true };
+            // 🌟 PARCHE 1: Le enviamos el monto exacto para que lo anote en la libreta
+            let metaPago = { metodo: "Crédito", es_credito: true, monto_credito: totalCompra };
+            
             await procesarGuardadoEInventario(totalCompra, "Crédito", metaPago);
             alert("✅ Compra a crédito registrada. Deuda asignada al proveedor.");
         } catch (e) { console.error(e); } finally { isGuardandoCompra = false; }
@@ -2240,69 +2302,7 @@ async function finalizarCompra() {
         } catch (e) { console.error(e); } finally { isGuardandoCompra = false; }
     }
 }
-async function guardarCompraMixtaFinal() {
-    if (isGuardandoCompra) return;
-    isGuardandoCompra = true;
 
-    try {
-        let totalCompra = totalCompraAProcesar;
-        let prov = document.getElementById('c_proveedor').value.trim();
-        
-        // 1. Recopilamos los montos ingresados en el modal mixto
-        let efectivo = parseFloat(document.getElementById("pago_compra_efectivo").value) || 0;
-        let tarjeta = parseFloat(document.getElementById("pago_compra_tarjeta").value) || 0;
-        let origenEfectivo = document.getElementById("pago_compra_origen_efectivo").value;
-
-        // 2. Procesamos el impacto financiero en las Cajas/Movimientos
-        let cajasAfectadas = {};
-        
-        if (efectivo > 0) {
-            cajasAfectadas[origenEfectivo] = efectivo;
-            
-            // Registramos el retiro de efectivo de la caja elegida
-            let idMov = Date.now();
-            let nuevoMov = { 
-                id: idMov, 
-                fecha: getFechaLocal(), 
-                hora: new Date().toLocaleTimeString(), 
-                cajero: origenEfectivo === "Caja_Actual" ? usuarioActual : origenEfectivo, // Registra de quién se extrajo
-                sucursal: sucursalActual, 
-                tipo: 'Retiro', 
-                monto: efectivo, 
-                motivo: 'Compra Mixta ' + (prov ? ` (${prov})` : '') 
-            };
-            
-            movimientos.push(nuevoMov); 
-            localStorage.setItem("pos_movimientos_v1", JSON.stringify(movimientos));
-            if (typeof db !== 'undefined') await db.collection("movimientos").doc(String(idMov)).set(nuevoMov).catch(e => console.error(e));
-        }
-
-        if (tarjeta > 0) {
-            cajasAfectadas["Banco_Terminal"] = tarjeta;
-        }
-
-        // 3. Preparamos la metadata del pago mixto para guardarla en el ticket de compra
-        let metaPago = {
-            metodo: "Mixto",
-            es_mixto: true,
-            desglose_pago: { "Efectivo": efectivo, "Tarjeta/Transferencia": tarjeta },
-            cajas_afectadas: cajasAfectadas
-        };
-
-        // 4. Ejecutamos la actualización masiva de inventarios, costos y kardex
-        await procesarGuardadoEInventario(totalCompra, "Mixto", metaPago);
-
-        // Cerramos el modal de pago mixto exitosamente
-        document.getElementById('modalPagoMixtoCompra').style.display = 'none';
-        alert("✅ Compra procesada y guardada con éxito.");
-
-    } catch (error) {
-        console.error("Error en flujo de guardado mixto:", error);
-        alert("Ocurrió un error al guardar la compra.");
-    } finally {
-        isGuardandoCompra = false;
-    }
-}
 
 // 📦 FUNCIÓN AUXILIAR MAESTRA (Con auditoría contable y descuento de cajas en vivo)
 async function procesarGuardadoEInventario(totalCompra, metodoNombre, metaPago) {
@@ -2442,12 +2442,44 @@ async function procesarGuardadoEInventario(totalCompra, metodoNombre, metaPago) 
         }
     }
 
+
+
+    // 🌟 PARCHE 2: ANOTAR LA DEUDA EN LA LIBRETA DEL PROVEEDOR
+    if (metaPago && metaPago.es_credito && metaPago.monto_credito > 0) {
+        let nombreProv = prov || "Proveedor General";
+        
+        // 1. Si el proveedor es nuevo y no existe, le creamos su expediente
+        if (!proveedores[nombreProv]) {
+            proveedores[nombreProv] = { sucursal: sucursalActual, saldo: 0, historial: [] };
+        }
+        
+        // 2. Le sumamos el dinero que le debemos
+        proveedores[nombreProv].saldo = (proveedores[nombreProv].saldo || 0) + metaPago.monto_credito;
+        
+        // 3. Lo anotamos en su Estado de Cuenta (Historial)
+        if (!proveedores[nombreProv].historial) proveedores[nombreProv].historial = [];
+        proveedores[nombreProv].historial.push({ 
+            fecha: getFechaLocal(), 
+            hora: new Date().toLocaleTimeString(), 
+            tipo: 'Compra', 
+            monto: metaPago.monto_credito, 
+            detalle: `Folio Ticket Nube: ${idCompra}` 
+        });
+
+        // 4. Guardamos todo en Disco Duro local y en la Nube
+        localStorage.setItem("pos_proveedores_v1", JSON.stringify(proveedores));
+        if (typeof db !== 'undefined') db.collection("proveedores").doc(nombreProv).set(proveedores[nombreProv]);
+        
+        // 5. Refrescamos la pantalla de proveedores al instante
+        if (typeof renderProveedores === 'function') renderProveedores();
+    }
+
+
     // --- 4. Limpieza del carrito ---
     carC = []; renderC(); renderI(); renderCorte(); 
-    if(esInventarioInicial) {
-        document.getElementById('c_inventario_inicial').checked = false; 
-    }
+    if(esInventarioInicial) { document.getElementById('c_inventario_inicial').checked = false; }
 }
+    
 
 function pausarCompraActual() {
     if(carC.length === 0) return alert("❌ Lista vacía.");
@@ -2814,7 +2846,17 @@ function renderClientes() {
         let c = clientes[tel]; 
         if (c.sucursal === sucursalActual || (!c.sucursal && sucursalActual === 'Matriz')) {
             count++;
-            html += `<tr><td>${tel}</td><td><b>${c.nom}</b></td><td>$${(c.limite||0).toFixed(2)}</td><td style="color:${c.saldo > 0 ? 'var(--danger)' : '#000'}; font-weight:bold;">$${(c.saldo||0).toFixed(2)}</td><td><button style="background:var(--s); color:white; border:none; padding:5px 10px; border-radius:5px; cursor:pointer;" onclick="abrirModalAbono('${tel}')">💲 Abonar</button> <button style="background:var(--p); color:white; border:none; padding:5px 10px; border-radius:5px; cursor:pointer;" onclick="editarCliente('${tel}')">✏️</button> <button style="background:var(--danger); color:white; border:none; padding:5px 10px; border-radius:5px; cursor:pointer;" onclick="abrirModalAuthCli('${tel}')">🗑️</button></td></tr>`; 
+            html += `<tr>
+                <td>${tel}</td><td><b>${c.nom}</b></td>
+                <td>$${(c.limite||0).toFixed(2)}</td>
+                <td style="color:${c.saldo > 0 ? 'var(--danger)' : '#000'}; font-weight:bold;">$${(c.saldo||0).toFixed(2)}</td>
+                <td>
+                    <button title="Ver Estado de Cuenta" style="background:var(--info); color:white; border:none; padding:5px 10px; border-radius:5px; cursor:pointer;" onclick="abrirHistorialCli('${tel}')">📋</button>
+                    <button title="Recibir Abono" style="background:var(--s); color:white; border:none; padding:5px 10px; border-radius:5px; cursor:pointer;" onclick="abrirModalAbono('${tel}')">💲</button> 
+                    <button title="Editar Cliente" style="background:var(--p); color:white; border:none; padding:5px 10px; border-radius:5px; cursor:pointer;" onclick="editarCliente('${tel}')">✏️</button> 
+                    <button title="Eliminar Cliente" style="background:var(--danger); color:white; border:none; padding:5px 10px; border-radius:5px; cursor:pointer;" onclick="abrirModalAuthCli('${tel}')">🗑️</button>
+                </td>
+            </tr>`; 
             selectHtml += `<option value="${tel}">${c.nom}</option>`; 
         }
     }); 
@@ -2835,9 +2877,19 @@ function confirmarAbono() {
     let monto = parseFloat(document.getElementById('abono_monto').value) || 0; if(monto <= 0) return; 
     let c = clientes[telAbonoActual]; if(!c) return; 
     if(monto > (c.saldo||0)) if(!confirm("Abono > deuda. ¿Saldo a favor?")) return; 
-    let metodoPago = document.getElementById('abono_metodo_pago').value; c.saldo = (c.saldo||0) - monto; 
+    let metodoPago = document.getElementById('abono_metodo_pago').value; 
+    c.saldo = (c.saldo||0) - monto; 
+    
+    let idAbono = Date.now(); 
+    // 📖 GUARDAR EN LA LIBRETA DEL CLIENTE
+    if (!c.historial) c.historial = [];
+    c.historial.push({
+        id_venta: idAbono, fecha: getFechaLocal(), hora: new Date().toLocaleTimeString(),
+        tipo: 'Abono', monto: monto, detalle: `Pago con: ${metodoPago}`
+    });
+    
     db.collection("clientes").doc(telAbonoActual).set(c); 
-    let idAbono = Date.now(); db.collection("ventas").doc(String(idAbono)).set({ id: idAbono, fecha: getFechaLocal(), hora: new Date().toLocaleTimeString(), cajero: usuarioActual, sucursal: sucursalActual, total: monto, metodo: 'Abono ' + metodoPago, items: `Abono de ${c.nom}`, anulada: false }); 
+    db.collection("ventas").doc(String(idAbono)).set({ id: idAbono, fecha: getFechaLocal(), hora: new Date().toLocaleTimeString(), cajero: usuarioActual, sucursal: sucursalActual, total: monto, metodo: 'Abono ' + metodoPago, items: `Abono de ${c.nom}`, anulada: false }); 
     alert("✅ Abono registrado."); cerrarModales(); 
 }
 function abrirModalAuthCli(tel) { cliAEliminar = tel; document.getElementById('auth_cli_nom').innerText = clientes[tel].nom; document.getElementById('auth_admin_pin_cli').value = ''; document.getElementById('modalAuthAdminCli').style.display = 'block'; setTimeout(() => document.getElementById('auth_admin_pin_cli').focus(), 100); }
@@ -3377,7 +3429,7 @@ function anularVentaVisor() {
     }
     
     vReal.anulada = true; 
-    
+    visorIndices[currentVisorPos].anulada = true;
     db.collection("ventas").doc(String(vReal.id)).set(vReal).then(() => {
         // 🎯 AQUÍ OCURRE LA MAGIA DE REVERSIÓN:
         // Le mandamos la venta al acumulador pero con la bandera "true" para que RESTA todo el dinero y la ganancia
@@ -3606,31 +3658,6 @@ function focoCajaEnter(e, nextId) {
         if (e.target.id === 'caja_codigo') buscarProdCaja();
         if (nextId === 'btn_agregar_caja') agregarCajaACarrito(); 
         else { let n = document.getElementById(nextId); if (n) { n.focus(); n.select(); } }
-    }
-}
-// ====================================================================
-// === MÓDULO DE TRANSFERENCIAS Y FALTANTES ===
-// ====================================================================
-
-function abrirTransferencia() {
-    carT = []; // Limpiamos la lista de la transferencia nueva
-    
-    // Reseteamos los selectores
-    if (document.getElementById('t_origen')) document.getElementById('t_origen').value = sucursalActual;
-    if (document.getElementById('t_destino')) document.getElementById('t_destino').value = "";
-    
-    // Limpiamos la tabla (usando tu ID exacto t_lista_tab)
-    if (document.getElementById('t_lista_tab')) document.getElementById('t_lista_tab').innerHTML = "";
-    
-    // Abrimos el modal (usando tu ID exacto modalTransfer)
-    let modal = document.getElementById('modalTransfer');
-    if (modal) {
-        modal.style.display = 'block';
-        setTimeout(() => { 
-            if(document.getElementById('t_cod')) document.getElementById('t_cod').focus(); 
-        }, 100);
-    } else {
-        alert("Error: No se encontró el panel de transferencias en el HTML.");
     }
 }
 
@@ -5150,21 +5177,7 @@ document.addEventListener('keydown', function(e) {
     }
 });
 
-// 2. Le damos un "empujoncito" a tu función original para que enfoque el primer billete automáticamente
-let abrirCorteOriginal = window.abrirCorteCaja;
-window.abrirCorteCaja = function() {
-    // Ejecuta todo lo que tu función original ya hacía perfectamente
-    if(typeof abrirCorteOriginal === 'function') abrirCorteOriginal();
-    
-    // Y le agregamos este pequeño extra: colocar el cursor en los billetes de $1000
-    setTimeout(() => {
-        let primerBillete = document.querySelector('.calc-den');
-        if(primerBillete) {
-            primerBillete.focus();
-            primerBillete.select();
-        }
-    }, 200); // Le damos 200ms para asegurar que el modal ya se abrió visualmente
-};
+
 // ====================================================================
 // === ⚓ SEGURO ANTI-SALTOS Y REPARACIÓN DEL MENÚ SUPERIOR ============
 // ====================================================================
@@ -5204,85 +5217,60 @@ function anularCompraAdmin(idCompra) {
 // 2. Esta función se dispara cuando tecleas la clave y le das a "ANULAR"
 async function ejecutarAnulacionCompra() {
     let passwordIngresada = document.getElementById("input_password_anular").value;
-    
-    if (passwordIngresada === "") {
-        alert("⚠️ Por favor ingresa una contraseña.");
-        return;
+    if (passwordIngresada === "") return alert("⚠️ Por favor ingresa una contraseña.");
+
+    // Validación instantánea sin hacer consultas lentas a la nube
+    if (!usuariosData["Admin"] || usuariosData["Admin"].pin !== passwordIngresada) {
+        return alert("❌ Contraseña incorrecta. Operación cancelada.");
     }
 
+    document.getElementById("modalPasswordAnular").style.display = "none";
 
-      try {
-        // 🔐 VERIFICACIÓN CON TU ESTRUCTURA PERSONALIZADA
-        
-        // 1. Forzamos al sistema a buscar SIEMPRE el PIN del usuario administrador
-        let usuarioActivo = "Admin"; // (Asegúrate de que en PocketBase el doc_id sea exactamente 'admin')
-        
-        // 2. Buscamos a este usuario en la base de datos.
-        let registroUsuario = await pb.collection('usuarios').getFirstListItem(`doc_id="${usuarioActivo}"`);
-
-        // 3. Extraemos el PIN directamente del JSON
-        let pinReal = registroUsuario.data.pin;
-
-        // 4. Comparamos lo que tecleaste con el PIN de la base de datos
-        if (passwordIngresada !== pinReal) {
-            alert("❌ Contraseña incorrecta. Operación cancelada.");
-            return; // Detenemos todo
-        }
-
-        // Si el código llega a esta línea, ¡la contraseña es CORRECTA! 🎉
-        document.getElementById("modalPasswordAnular").style.display = "none";
-        
-    } catch (error) {
-        console.error("Error al buscar al usuario en la base de datos:", error);
-        alert("❌ Ocurrió un error al verificar tu usuario. Revisa la consola.");
-        return; // Detenemos todo
-    }
-
-    // --- LÓGICA DE DEVOLUCIÓN DE STOCK Y BORRADO ---
     try {
-        // 1. Buscamos el ticket usando TU folio (doc_id) en lugar del ID interno
-        const ticketCompra = await pb.collection('compras').getFirstListItem(`doc_id="${idCompraTemporal}"`);
-        
-        // 2. Extraemos la lista de productos (gracias a tu foto sabemos que se llama 'items')
-        let listaArticulos = ticketCompra.data.items || [];
+        // 1. Buscamos el ticket de compra directamente en nuestra memoria ultra-rápida
+        let cIndex = compras.findIndex(c => c.id == idCompraTemporal || c.doc_id == idCompraTemporal);
+        if (cIndex === -1) return alert("❌ No se encontró la compra en el sistema.");
 
-        // 3. Devolvemos el stock al estante (restando la compra)
-        if (listaArticulos.length > 0) {
-            for (let item of listaArticulos) {
-                try {
-                    let productoDB = await pb.collection('productos').getFirstListItem(`codigo="${item.cod}"`);
-                    let stockRestaurado = productoDB.stock - item.can;
-                    await pb.collection('productos').update(productoDB.id, {
-                        stock: stockRestaurado
-                    });
-                } catch (err) {
-                    console.warn(`⚠️ Producto con código ${item.cod} no encontrado. No se pudo restar stock.`);
+        let compraReal = compras[cIndex];
+        if (compraReal.anulada) return alert("⚠️ Esta compra ya estaba anulada.");
+
+        // 2. Devolvemos el stock restando lo que habíamos comprado
+        let listaArticulos = compraReal.items || compraReal.detalles || [];
+        listaArticulos.forEach(item => {
+            let prod = inv[item.cod];
+            if (prod) {
+                if (!prod.stock) prod.stock = {};
+                // Restamos la cantidad que habíamos "comprado"
+                prod.stock[sucursalActual] = (prod.stock[sucursalActual] || 0) - item.can; 
+                db.collection("inventario").doc(item.cod).set(prod);
+                
+                // Registramos en el historial de Kardex
+                if (typeof registrarEnKardex === 'function') {
+                    registrarEnKardex(item.cod, prod.nom, "ANULACIÓN COMPRA", -item.can, 0, item.cos);
                 }
             }
+        });
+
+        // 3. Sellamos la compra como anulada en la computadora y en la nube
+        compraReal.anulada = true;
+        localStorage.setItem("pos_compras_local", JSON.stringify(compras));
+        db.collection("compras").doc(String(compraReal.id)).set(compraReal);
+
+        // 4. Actualizamos el visor visual para que pinte el sello al instante
+        if (visorComprasIndices[currentVisorCompraPos]) {
+            visorComprasIndices[currentVisorCompraPos].anulada = true;
         }
 
-     // --- ANTES BORRÁBAMOS EL TICKET, AHORA LO MARCAMOS COMO ANULADO ---
+        alert("✅ Compra anulada y stock devuelto con éxito.");
         
-        // 1. Clonamos el objeto data actual y le agregamos la propiedad 'anulada'
-        let dataActualizada = { ...ticketCompra.data };
-        dataActualizada.anulada = true; // 🏷️ Aquí le ponemos la marca del sello
-
-        // 2. Actualizamos el registro en PocketBase en lugar de destruirlo
-        await pb.collection('compras').update(ticketCompra.id, {
-            data: dataActualizada
-        });
-        
-        alert("✅ Compra anulada y stock descontado con éxito (El registro se conservará como ANULADO).");
-        
-        // 3. Cerramos el visor y recargamos para aplicar los cambios visuales
-        document.getElementById('modalVisorCompras').style.display = 'none';
-        
-        // Si tienes una función para refrescar los datos globales de compras, llámala aquí:
-        // await cargarComprasGlobales(); 
+        // Refrescamos las pantallas
+        renderVisorCompraActiva(); 
+        renderI();
+        if (tabActual === 'r-tab') renderCorte();
 
     } catch (error) {
         console.error("Fallo al anular la compra:", error);
-        alert("❌ Ocurrió un error al intentar actualizar el registro.");
+        alert("❌ Ocurrió un error al intentar anular.");
     }
 }
 // ======================================================================
@@ -5590,15 +5578,18 @@ function inyectarMatrizAuditoria() {
 
     sesionEnRevisionActiva.conteo.forEach((item, index) => {
         let prodSistema = inv[item.cod];
-        let stockSistema = prodSistema ? ((prodSistema.stock && prodSistema.stock[sucursalActual]) || 0) : 0;
+        let stockVivoSistema = prodSistema ? ((prodSistema.stock && prodSistema.stock[sucursalActual]) || 0) : 0;
         let costoProd = prodSistema ? (prodSistema.cos || 0) : 0;
 
+        // 📸 Usamos la foto congelada. Si por alguna razón es vieja y no la tiene, usamos el vivo.
+        let stockBaseParaAuditoria = item.stock_congelado !== undefined ? item.stock_congelado : stockVivoSistema;
+
         let cantFisica = parseFloat(item.can_fisica) || 0;
-        let diferencia = cantFisica - stockSistema;
+        let diferencia = cantFisica - stockBaseParaAuditoria;
         let impactoDinero = diferencia * costoProd;
 
         totalImpactoNeto += impactoDinero;
-        costoTotalSistema += (stockSistema * costoProd);
+        costoTotalSistema += (stockBaseParaAuditoria * costoProd);
 
         let tipo = 'exacto';
         if (diferencia < 0) { tipo = 'faltante'; faltantes++; costoTotalPerdido += Math.abs(impactoDinero); }
@@ -5614,7 +5605,7 @@ function inyectarMatrizAuditoria() {
                 <tr style="border-bottom:1px solid #eee;">
                     <td style="padding:12px; text-align:center;"><input type="checkbox" class="chk_item_auditoria" data-index="${index}" ${tipo==='exacto'?'disabled':''}></td>
                     <td style="padding:12px;"><b>${item.nom || 'Desconocido'}</b><br><small style="color:#888;">${item.cod}</small></td>
-                    <td style="padding:12px; text-align:center; background:#f8f9fa;">${stockSistema}</td>
+                    <td style="padding:12px; text-align:center; background:#f8f9fa;">${stockBaseParaAuditoria}</td>
                     <td style="padding:12px; text-align:center; font-weight:bold; color:#17a2b8;">${cantFisica}</td>
                     <td style="padding:12px; text-align:center; font-weight:bold; color:${colorDif};">${textDif}</td>
                     <td style="padding:12px; text-align:right; font-weight:bold;">$${impactoDinero.toFixed(2)}</td>
@@ -5625,7 +5616,6 @@ function inyectarMatrizAuditoria() {
     document.getElementById('count_faltantes').innerText = faltantes;
     document.getElementById('count_sobrantes').innerText = sobrantes;
     document.getElementById('count_exactos').innerText = exactos;
-
     document.getElementById('audi_val_sistema').innerText = `$${costoTotalSistema.toFixed(2)}`;
     document.getElementById('audi_val_perdida').innerText = `$${costoTotalPerdido.toFixed(2)}`;
     document.getElementById('audi_porcentaje_perdida').innerText = `${(costoTotalSistema > 0 ? (costoTotalPerdido / costoTotalSistema) * 100 : 0).toFixed(2)}%`;
@@ -5633,16 +5623,10 @@ function inyectarMatrizAuditoria() {
 
     tbody.innerHTML = htmlTabla || `<tr><td colspan="6" style="padding:30px; text-align:center; color:#888;">No hay productos.</td></tr>`;
 
-    // 🔘 ¡EL PARCHE FINALES! Devolvemos la visibilidad inteligente a tus botones de acción
     let btnRevision = document.getElementById('btn_mandar_revision');
     let btnAprobar = document.getElementById('btn_aprobar_auditoria');
-    
-    if (btnRevision) {
-        btnRevision.style.display = filtroAuditoriaActual !== 'exacto' && (faltantes > 0 || sobrantes > 0) ? 'inline-block' : 'none';
-    }
-    if (btnAprobar) {
-        btnAprobar.style.display = 'inline-block';
-    }
+    if (btnRevision) btnRevision.style.display = filtroAuditoriaActual !== 'exacto' && (faltantes > 0 || sobrantes > 0) ? 'inline-block' : 'none';
+    if (btnAprobar) btnAprobar.style.display = 'inline-block';
 }
 function filtrarTablaAuditoria(tipo) {
     filtroAuditoriaActual = tipo;
@@ -5715,36 +5699,43 @@ function aprobarYAjustarInventario() {
         // 🎯 EL NUEVO RADAR: Busca todas las casillas que tengan la "palomita" puesta en este momento
         let casillasMarcadas = document.querySelectorAll('.chk_item_auditoria:checked');
 
-        // Recorremos solo las que están marcadas
+       // Recorremos solo las que están marcadas
         casillasMarcadas.forEach(casilla => {
-            // Sacamos el número de renglón (index) para saber qué producto es
             let index = casilla.getAttribute('data-index');
             let item = sesionEnRevisionActiva.conteo[index];
 
             if (item) {
                 let prod = inv[item.cod];
                 if (prod) {
-                    let stockAnterior = prod.stock ? (prod.stock[sucursalActual] || 0) : 0;
-                    let nuevoStock = parseFloat(item.can_fisica) || 0;
-                    let diferencia = nuevoStock - stockAnterior;
+                    let stockActualEnVivo = prod.stock ? (prod.stock[sucursalActual] || 0) : 0;
+                    
+                    // Recuperamos la foto congelada (o el actual si no existe)
+                    let stockCongelado = item.stock_congelado !== undefined ? item.stock_congelado : stockActualEnVivo;
+                    let conteoDelCajero = parseFloat(item.can_fisica) || 0;
+                    
+                    // 🧮 MATEMÁTICA PURA: ¿Cuánto sobró o faltó realmente ese día?
+                    let ajusteMatematico = conteoDelCajero - stockCongelado;
+
+                    // Le sumamos o restamos ese error al stock que hay ahorita (respetando las ventas nuevas)
+                    let stockFinalCalculado = stockActualEnVivo + ajusteMatematico;
 
                     if (!prod.stock) prod.stock = {};
-                    prod.stock[sucursalActual] = nuevoStock;
+                    prod.stock[sucursalActual] = stockFinalCalculado;
                     
                     // Guarda en la nube
                     if (typeof db !== 'undefined') db.collection("inventario").doc(item.cod).set(prod);
 
-                    // Registra el movimiento en tu Kardex
+                    // Registra el movimiento matemático exacto en tu Kardex
                     if (typeof registrarEnKardex === 'function') {
-                        registrarEnKardex(item.cod, prod.nom || "Desconocido", "AUDITORÍA INVENTARIO", diferencia, prod.pv || 0, prod.cos || 0);
+                        registrarEnKardex(item.cod, prod.nom || "Desconocido", "AUDITORÍA INVENTARIO", ajusteMatematico, prod.pv || 0, prod.cos || 0);
                     }
 
                     itemsAplicados.push({
                         cod: item.cod,
                         nom: prod.nom || "Desconocido",
-                        stock_anterior: stockAnterior,
-                        stock_nuevo: nuevoStock,
-                        diferencia: diferencia
+                        stock_anterior: stockActualEnVivo, // Para historial guardamos cómo estaba antes del clic
+                        stock_nuevo: stockFinalCalculado,
+                        diferencia: ajusteMatematico
                     });
                 }
             }
@@ -5963,16 +5954,23 @@ function enviarInventarioCiego() {
     if (conteoActualCiego.length === 0) return alert("⚠️ No has escaneado ningún producto.");
     let pendientes = JSON.parse(localStorage.getItem('pos_sesiones_inventario') || "[]");
 
+    // 📸 LA MAGIA: Tomamos una "foto" del stock del sistema en este instante exacto
+    conteoActualCiego.forEach(item => {
+        if (item.stock_congelado === undefined) {
+            let prod = inv[item.cod];
+            item.stock_congelado = prod && prod.stock ? (prod.stock[sucursalActual] || 0) : 0;
+        }
+    });
+
     if (idRevisionActivaCajero) {
         let index = pendientes.findIndex(b => b.id === idRevisionActivaCajero);
         if (index !== -1) {
-            
-            // 🎯 FUSIÓN DE DATOS: Conservamos el reporte original y actualizamos únicamente lo que se auditó
+            // FUSIÓN DE DATOS
             conteoActualCiego.forEach(itemAuditado => {
                 let itemOriginal = pendientes[index].conteo.find(x => x.cod === itemAuditado.cod);
                 if (itemOriginal) {
                     itemOriginal.can_fisica = itemAuditado.can_fisica;
-                    delete itemOriginal.requiere_reconteo; // Quitamos la marca para liberarlo
+                    delete itemOriginal.requiere_reconteo; 
                 }
             });
 
@@ -6068,19 +6066,16 @@ setTimeout(conectarInputCiegoManual, 1200);
 function conectarInputCiegoManual() {
     let inputCiego = document.getElementById('input_escaneo_ciego');
     if (inputCiego) {
-        inputCiego.onkeydown = null; 
-        inputCiego.addEventListener('keydown', function(event) {
+        // Asignación directa evita duplicaciones
+        inputCiego.onkeydown = function(event) {
             if (event.key === 'Enter' || event.keyCode === 13) {
                 event.preventDefault(); 
                 let codigoEscaneado = this.value.trim();
-                if (codigoEscaneado) {
-                    ejecutarEscaneoDirecto(codigoEscaneado);
-                }
+                if (codigoEscaneado) ejecutarEscaneoDirecto(codigoEscaneado);
             }
-        });
+        };
     }
 }
-
 // Aseguramos la recarga del trigger de pestañas de Admin
 let btnAudiTab = document.getElementById('btn_audi-tab');
 if(btnAudiTab) { btnAudiTab.addEventListener('click', () => { cargarBorradoresPendientes(); }); }
@@ -6247,5 +6242,72 @@ async function mostrarEstadisticasAuditoria() {
             <p>No se pudo descargar el historial.</p>
             <button class="btn-final" style="background:#333; margin-top:15px;" onclick="document.getElementById('${modalId}').style.display='none'">Cerrar</button>
         </div>`;
+        } 
     }
-}
+
+
+    
+// ====================================================================
+// === 📖 HISTORIAL DE CLIENTES Y BÚSQUEDA DE TICKETS ===
+// ====================================================================
+window.abrirHistorialCli = function(tel) {
+    let c = clientes[tel]; if(!c) return;
+    document.getElementById('hist_cli_nom').innerText = c.nom; 
+    document.getElementById('hist_cli_saldo').innerText = (c.saldo || 0).toFixed(2);
+    
+    let html = (c.historial || []).map(h => {
+        let colorMonto = h.tipo === 'Abono' ? 'var(--s)' : 'var(--danger)';
+        let signo = h.tipo === 'Abono' ? '-' : '+';
+        
+        // Botón mágico para ir a buscar el ticket de esta venta
+        let btnTicket = h.id_venta ? `<button onclick="window.verTicketDesdeHistorial('${h.id_venta}', this)" style="background:#0d6efd; color:white; border:none; padding:6px 12px; border-radius:4px; cursor:pointer; font-weight:bold;">🧾 Ver Ticket</button>` : '---';
+
+        return `<tr style="border-bottom: 1px solid #eee;">
+            <td style="padding: 10px;">${h.fecha} <br> <small style="color:#888;">${h.hora}</small></td>
+            <td><b>${h.tipo}</b></td>
+            <td>${h.detalle}</td>
+            <td style="text-align:right; font-weight:bold; color:${colorMonto};">${signo}$${(h.monto||0).toFixed(2)}</td>
+            <td style="text-align:center;">${btnTicket}</td>
+        </tr>`;
+    }).join('') || '<tr><td colspan="5" style="text-align:center; padding: 20px; color:#888;">Este cliente aún no tiene movimientos de crédito.</td></tr>';
+    
+    document.getElementById('hist_cli_lista').innerHTML = html;
+    document.getElementById('modalHistorialCli').style.display = 'block';
+   
+};
+
+window.verTicketDesdeHistorial = async function(idVenta, btnElement) {
+    let indiceLocal = ventas.findIndex(v => String(v.id) === String(idVenta));
+    
+    if (indiceLocal !== -1) {
+        visorIndices = ventas.map((v, idx) => ({...v, indexGlobal: idx})).filter(v => String(v.id) === String(idVenta));
+        if(visorIndices.length > 0) {
+            currentVisorPos = 0;
+            renderVisorActivo();
+            document.getElementById('modalHistorialCli').style.display = 'none'; 
+            document.getElementById('modalVisor').style.display = 'block'; 
+        }
+    } else {
+        try {
+            let textoOriginal = btnElement.innerText;
+            btnElement.innerText = "⏳ Buscando...";
+            btnElement.disabled = true;
+
+            let record = await pb.collection('ventas').getFirstListItem(`doc_id="${idVenta}"`);
+            
+            ventas.push(record.data);
+            visorIndices = [{ ...record.data, indexGlobal: ventas.length - 1 }];
+            currentVisorPos = 0;
+            
+            renderVisorActivo();
+            document.getElementById('modalHistorialCli').style.display = 'none';
+            document.getElementById('modalVisor').style.display = 'block';
+            
+            btnElement.innerText = textoOriginal;
+            btnElement.disabled = false;
+        } catch (err) {
+            alert("❌ No se encontró el ticket en la nube. Puede que haya sido eliminado permanentemente.");
+            btnElement.innerText = "Desconocido";
+        }
+    }
+}; // <--- ESTAS TRES LÍNEAS FINALES SON LAS QUE TE FALTABAN PARA QUE EL ARCHIVO NO MARCARA ERROR
