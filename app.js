@@ -250,7 +250,7 @@ let visorIndices = []; let currentVisorPos = -1;
 let searchResultsList = [];
 let focusSearchIndex = 0;
 var listaSucursales = ["Matriz", "Sucursal 1", "Sucursal 2"]; 
-
+let filtroTopActual = 'cantidad'; // Valor por defecto
 
 // ====================================================================
 // === RECUPERACIÓN DE DATOS LOCALES (Fallback) ===
@@ -1890,14 +1890,14 @@ window.confirmarVenta = function(cambioFinal = 0) {
         document.getElementById('ticket_items').innerHTML = itemsHtml;
         document.getElementById('ticket_total').innerText = tot.toFixed(2);
         document.getElementById('ticket_metodo').innerText = metodosStr;
-        // Otro escudo por si el cambio viene vacío
+        
+        // 🌟 EL PARCHE: Sumamos todo el dinero que entregó el cliente y lo pintamos
+        let pagoCliente = pagosCobro.reduce((suma, pago) => suma + (parseFloat(pago.montoEntregado) || 0), 0);
+        document.getElementById('ticket_pagado').innerText = pagoCliente.toFixed(2);
         document.getElementById('ticket_cambio').innerText = (parseFloat(cambioFinal) || 0).toFixed(2);
         document.getElementById('ticket_cajero').innerText = usuarioActual;
 
-        // 🌟 Calculamos matemáticamente con cuánto pagó
-        let pagoCliente = tot + (parseFloat(cambioFinal) || 0);
-
-        // 🌟 Usamos el mismo 'idV' que generamos al principio (SIN la palabra 'let')
+        // 🌟 Guardamos la venta con los datos exactos
         let nuevaV = { 
             id: idV, 
             fecha: hoy, 
@@ -1909,22 +1909,25 @@ window.confirmarVenta = function(cambioFinal = 0) {
             pagos: pagosCobro, 
             items: carV.map(x=>x.nom).join(','), 
             detalles: detalles, 
-            anulada: false,
-            pagoCon: pagoCliente, // 🌟 Agregamos cuánto nos dio
-            cambio: cambioFinal   // 🌟 Agregamos cuánto le devolvimos
+            anulada: false, 
+            pagoCon: pagoCliente, 
+            cambio: cambioFinal 
         };
-        ventas.push(nuevaV); localStorage.setItem("pos_ventas_v6", JSON.stringify(ventas.slice(-200)));
-        db.collection("ventas").doc(String(idV)).set(nuevaV);
+        
+        ventas.push(nuevaV); 
+        localStorage.setItem("pos_ventas_v6", JSON.stringify(ventas.slice(-200)));
+        if(typeof db !== 'undefined') db.collection("ventas").doc(String(idV)).set(nuevaV);
 
-        // 🎯 AQUI OCURRE LA MAGIA: Le avisamos al Acumulador que se hizo una venta para que sume
-        if (typeof actualizarAcumuladorDiario === 'function') {
-            actualizarAcumuladorDiario(nuevaV, false);
+        if (typeof actualizarAcumuladorDiario === 'function') { 
+            actualizarAcumuladorDiario(nuevaV, false); 
         }
-
+        
         carV = []; nombreVentaActual = ""; forceWholesale = false; renderV();
         document.getElementById('modalCobro').style.display = 'none';
         document.getElementById('modalTicket').style.display = 'block';
-    } catch(err) { console.error("Error al cobrar:", err); }
+    } catch(err) { 
+        console.error("Error al cobrar:", err); 
+    }
 };
 
 // Granel
@@ -3079,7 +3082,7 @@ window.verificarPinYCancelar = function() {
 // ====================================================================
 // 📊 MOTOR DEL DASHBOARD: DETALLE TOTAL CON GRÁFICAS Y CAJEROS
 // ====================================================================
-function renderCorte() { 
+window.renderCorte = function() { 
     try {
         let fInicio = document.getElementById('corte_fecha_inicio').value; 
         let fFin = document.getElementById('corte_fecha_fin').value; 
@@ -3087,7 +3090,6 @@ function renderCorte() {
         let fSuc = document.getElementById('corte_sucursal').value; 
         let hoy = getFechaLocal();
 
-        // 🎯 FUSIÓN INTELIGENTE: Unimos ventas vivas con las descargadas sin duplicar
         let mapaVentas = {};
         (window.ventas || []).forEach(v => { if(v && v.id) mapaVentas[v.id] = v; });
         (window.ventasHistoricasTemporales || []).forEach(v => { if(v && v.id) mapaVentas[v.id] = v; });
@@ -3110,6 +3112,7 @@ function renderCorte() {
 
         if (todasLasVentas.length === 0 && todosLosMovs.length === 0) {
             if(document.getElementById('r_lista_ventas')) document.getElementById('r_lista_ventas').innerHTML = "<tr><td colspan='6' style='text-align:center'>Vacio</td></tr>";
+            if (typeof dibujarTopProductos === 'function') dibujarTopProductos(topProductosHash);
             if (typeof actualizarGraficasBI === 'function') actualizarGraficasBI({}, {}, {}, {}, {});
             return;
         }
@@ -3153,14 +3156,16 @@ function renderCorte() {
                     if(mStr.includes('Efectivo')) ef += tVentaTicket; else if(mStr.includes('Tarjeta')) ta += tVentaTicket; else if(mStr.includes('Transferencia')) trans += tVentaTicket; else if(mStr.includes('Crédito')) cr += tVentaTicket; 
                 }
 
-                let utilTicket = 0;
+                // 🚨 AQUÍ ESTABA EL ERROR: Faltaba esta variable vital
+                let utilTicket = 0; 
+
+                // 🧮 EXTRACTOR MAESTRO PARA EL TOP 10 DE PRODUCTOS
                 if (v.detalles && !esAbono) { 
                     v.detalles.forEach(d => { 
                         if(d.can > 0) { 
                             let costoUnitario = parseFloat(d.costo) || parseFloat(d.cos) || 0;
-                            
-                            // 🌟 PARCHE INTEGRADOR: Si el subtotal de la base de datos es 0, lo recalculamos con 'pv'
                             let subtotalItem = parseFloat(d.subtotal) || 0;
+                            
                             if (subtotalItem === 0) {
                                 let precioVenta = parseFloat(d.pv) || 0;
                                 if (precioVenta === 0 && typeof inv !== 'undefined' && inv[d.cod]) {
@@ -3169,17 +3174,24 @@ function renderCorte() {
                                 subtotalItem = parseFloat(d.can || 1) * precioVenta;
                             }
                             
-                            // Calculamos la utilidad real del artículo
-                            utilTicket += subtotalItem - (costoUnitario * parseFloat(d.can || 1));
+                            // ACUMULAMOS LA GANANCIA GLOBAL DEL TICKET
+                            let gananciaArticulo = subtotalItem - (costoUnitario * parseFloat(String(d.can) || 1));
+                            utilTicket += gananciaArticulo;
                             
                             depsHash[d.dep || "General"] = (depsHash[d.dep || "General"] || 0) + subtotalItem; 
                             
-                            if (!topProductosHash[d.cod]) topProductosHash[d.cod] = { nombre: d.nom || '?', cantidad: 0, total: 0 };
-                            topProductosHash[d.cod].cantidad += parseFloat(String(d.can)) || 0; 
+                            if (!topProductosHash[d.cod]) {
+                                topProductosHash[d.cod] = { nombre: d.nom || 'Producto Desconocido', cantidad: 0, total: 0, ganancia: 0 };
+                            }
+                            
+                            let cantItem = parseFloat(d.can) || 0;
+                            topProductosHash[d.cod].cantidad += cantItem; 
                             topProductosHash[d.cod].total += subtotalItem;
+                            topProductosHash[d.cod].ganancia += gananciaArticulo;
                         }
                     }); 
                 }
+                
                 tUtilidad += utilTicket; 
                 utilPorDia[dStr] = (utilPorDia[dStr] || 0) + utilTicket;
             }
@@ -3194,7 +3206,9 @@ function renderCorte() {
         }); 
 
         let ing_efectivo = 0, ret_efectivo = 0, flujo_ing_otros = 0, flujo_out_compras = 0, flujo_out_otros = 0;
-        
+        let listaRetirosGastos = []; 
+        let listaIngresosExtra = []; 
+
         todosLosMovs.forEach(m => {
             let mFecha = m.fecha || hoy; 
             if(mFecha >= fInicio && mFecha <= fFin && (!fCajero || m.cajero === fCajero) && (!fSuc || m.sucursal === fSuc)) { 
@@ -3202,9 +3216,11 @@ function renderCorte() {
                 
                 if(m.tipo === 'Ingreso') { 
                     ing_efectivo += montoM; flujo_ing_otros += montoM; 
+                    listaIngresosExtra.push(m);
                 } else if(m.tipo === 'Retiro') { 
                     ret_efectivo += montoM; 
                     if (mMotivo.includes('compra') || mMotivo.includes('proveedor')) flujo_out_compras += montoM; else flujo_out_otros += montoM; 
+                    listaRetirosGastos.push(m);
                 }
                 
                 let isIngreso = m.tipo === 'Ingreso';
@@ -3215,7 +3231,6 @@ function renderCorte() {
             } 
         });
 
-        // Calculamos el dinero esperado en caja antes de armar el reporte
         let efectivoEnCaja = ef + ing_efectivo - ret_efectivo;
         
         currentCorteData = {
@@ -3224,8 +3239,6 @@ function renderCorte() {
             ingresos: ing_efectivo, retiros: ret_efectivo, esperado: efectivoEnCaja,
             cajeroCorte: fCajero || "Todos", fechaInicio: fInicio, fechaFin: fFin
         };
-
-        // ... El resto del código de tu función que inyecta en el HTML continúa abajo igual ...
 
         document.getElementById('kpi_ventas').innerText = "$" + tVentas.toLocaleString('es-MX', {minimumFractionDigits: 2});
         document.getElementById('kpi_ganancia').innerText = "$" + tUtilidad.toLocaleString('es-MX', {minimumFractionDigits: 2});
@@ -3236,15 +3249,32 @@ function renderCorte() {
         document.getElementById('r_efectivo').innerText = "$"+efectivoEnCaja.toFixed(2); document.getElementById('r_tarjeta').innerText = "$"+ta.toFixed(2); document.getElementById('r_transferencia').innerText = "$"+trans.toFixed(2); document.getElementById('r_credito').innerText = "$"+cr.toFixed(2); document.getElementById('r_total').innerText = "$"+(ef + ta + trans).toFixed(2); 
         document.getElementById('r_lista_ventas').innerHTML = operacionesHTML.map(op => op.html).join('') || "<tr><td colspan='6' style='text-align:center'>No hay operaciones en este rango</td></tr>";
 
+        let htmlGastos = listaRetirosGastos.map(g => `<tr><td>${g.hora}</td><td>${g.motivo}</td><td style="text-align:right; color:red;">-$${parseFloat(g.monto).toFixed(2)}</td></tr>`).join('');
+        let cg = document.getElementById('cc_lista_gastos'); if(cg) { cg.innerHTML = htmlGastos || '<tr><td colspan="3" style="text-align:center; color:#888;">No hubo retiros</td></tr>'; }
+        
+        let htmlIngresos = listaIngresosExtra.map(g => `<tr><td>${g.hora}</td><td>${g.motivo}</td><td style="text-align:right; color:#28a745;">+$${parseFloat(g.monto).toFixed(2)}</td></tr>`).join('');
+        let ci = document.getElementById('cc_lista_ingresos'); if(ci) { ci.innerHTML = htmlIngresos || '<tr><td colspan="3" style="text-align:center; color:#888;">No hubo ingresos extra</td></tr>'; }
+
+        // 🚨 AQUI FALTABA ESTO: Restaurar la tabla de cajeros
+        let htmlCajerosKpi = Object.keys(metricasCajero).map(c => {
+            let m = metricasCajero[c];
+            let prom = m.tickets > 0 ? (m.total / m.tickets) : 0;
+            let hrs = m.horasUnicas.size > 0 ? m.horasUnicas.size : 1;
+            let vph = m.total / hrs;
+            return `<tr><td><b>${c}</b></td><td>$${m.total.toFixed(2)}</td><td>$${prom.toFixed(2)}</td><td style="color:var(--orange); font-weight:bold;">$${vph.toFixed(2)}</td></tr>`;
+        }).join('');
+        if(document.getElementById('kpi_tabla_cajeros')) document.getElementById('kpi_tabla_cajeros').innerHTML = htmlCajerosKpi || '<tr><td colspan="4" style="text-align:center;">Vacio</td></tr>';
+
         if(document.getElementById('flujo_in_efectivo')) {
             document.getElementById('flujo_in_efectivo').innerText = "$" + ef.toFixed(2); document.getElementById('flujo_in_digital').innerText = "$" + (ta + trans).toFixed(2); document.getElementById('flujo_in_otros').innerText = "$" + flujo_ing_otros.toFixed(2); document.getElementById('flujo_in_total').innerText = "$" + (ef + ta + trans + flujo_ing_otros).toFixed(2);
             document.getElementById('flujo_out_compras').innerText = "$" + flujo_out_compras.toFixed(2); document.getElementById('flujo_out_otros').innerText = "$" + flujo_out_otros.toFixed(2); document.getElementById('flujo_out_total').innerText = "$" + (flujo_out_compras + flujo_out_otros).toFixed(2);
         }
 
-        if (typeof actualizarGraficasBI === 'function') actualizarGraficasBI(ventasPorDia, utilPorDia, depsHash, cajerosHash, horasHash);
+        if (typeof dibujarTopProductos === 'function') window.dibujarTopProductos(topProductosHash);
+        if (typeof actualizarGraficasBI === 'function') window.actualizarGraficasBI(ventasPorDia, utilPorDia, depsHash, cajerosHash, horasHash);
+        
     } catch(err) { console.error("Error Dashboard:", err); }
-}
-
+};
 // ====================================================================
 // ☁️ DESCARGAR ESTADÍSTICAS DEL PASADO DE FORMA INDEPENDIENTE
 // ====================================================================
@@ -6311,3 +6341,64 @@ window.verTicketDesdeHistorial = async function(idVenta, btnElement) {
         }
     }
 }; // <--- ESTAS TRES LÍNEAS FINALES SON LAS QUE TE FALTABAN PARA QUE EL ARCHIVO NO MARCARA ERROR
+// ====================================================================
+// === 🏆 MOTOR ANALÍTICO: TOP 10 PRODUCTOS DINÁMICO ===
+// ====================================================================
+let ultimoHashTopProductos = {}; // Memoria RAM temporal para los cambios de pestaña rápido
+
+window.dibujarTopProductos = function(topProductosHash) {
+    // Si nos pasan un hash nuevo, lo guardamos en el almacén, si no, usamos el viejo
+    if (topProductosHash) ultimoHashTopProductos = topProductosHash;
+    
+    let tbody = document.getElementById('kpi_tabla_top_productos');
+    if (!tbody) return;
+
+    let lista = Object.values(ultimoHashTopProductos);
+
+    if (lista.length === 0) {
+        tbody.innerHTML = `<tr><td colspan="5" style="text-align:center; padding:20px; color:#999;">No hay datos de artículos vendidos en este periodo.</td></tr>`;
+        return;
+    }
+
+    // 🧮 ORDENAMIENTO FINANCIERO DINÁMICO
+    lista.sort((a, b) => {
+        if (filtroTopActual === 'ingreso') return b.total - a.total; // Mayor ingreso monetario
+        if (filtroTopActual === 'ganancia') return b.ganancia - a.ganancia; // Mayor rentabilidad
+        return b.cantidad - a.cantidad; // Mayor rotación de piezas (Por defecto)
+    });
+
+    // Tomamos únicamente los mejores 10
+    let top10 = lista.slice(0, 10);
+
+    let html = top10.map((p, i) => {
+        // Resaltamos visualmente las filas del podio (1, 2 y 3)
+        let medalla = i === 0 ? '🥇' : (i === 1 ? '🥈' : (i === 2 ? '🥉' : `${i + 1}`));
+        let estiloFila = i < 3 ? 'font-weight: bold; background: #fdfbf7;' : '';
+
+        return `<tr style="${estiloFila} border-bottom: 1px solid #f1f3f5;">
+            <td style="padding:10px; text-align:center;">${medalla}</td>
+            <td style="padding:10px;"><b>${p.nombre}</b></td>
+            <td style="padding:10px; text-align:center; color:#0d6efd;">${Math.round(p.cantidad * 100) / 100}</td>
+            <td style="padding:10px; text-align:right; color:var(--s); font-weight:bold;">$${(p.total || 0).toFixed(2)}</td>
+            <td style="padding:10px; text-align:right; color:#6f42c1; font-weight:bold;">$${(p.ganancia || 0).toFixed(2)}</td>
+        </tr>`;
+    }).join('');
+
+    tbody.innerHTML = html;
+};
+
+window.cambiarFiltroTop = function(nuevoFiltro) {
+    filtroTopActual = nuevoFiltro;
+    
+    // Cambiar estilos de los botones activados
+    ['cantidad', 'ingreso', 'ganancia'].forEach(t => {
+        let btn = document.getElementById(`btn_top_${t}`);
+        if(btn) {
+            btn.style.background = t === nuevoFiltro ? 'var(--p)' : 'transparent';
+            btn.style.color = t === nuevoFiltro ? 'white' : '#495057';
+        }
+    });
+    
+    // Redibujar la tabla con el orden solicitado al momento
+    window.dibujarTopProductos();
+};
