@@ -446,10 +446,10 @@
             <div style="flex:1; min-width:120px"><label style="font-size:11px; font-weight:bold; color:#666">FECHA FIN:</label><input type="date" id="corte_fecha_fin" onchange="renderCorte()"></div>
             <div style="flex:1; min-width:150px"><label style="font-size:11px; font-weight:bold; color:#666">CAJERO:</label><select id="corte_cajero" onchange="renderCorte()"><option value="">Todos los cajeros</option></select></div>
             <div style="flex:1; min-width:150px"><label style="font-size:11px; font-weight:bold; color:#666">SUCURSAL:</label><select id="corte_sucursal" onchange="renderCorte()"><option value="">Todas (Global)</option></select></div>
-            <div style="width:100%; display: flex; gap: 10px;">
-                <button class="btn-search" style="padding: 12px 20px; background:var(--p); flex: 1;" onclick="renderCorte()">📊 ANALIZAR (LOCAL)</button>
-                <button class="btn-search" id="btn_analizar_nube" style="padding: 12px 20px; background:var(--info); flex: 1;" onclick="descargarVentasNube()">☁️ DESCARGAR DE LA NUBE</button>
-            </div>
+            <div style="width:100%; display: flex; gap: 10px; flex-wrap: wrap;">
+    <button class="btn-search" style="padding: 12px 20px; background:var(--p); flex: 1; min-width: 250px;" onclick="renderCorte()">📊 ANALIZAR (LOCAL)</button>
+    <button class="btn-search" id="btn_analizar_nube" style="padding: 12px 20px; background:var(--info); flex: 1; min-width: 250px;" onclick="descargarVentasNube()">☁️ DESCARGAR DE LA NUBE</button>
+</div>
         </div>
 
         <div style="display: flex; gap: 10px; margin-bottom: 20px; flex-wrap: wrap;" class="no-print">
@@ -1571,7 +1571,7 @@
     
 </script>
 
-<script src="app.js?v=29"></script>
+<script src="app.js?v=33"></script>
 
 </body>
 </html>

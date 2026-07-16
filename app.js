@@ -3358,25 +3358,117 @@ function actualizarGraficasBI(vDia, uDia, deps, cajs, horas) {
 // ====================================================================
 function imprimirTicket(divId) { document.querySelectorAll('.print-active').forEach(e => e.classList.remove('print-active')); document.getElementById(divId).classList.add('print-active'); window.print(); }
 
-function abrirVisorTickets() { 
-    let searchInput = document.getElementById('visor_search'); let dateInput = document.getElementById('visor_date');
-    if (searchInput) searchInput.value = ''; if (dateInput) dateInput.value = getFechaLocal();
-    filtrarVisorTickets(); document.getElementById('modalVisor').style.display = 'block'; 
+
+
+
+// 🌟 UNA SOLA DECLARACIÓN GLOBAL PARA CONTROLAR EL MES
+let ultimaFechaMesDescargada = "";
+
+async function abrirVisorTickets() { 
+    let searchInput = document.getElementById('visor_search'); 
+    let dateInput = document.getElementById('visor_date');
+    
+    if (searchInput) searchInput.value = ''; 
+    
+    // Aseguramos que el input inicie con el formato YYYY-MM-DD correcto
+    if (dateInput) {
+        let hoy = new Date();
+        let m = (hoy.getMonth() + 1).toString().padStart(2, '0');
+        let d = hoy.getDate().toString().padStart(2, '0');
+        dateInput.value = `${hoy.getFullYear()}-${m}-${d}`;
+    }
+    
+    await filtrarVisorTickets(); 
+    document.getElementById('modalVisor').style.display = 'block'; 
     if (searchInput) setTimeout(() => searchInput.focus(), 100);
 }
+let ultimaFechaVisor = "";
 
-function filtrarVisorTickets() {
-    let searchInput = document.getElementById('visor_search'); let dateInput = document.getElementById('visor_date');
-    let txt = searchInput ? searchInput.value.toLowerCase().trim() : ''; let selectedDate = dateInput ? dateInput.value : ''; let terms = txt.split(/\s+/); 
-    visorIndices = ventas.map((v, idx) => ({...v, indexGlobal: idx})).filter(v => v.sucursal === sucursalActual);
-    if (selectedDate !== '') visorIndices = visorIndices.filter(v => v.fecha === selectedDate);
-    if (txt !== '') visorIndices = visorIndices.filter(v => { let clientStr = v.cliente_tel ? (clientes[v.cliente_tel] ? clientes[v.cliente_tel].nom : '') : 'Público'; return terms.every(t => `${v.id} ${v.fecha} ${v.hora} ${clientStr} ${v.cajero} ${v.metodo}`.toLowerCase().includes(t)); });
+async function filtrarVisorTickets() {
+    let searchInput = document.getElementById('visor_search'); 
+    let dateInput = document.getElementById('visor_date');
+    
+    let txt = searchInput ? searchInput.value.toLowerCase().trim() : ''; 
+    let selectedDate = dateInput ? dateInput.value : ''; // Formato: YYYY-MM-DD
+    let terms = txt.split(/\s+/); 
+
+    // ⚡ DESCARGA DE FRANCOTIRADOR (Solo baja 1 día, es instantáneo)
+    if (selectedDate !== '' && typeof pb !== 'undefined') {
+        if (selectedDate !== ultimaFechaVisor) {
+            ultimaFechaVisor = selectedDate;
+            let counterEl = document.getElementById('visor_counter');
+            if (counterEl) counterEl.innerText = "⚡...";
+            
+            try {
+                // Usamos el operador ~ (contiene) sobre data.fecha, igual que tu Dashboard
+                let records = await pb.collection('ventas').getFullList({
+                    filter: `data.fecha ~ "${selectedDate}"`,
+                    requestKey: null
+                });
+
+                // Lo inyectamos a la RAM global sin duplicar
+                records.forEach(r => {
+                    let ticketNube = r.data || r;
+                    if (!ventas.some(vLocal => String(vLocal.id) === String(ticketNube.id))) {
+                        ventas.push(ticketNube);
+                    }
+                });
+            } catch (e) {
+                console.error("Error al auto-descargar el día en visor:", e);
+            }
+        }
+    }
+    
+    // 🧠 UNIFICACIÓN DE FUENTES: Combinamos ventas vivas de hoy y temporales del Dashboard
+    let todasLasVentas = [...ventas];
+    if (window.ventasHistoricasTemporales && Array.isArray(window.ventasHistoricasTemporales)) {
+        window.ventasHistoricasTemporales.forEach(t => {
+            if (t && !todasLasVentas.some(v => String(v.id) === String(t.id))) {
+                todasLasVentas.push(t);
+            }
+        });
+    }
+
+    // 🔍 Filtro de sucursal sobre la lista unificada
+    visorIndices = todasLasVentas.map((v, idx) => ({...v, indexGlobal: idx}))
+                                  .filter(v => !v.sucursal || v.sucursal === sucursalActual || sucursalActual === "Todas");
+    
+    // 📅 Filtrado elástico de fechas multi-formato
+    if (selectedDate !== '') {
+        let partes = selectedDate.split('-'); // [2026, 07, 14]
+        let variaciones = [selectedDate]; 
+        if (partes.length === 3) {
+            variaciones.push(`${partes[2]}/${partes[1]}/${partes[0]}`); // "14/07/2026"
+            variaciones.push(`${parseInt(partes[2])}/${parseInt(partes[1])}/${partes[0]}`); // "14/7/2026"
+        }
+
+        visorIndices = visorIndices.filter(v => {
+            if (!v.fecha) return false;
+            let f = String(v.fecha).trim();
+            return variaciones.some(forma => f.includes(forma));
+        });
+    }
+    
+    // 🔎 Filtro por texto de búsqueda
+    if (txt !== '') {
+        visorIndices = visorIndices.filter(v => { 
+            let clientStr = v.cliente_tel ? (clientes[v.cliente_tel] ? clientes[v.cliente_tel].nom : '') : 'Público'; 
+            return terms.every(t => `${v.id} ${v.fecha} ${v.hora} ${clientStr} ${v.cajero} ${v.metodo}`.toLowerCase().includes(t)); 
+        });
+    }
+    
+    // Renderizado en interfaz
     if (visorIndices.length === 0) {
-        document.getElementById('visor_counter').innerText = "0 / 0"; document.getElementById('visor_fecha').innerText = "Vacio"; document.getElementById('visor_items').innerHTML = `<tr><td colspan="3">N/A</td></tr>`; document.getElementById('visor_total').innerText = "0.00";
+        document.getElementById('visor_counter').innerText = "0 / 0"; 
+        document.getElementById('visor_fecha').innerText = "Vacio"; 
+        document.getElementById('visor_items').innerHTML = `<tr><td colspan="3">N/A</td></tr>`; 
+        document.getElementById('visor_total').innerText = "0.00";
         if(document.getElementById('btn_anular_visor')) document.getElementById('btn_anular_visor').disabled = true;
-    } else { currentVisorPos = visorIndices.length - 1; renderVisorActivo(); }
+    } else { 
+        currentVisorPos = visorIndices.length - 1; 
+        renderVisorActivo(); 
+    }
 }
-
 function navVisor(dir) { let n = currentVisorPos + dir; if(n >= 0 && n < visorIndices.length) { currentVisorPos = n; renderVisorActivo(); } }
 
 function renderVisorActivo() {
