@@ -22,7 +22,6 @@ const db = {
                 } catch(e) { console.error(e); return { forEach: ()=>{} }; }
             },
             
-            // 📡 RADAR INMORTAL PARA COLECCIONES (Inventario, Clientes, etc.)
             onSnapshot: async function(callback) {
                 let intentando = false;
                 let iniciarRadar = async () => {
@@ -49,11 +48,12 @@ const db = {
                     } catch (e) { 
                         intentando = false;
                         console.warn(`📡 Sin internet para radar de [${colName}]. Reintentando en 5s...`);
-                        setTimeout(iniciarRadar, 5000); // 🔄 BUCLE INMORTAL SI FALLA
+                        setTimeout(iniciarRadar, 5000); 
                     }
                 };
                 iniciarRadar();
             },
+            
             orderBy: function(field, direction) {
                 return {
                     get: async function() {
@@ -72,13 +72,14 @@ const db = {
                     }
                 };
             },
+            
             doc: function(docId) {
                 docId = String(docId);
                 return {
                     set: async function(dataObj) {
                         try {
                             let record = null;
-                            try { record = await pb.collection(colName).getFirstListItem(`doc_id="${docId}"`); } catch (e) {}
+                            try { record = await pb.collection(colName).getFirstListItem(`id="${docId}" || doc_id="${docId}"`); } catch (e) {}
 
                             if (colName === "inventario") {
                                 let tiempoLocal = dataObj.updatedAt || 0;
@@ -94,8 +95,6 @@ const db = {
                                         dataObj.gan = nube.gan;
                                         dataObj.dep = nube.dep;
                                         dataObj.updatedAt = nube.updatedAt;
-                                        
-                                        // 🛡️ RESCATE DEL STOCK FÍSICO: Jamás debe sobreescribirse por accidente
                                         dataObj.stock = (typeof inv !== 'undefined' && inv[docId]) ? inv[docId].stock : nube.stock;
                                         dataObj.sold_without_stock = (typeof inv !== 'undefined' && inv[docId]) ? inv[docId].sold_without_stock : nube.sold_without_stock;
 
@@ -110,11 +109,22 @@ const db = {
                             if (record) {
                                 return await pb.collection(colName).update(record.id, { doc_id: docId, data: dataObj });
                             } else {
-                                return await pb.collection(colName).create({ doc_id: docId, data: dataObj });
+                                // 🌟 AQUÍ OCURRE LA MAGIA ANTI-CLONES
+                                let idLimpio = String(docId).trim().toLowerCase().replace(/[^a-z0-9]/g, '');
+                                if (idLimpio.length < 15) {
+                                    idLimpio = idLimpio.padEnd(15, 'x'); 
+                                } else if (idLimpio.length > 15) {
+                                    idLimpio = idLimpio.substring(0, 15); 
+                                }
+                                
+                                return await pb.collection(colName).create({ id: idLimpio, doc_id: docId, data: dataObj });
                             }
                         } catch (e) {
                             if (e.status === 404) {
-                                try { return await pb.collection(colName).create({ doc_id: docId, data: dataObj }); }
+                                try { 
+                                    let idLimpio = String(docId).trim().toLowerCase().replace(/[^a-z0-9]/g, '').padEnd(15, 'x').substring(0, 15);
+                                    return await pb.collection(colName).create({ id: idLimpio, doc_id: docId, data: dataObj }); 
+                                }
                                 catch (eFatal) { throw eFatal; } 
                             }
                             console.warn(`⏳ Sin conexión. Guardando en mochila offline: [${colName}] -> ${docId}`);
@@ -131,8 +141,6 @@ const db = {
                             return pb.collection(colName).delete(record.id);
                         } catch (e) { console.warn("Doc no existe:", docId); }
                     },
-                    
-                    // 📡 RADAR INMORTAL PARA DOCUMENTOS ÚNICOS (Configuraciones)
                     onSnapshot: async function(callback) {
                         let emit = (exists, data) => callback({ exists, data: () => data });
                         let intentandoDoc = false;
@@ -150,8 +158,8 @@ const db = {
                                 });
                             } catch (e) { 
                                 intentandoDoc = false;
-                                if(e.status === 404) { emit(false, {}); } // Es un documento nuevo, no es error de red
-                                else { setTimeout(iniciarRadarDoc, 5000); } // 🔄 BUCLE INMORTAL SI FALLA
+                                if(e.status === 404) { emit(false, {}); } 
+                                else { setTimeout(iniciarRadarDoc, 5000); } 
                             }
                         };
                         iniciarRadarDoc();
@@ -161,7 +169,6 @@ const db = {
         };
     }
 };
-
 // ====================================================================
 // === EL CARTERO SILENCIOSO BLINDADO (OFFLINE SYNC) ===
 // ====================================================================
@@ -5606,6 +5613,9 @@ function inyectarMatrizAuditoria() {
     let totalImpactoNeto = 0, costoTotalSistema = 0, costoTotalPerdido = 0;
     let exactos = 0, sobrantes = 0, faltantes = 0;
 
+    // Nos aseguramos de que la memoria exista
+    if (!window.memoriaFaltantes) window.memoriaFaltantes = new Set();
+
     sesionEnRevisionActiva.conteo.forEach((item, index) => {
         let prodSistema = inv[item.cod];
         let stockVivoSistema = prodSistema ? ((prodSistema.stock && prodSistema.stock[sucursalActual]) || 0) : 0;
@@ -5631,9 +5641,16 @@ function inyectarMatrizAuditoria() {
         if (tipo === filtroAuditoriaActual) {
             let colorDif = diferencia === 0 ? '#28a745' : (diferencia < 0 ? '#dc3545' : '#fd7e14');
             let textDif = diferencia > 0 ? `+${diferencia}` : diferencia;
+            
+            // 🧠 LEEMOS LA MEMORIA: ¿Este código ya estaba seleccionado antes?
+            let estaMarcado = window.memoriaFaltantes.has(String(item.cod)) ? "checked" : "";
+
+            // 🔓 DIBUJAMOS LA CASILLA (Sin candados y conectada a la memoria)
             htmlTabla += `
                 <tr style="border-bottom:1px solid #eee;">
-                    <td style="padding:12px; text-align:center;"><input type="checkbox" class="chk_item_auditoria" data-index="${index}" ${tipo==='exacto'?'disabled':''}></td>
+                    <td style="padding:12px; text-align:center;">
+                        <input type="checkbox" class="chk_item_auditoria" data-index="${index}" onchange="toggleSeleccionFaltante('${item.cod}', this)" ${estaMarcado}>
+                    </td>
                     <td style="padding:12px;"><b>${item.nom || 'Desconocido'}</b><br><small style="color:#888;">${item.cod}</small></td>
                     <td style="padding:12px; text-align:center; background:#f8f9fa;">${stockBaseParaAuditoria}</td>
                     <td style="padding:12px; text-align:center; font-weight:bold; color:#17a2b8;">${cantFisica}</td>
@@ -5716,46 +5733,46 @@ function aprobarYAjustarInventario() {
     pedirPinOculto("🔒 Ingrese el PIN de Administrador para guardar:", function(pass) {
         if (!pass) return; 
 
-        // 🌟 VALIDACIÓN INFALIBLE (Esta ya funciona perfecto)
         if (!usuariosData || !usuariosData["Admin"] || usuariosData["Admin"].pin !== pass) {
             alert("❌ PIN Incorrecto. Operación cancelada.");
             return;
         }
 
-        if (!confirm("🚨 ¿Está seguro de sobreescribir SÓLO los artículos seleccionados en esta pantalla?")) return;
+        if (!confirm("🚨 ¿Está seguro de sobreescribir SÓLO los artículos seleccionados? Los no seleccionados se guardarán para después.")) return;
 
         let itemsAplicados = [];
+        let conteoRestante = []; 
 
-        // 🎯 EL NUEVO RADAR: Busca todas las casillas que tengan la "palomita" puesta en este momento
-        let casillasMarcadas = document.querySelectorAll('.chk_item_auditoria:checked');
+        // 🛡️ PARCHE DE SEGURIDAD: Sincronizar obligatoriamente lo que se ve en pantalla
+        if (!window.memoriaFaltantes) window.memoriaFaltantes = new Set();
+        let casillasVisibles = document.querySelectorAll('.chk_item_auditoria:checked');
+        
+        casillasVisibles.forEach(casilla => {
+            let idx = casilla.getAttribute('data-index');
+            // Si la casilla está marcada en el HTML, la inyectamos a la fuerza en la memoria
+            if (sesionEnRevisionActiva.conteo[idx]) {
+                window.memoriaFaltantes.add(String(sesionEnRevisionActiva.conteo[idx].cod));
+            }
+        });
 
-       // Recorremos solo las que están marcadas
-        casillasMarcadas.forEach(casilla => {
-            let index = casilla.getAttribute('data-index');
-            let item = sesionEnRevisionActiva.conteo[index];
-
-            if (item) {
+        // 🎯 EL NUEVO RADAR GLOBAL
+        sesionEnRevisionActiva.conteo.forEach((item) => {
+            // Evaluamos si el código está en nuestra memoria unificada
+            if (window.memoriaFaltantes.has(String(item.cod))) {
                 let prod = inv[item.cod];
                 if (prod) {
                     let stockActualEnVivo = prod.stock ? (prod.stock[sucursalActual] || 0) : 0;
-                    
-                    // Recuperamos la foto congelada (o el actual si no existe)
                     let stockCongelado = item.stock_congelado !== undefined ? item.stock_congelado : stockActualEnVivo;
                     let conteoDelCajero = parseFloat(item.can_fisica) || 0;
                     
-                    // 🧮 MATEMÁTICA PURA: ¿Cuánto sobró o faltó realmente ese día?
                     let ajusteMatematico = conteoDelCajero - stockCongelado;
-
-                    // Le sumamos o restamos ese error al stock que hay ahorita (respetando las ventas nuevas)
                     let stockFinalCalculado = stockActualEnVivo + ajusteMatematico;
 
                     if (!prod.stock) prod.stock = {};
                     prod.stock[sucursalActual] = stockFinalCalculado;
                     
-                    // Guarda en la nube
                     if (typeof db !== 'undefined') db.collection("inventario").doc(item.cod).set(prod);
 
-                    // Registra el movimiento matemático exacto en tu Kardex
                     if (typeof registrarEnKardex === 'function') {
                         registrarEnKardex(item.cod, prod.nom || "Desconocido", "AUDITORÍA INVENTARIO", ajusteMatematico, prod.pv || 0, prod.cos || 0);
                     }
@@ -5763,11 +5780,17 @@ function aprobarYAjustarInventario() {
                     itemsAplicados.push({
                         cod: item.cod,
                         nom: prod.nom || "Desconocido",
-                        stock_anterior: stockActualEnVivo, // Para historial guardamos cómo estaba antes del clic
+                        stock_anterior: stockActualEnVivo,
                         stock_nuevo: stockFinalCalculado,
                         diferencia: ajusteMatematico
                     });
+                    
+                    // Lo sacamos de la memoria porque ya fue procesado
+                    window.memoriaFaltantes.delete(String(item.cod));
                 }
+            } else {
+                // Los que no marcaste se salvan para la siguiente ronda
+                conteoRestante.push(item);
             }
         });
 
@@ -5776,7 +5799,7 @@ function aprobarYAjustarInventario() {
             return;
         }
 
-        // Registro global de la auditoría en Firebase
+        // Registro global en Firebase / PocketBase
         let registroHistorico = {
             id_sesion: sesionEnRevisionActiva.id || Date.now(),
             fecha_aplicacion: new Date().toLocaleString(),
@@ -5786,23 +5809,36 @@ function aprobarYAjustarInventario() {
         };
 
         if (typeof db !== 'undefined') {
-            let idAuditoria = "AUDIT_" + Date.now();
+            let idAuditoria = "AUDIT_PARCIAL_" + Date.now();
             db.collection("historial_auditorias").doc(idAuditoria).set(registroHistorico);
         }
 
-        // Marcamos la sesión como "Aplicada" para que ya no salga en pendientes
+        // 🧠 ACTUALIZACIÓN DE LA SESIÓN LOCAL
         let pendientes = JSON.parse(localStorage.getItem('pos_sesiones_inventario') || "[]");
-        let idx = pendientes.findIndex(b => b.id === sesionEnRevisionActiva.id);
-        if (idx !== -1) {
-            pendientes[idx].estado = 'Aplicado';
+        let idxSesion = pendientes.findIndex(b => b.id === sesionEnRevisionActiva.id);
+        
+        if (idxSesion !== -1) {
+            if (conteoRestante.length === 0) {
+                pendientes[idxSesion].estado = 'Aplicado';
+                pendientes[idxSesion].conteo = [];
+                document.getElementById('panel_detalle_auditoria').style.display = 'none';
+            } else {
+                pendientes[idxSesion].conteo = conteoRestante;
+                sesionEnRevisionActiva.conteo = conteoRestante;
+            }
             localStorage.setItem('pos_sesiones_inventario', JSON.stringify(pendientes));
         }
 
-        alert(`✅ Auditoría exitosa. Se actualizaron ${itemsAplicados.length} artículos en la NUBE.`);
-        document.getElementById('panel_detalle_auditoria').style.display = 'none';
+        alert(`✅ Éxito. Se actualizaron ${itemsAplicados.length} artículos.\nFaltan ${conteoRestante.length} por revisar.`);
         
+        // Refrescar vistas
         if (typeof cargarBorradoresPendientes === 'function') cargarBorradoresPendientes();
         if (typeof renderI === 'function') renderI(); 
+        
+        // Cerramos la ventana para que al abrirla se limpie y redibuje lo restante
+        if (conteoRestante.length > 0) {
+             document.getElementById('panel_detalle_auditoria').style.display = 'none';
+        }
     }); 
 }
 // ======================================================================
@@ -6199,7 +6235,6 @@ async function mostrarEstadisticasAuditoria() {
         return alert("⚠️ La base de datos en la nube no está conectada.");
     }
 
-    // Creamos un modal dinámico si no existe
     let modalId = "modalKPIsAuditoria";
     let modal = document.getElementById(modalId);
     if (!modal) {
@@ -6217,7 +6252,6 @@ async function mostrarEstadisticasAuditoria() {
     modal.style.display = 'block';
 
     try {
-        // Descargamos todo el historial de auditorías
         let snapshot = await db.collection("historial_auditorias").get();
         
         let mesActual = new Date().getMonth();
@@ -6226,40 +6260,108 @@ async function mostrarEstadisticasAuditoria() {
         let totalModificados = 0;
         let auditoriasDelMes = 0;
 
-       snapshot.forEach(doc => {
-            let data = doc.data();
+        // 🧮 Contadores específicos para los porcentajes
+        let totalItemsAuditados = 0;
+        let cantExactos = 0;
+        let cantSobrantes = 0;
+        let cantFaltantes = 0;
+
+        snapshot.forEach(doc => {
+            let data = typeof doc.data === 'function' ? doc.data() : (doc.data || doc);
+            if (!data || Object.keys(data).length === 0) return;
+
+            let idReal = doc.id || doc.doc_id || "";
+            let numerosEnId = idReal.match(/\d+/);
+            let timestamp = numerosEnId ? parseInt(numerosEnId[0]) : null;
             
-            // 🌟 NUEVO: Extraemos la fecha directamente del nombre del documento (AUDIT_123456789...)
-            let timestamp = parseInt(doc.id.replace('AUDIT_', ''));
-            let fechaDoc = isNaN(timestamp) ? new Date() : new Date(timestamp); 
+            let fechaDoc = null;
+            if (timestamp && !isNaN(timestamp) && String(timestamp).length >= 10) {
+                fechaDoc = new Date(timestamp);
+            } else if (data.fecha_aplicacion) {
+                fechaDoc = new Date(data.fecha_aplicacion);
+            } else {
+                fechaDoc = new Date(); 
+            }
             
-            if (fechaDoc.getMonth() === mesActual && fechaDoc.getFullYear() === anioActual) {
-                auditoriasDelMes++;
-                if (data.articulos_modificados && Array.isArray(data.articulos_modificados)) {
-                    totalModificados += data.articulos_modificados.length;
+            if (fechaDoc && !isNaN(fechaDoc.getTime())) {
+                if (fechaDoc.getMonth() === mesActual && fechaDoc.getFullYear() === anioActual) {
+                    auditoriasDelMes++;
+                    if (data.articulos_modificados && Array.isArray(data.articulos_modificados)) {
+                        totalModificados += data.articulos_modificados.length;
+
+                        // Clasificamos cada artículo archivado para sacar la estadística real
+                        data.articulos_modificados.forEach(item => {
+                            totalItemsAuditados++;
+                            let dif = parseFloat(item.diferencia) || 0;
+                            if (dif < 0) cantFaltantes++;
+                            else if (dif > 0) cantSobrantes++;
+                            else cantExactos++;
+                        });
+                    }
                 }
             }
         });
 
-        // HTML del Dashboard
+        // 🧮 Cálculo matemático de porcentajes %
+        let pctExactos = totalItemsAuditados > 0 ? ((cantExactos / totalItemsAuditados) * 100).toFixed(1) : "0.0";
+        let pctSobrantes = totalItemsAuditados > 0 ? ((cantSobrantes / totalItemsAuditados) * 100).toFixed(1) : "0.0";
+        let pctFaltantes = totalItemsAuditados > 0 ? ((cantFaltantes / totalItemsAuditados) * 100).toFixed(1) : "0.0";
+
+        // HTML final del Dashboard con desglose de porcentajes integrado
         modal.innerHTML = `
-        <div class="modal-content" style="width:600px; border-top: 4px solid var(--info);">
+        <div class="modal-content" style="width:600px; border-top: 4px solid var(--info); max-height:90vh; overflow-y:auto;">
             <h2 style="margin-top:0; color:#333;">📈 Rendimiento de Inventario</h2>
             <p style="color:#666; font-size:14px; margin-bottom:20px;">Estadísticas globales del mes en curso</p>
             
             <div style="display:flex; justify-content:space-between; gap:15px; margin-bottom:25px;">
-                <div style="flex:1; background:#f8f9fa; padding:20px; border-radius:8px; border-left:4px solid #17a2b8;">
+                <div style="flex:1; background:#f8f9fa; padding:15px; border-radius:8px; border-left:4px solid #17a2b8;">
                     <h4 style="margin:0; color:#666; font-size:12px; text-transform:uppercase;">Auditorías Realizadas</h4>
                     <span style="font-size:32px; font-weight:bold; color:#333;">${auditoriasDelMes}</span>
                 </div>
-                <div style="flex:1; background:#f8f9fa; padding:20px; border-radius:8px; border-left:4px solid #dc3545;">
-                    <h4 style="margin:0; color:#666; font-size:12px; text-transform:uppercase;">Correcciones (Mes)</h4>
+                <div style="flex:1; background:#f8f9fa; padding:15px; border-radius:8px; border-left:4px solid #dc3545;">
+                    <h4 style="margin:0; color:#666; font-size:12px; text-transform:uppercase;">Artículos Asentados</h4>
                     <span style="font-size:32px; font-weight:bold; color:#333;">${totalModificados}</span>
                 </div>
             </div>
 
-            <div style="background:#e9ecef; border-radius:8px; padding:15px; text-align:left; font-size:14px; color:#555;">
-                💡 <b>Nota de progreso:</b> Mantener el número de correcciones bajo significa que las ventas y el stock físico coinciden perfectamente. Revisa estas métricas al final de cada mes para medir tu pérdida o control operativo.
+            <h3 style="margin: 20px 0 10px 0; color:#495057; font-size:16px; text-align:left; border-bottom:1px solid #ddd; padding-bottom:5px;">📊 Composición de Diferencias</h3>
+            
+            <div style="display:flex; flex-direction:column; gap:12px; margin-bottom:25px; text-align:left;">
+                
+                <div>
+                    <div style="display:flex; justify-content:space-between; font-size:13px; font-weight:bold; color:#28a745; margin-bottom:4px;">
+                        <span>✅ Coincidencias Exactas (${cantExactos} pzas)</span>
+                        <span>${pctExactos}%</span>
+                    </div>
+                    <div style="width:100%; background:#e9ecef; height:12px; border-radius:10px; overflow:hidden;">
+                        <div style="width:${pctExactos}%; background:#28a745; height:100%; transition:width 0.5s;"></div>
+                    </div>
+                </div>
+
+                <div>
+                    <div style="display:flex; justify-content:space-between; font-size:13px; font-weight:bold; color:#fd7e14; margin-bottom:4px;">
+                        <span>➕ Artículos Sobrantes (${cantSobrantes} pzas)</span>
+                        <span>${pctSobrantes}%</span>
+                    </div>
+                    <div style="width:100%; background:#e9ecef; height:12px; border-radius:10px; overflow:hidden;">
+                        <div style="width:${pctSobrantes}%; background:#fd7e14; height:100%; transition:width 0.5s;"></div>
+                    </div>
+                </div>
+
+                <div>
+                    <div style="display:flex; justify-content:space-between; font-size:13px; font-weight:bold; color:#dc3545; margin-bottom:4px;">
+                        <span>❌ Mercancía Faltante (Merma) (${cantFaltantes} pzas)</span>
+                        <span>${pctFaltantes}%</span>
+                    </div>
+                    <div style="width:100%; background:#e9ecef; height:12px; border-radius:10px; overflow:hidden;">
+                        <div style="width:${pctFaltantes}%; background:#dc3545; height:100%; transition:width 0.5s;"></div>
+                    </div>
+                </div>
+
+            </div>
+
+            <div style="background:#fff3cd; border-radius:8px; padding:15px; text-align:left; font-size:13px; color:#856404; border:1px solid #ffeeba;">
+                💡 <b>Métrica de Control Operativo:</b> Tu meta ideal es mantener el porcentaje de <b>Coincidencias Exactas</b> por encima del 90%. El porcentaje de faltantes representa pérdida directa en tu anaquel.
             </div>
 
             <button class="btn-final" style="background:var(--info); width:100%; margin-top:20px; font-size:16px;" onclick="document.getElementById('${modalId}').style.display='none'">CERRAR PANEL</button>
@@ -6272,8 +6374,8 @@ async function mostrarEstadisticasAuditoria() {
             <p>No se pudo descargar el historial.</p>
             <button class="btn-final" style="background:#333; margin-top:15px;" onclick="document.getElementById('${modalId}').style.display='none'">Cerrar</button>
         </div>`;
-        } 
-    }
+    } 
+}
 
 
     
