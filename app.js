@@ -4134,11 +4134,20 @@ window.filtrarKardex = function() {
             let costoSeguro = parseFloat(reg.costo) || 0;
             let cantidadSegura = parseFloat(reg.cantidad) || 0;
 
+            // 🔍 EXTRAEMOS LAS VARIABLES DIRECTAS DE POCKETBASE (Mapeo elástico según guarde tu backend)
+            let stockAntes = reg.stock_anterior !== undefined ? reg.stock_anterior : (reg.existencia_antes !== undefined ? reg.existencia_antes : 'N/A');
+            let stockDespues = reg.stock_actual !== undefined ? reg.stock_actual : (reg.existencia !== undefined ? reg.existencia : 'N/A');
+
             html += `<tr style="border-bottom: 1px solid #eee;">
                 <td style="padding:8px;">${reg.fecha} <br><small style="color:#888;">${reg.hora}</small></td>
                 <td style="padding:8px;"><b>${reg.nombre}</b><br><small style="color:#666;">${reg.codigo}</small></td>
                 <td style="padding:8px;"><span class="badge-kit" style="background:${colorTipo}; color:white; font-weight:bold;">${reg.tipo}</span></td>
                 <td style="padding:8px; text-align:center; font-weight:bold;">${cantidadSegura > 0 ? '+' : ''}${cantidadSegura}</td>
+                
+                <!-- 🌟 INYECCIÓN DE DATOS REALES DE SISTEMA -->
+                <td style="padding:8px; text-align:center; font-weight:bold; color:#666; background:rgba(0,0,0,0.02);">${stockAntes}</td>
+                <td style="padding:8px; text-align:center; font-weight:bold; color:var(--p); background:rgba(0,0,0,0.04);">${stockDespues}</td>
+                
                 <td style="padding:8px; text-align:right;">$${precioVentaSeguro.toFixed(2)}</td>
                 <td style="padding:8px; text-align:right; color:#666;">$${costoSeguro.toFixed(2)}</td>
                 <td style="padding:8px;">📍 ${reg.sucursal}</td>
@@ -4148,7 +4157,8 @@ window.filtrarKardex = function() {
 
         let tbody = document.getElementById('kardex_tabla_body');
         if (tbody) {
-            tbody.innerHTML = html || `<tr><td colspan="8" style="text-align:center; padding:20px; color:#999;">No se encontraron movimientos.</td></tr>`;
+            // Nota: Cambiado el colspan a 10 por las nuevas 2 columnas añadidas
+            tbody.innerHTML = html || `<tr><td colspan="10" style="text-align:center; padding:20px; color:#999;">No se encontraron movimientos.</td></tr>`;
         }
 
     } catch (error) {
