@@ -1257,18 +1257,53 @@ function abrirAjusteStock(cod) {
 function guardarAjusteStock() {
     let nuevoStock = parseFloat(document.getElementById('ajuste_nuevo_stock').value);
     let pin = document.getElementById('ajuste_admin_pin').value;
+    
     if (isNaN(nuevoStock) || nuevoStock < 0) return alert("⚠️ Cantidad inválida.");
+    
     if (usuariosData["Admin"] && usuariosData["Admin"].pin === pin) {
+        
+        let pO = inv[codAjusteStock] || {};
+        
+        // 📸 FOTOGRAFÍA 1: Leer el stock real ANTES del ajuste directamente del diccionario de la sucursal
+        let stockAntesReal = 0;
+        if (pO.stock && typeof pO.stock === 'object') {
+            stockAntesReal = parseFloat(pO.stock[sucursalActual]) || 0;
+        } else {
+            stockAntesReal = parseFloat(pO.stock) || parseFloat(pO.existencia) || parseFloat(pO.can) || 0;
+        }
+
+        // 📸 FOTOGRAFÍA 2: El stock DESPUÉS es exactamente el número que digitó el administrador
+        let stockDespuesReal = nuevoStock;
+        
+        // Calculamos la diferencia exacta (Ej. Si había 5 y puso 8, registra +3. Si había 10 y puso 2, registra -8)
+        let diferencia = stockDespuesReal - stockAntesReal;
+
         if(!inv[codAjusteStock].stock) inv[codAjusteStock].stock = {};
         inv[codAjusteStock].stock[sucursalActual] = nuevoStock;
+        
         db.collection("inventario").doc(codAjusteStock).set(inv[codAjusteStock])
         .then(() => {
-            let stockAnterior = parseFloat(document.getElementById('ajuste_stock_actual').innerText) || 0;
-            let diferencia = nuevoStock - stockAnterior;
-
-            registrarEnKardex(codAjusteStock, inv[codAjusteStock].nom, "AJUSTE", diferencia, inv[codAjusteStock].pv || 0, inv[codAjusteStock].cos || 0);
+            
+            // 🌟 ENVIAMOS LAS FOTOS AL KARDEX
+            if (typeof registrarEnKardex === 'function') {
+                registrarEnKardex(
+                    codAjusteStock, 
+                    inv[codAjusteStock].nom, 
+                    "AJUSTE", 
+                    diferencia, 
+                    inv[codAjusteStock].pv || 0, 
+                    inv[codAjusteStock].cos || 0,
+                    stockAntesReal,       // 👈 Foto 1
+                    stockDespuesReal      // 👈 Foto 2
+                );
+            }
+            
             document.getElementById('modalAjusteStock').style.display = 'none';
             alert("✅ Stock actualizado en la NUBE.");
+            
+            // Refrescar la tabla si tienes la función disponible
+            if (typeof renderTablaInventario === 'function') renderTablaInventario();
+            
         }).catch((e) => alert("❌ Error con la nube."));
     } else {
         alert("❌ PIN Incorrecto.");
@@ -1340,7 +1375,7 @@ function recalcGanEdicion() {
     }
 }
 
-  function guardarEdicion() {
+ function guardarEdicion() {
     let codViejo = document.getElementById('e_cod_original').value; 
     let codNuevo = document.getElementById('e_cod').value.trim(); 
     let nuevoNom = document.getElementById('e_nom').value.trim();
@@ -1356,6 +1391,15 @@ function recalcGanEdicion() {
     if(!codNuevo) return alert("❌ El código no puede estar vacío.");
     if(!nuevoNom) return alert("❌ El nombre no puede estar vacío.");
 
+    // 📸 FOTOGRAFÍA DE INVENTARIO: Leemos cuántas piezas hay antes de editar
+    let pO = inv[codViejo] || {};
+    let stockReal = 0;
+    if (pO.stock && typeof pO.stock === 'object') {
+        stockReal = parseFloat(pO.stock[sucursalActual]) || 0;
+    } else {
+        stockReal = parseFloat(pO.stock) || parseFloat(pO.existencia) || parseFloat(pO.can) || 0;
+    }
+
     if (codNuevo !== codViejo) {
         if (inv[codNuevo]) return alert("⚠️ Código en uso.");
         inv[codNuevo] = JSON.parse(JSON.stringify(inv[codViejo])); 
@@ -1363,13 +1407,11 @@ function recalcGanEdicion() {
         inv[codNuevo].cos = nuevoCos; inv[codNuevo].iva = nuevoIva; inv[codNuevo].gan = nuevaGan;
         inv[codNuevo].pv = nuevoPv; inv[codNuevo].pm = nuevoPm; inv[codNuevo].md = nuevoMd;
         
-        // 🌟 ESCUDO 1: También aquí marcamos el tiempo para el nuevo código
         inv[codNuevo].updatedAt = Date.now(); 
         
         delete inv[codViejo];
         db.collection("inventario").doc(String(codViejo)).delete();
         
-        // CORREGIDO: Envoltura de datos para el adaptador
         db.collection("inventario").doc(String(codNuevo)).set(inv[codNuevo])
         .then(()=>alert("✅ Actualizado")).catch(e=>console.log(e));
     } else {
@@ -1377,21 +1419,61 @@ function recalcGanEdicion() {
         inv[codViejo].cos = nuevoCos; inv[codViejo].iva = nuevoIva; inv[codViejo].gan = nuevaGan;
         inv[codViejo].pv = nuevoPv; inv[codViejo].pm = nuevoPm; inv[codViejo].md = nuevoMd;
         
-        // 🌟 ESCUDO 2: Tu marca de tiempo excelente cuando el código se queda igual
         inv[codViejo].updatedAt = Date.now();
         
-        // CORREGIDO: Forzamos la actualización limpia en el backend
         db.collection("inventario").doc(String(codViejo)).set(inv[codViejo])
         .then(()=>alert("✅ Guardado")).catch(e=>console.log(e));
     }
     
     localStorage.setItem("pos_precision_v6", JSON.stringify(inv)); 
     
-    // 📊 KARDEX BLINDADO: Usamos 'nuevoNom' directamente para evitar baches de memoria asíncrona
+    // 🌟 KARDEX BLINDADO: Enviamos stockReal dos veces (Antes y Después es lo mismo porque es Edición)
     let codAuditar = (codNuevo !== codViejo) ? codNuevo : codViejo;
-    registrarEnKardex(codAuditar, nuevoNom, "EDICIÓN", 0, nuevoPv, nuevoCos);
+    if (typeof registrarEnKardex === 'function') {
+        registrarEnKardex(codAuditar, nuevoNom, "EDICIÓN", 0, nuevoPv, nuevoCos, stockReal, stockReal);
+    }
     
     cerrarModales(); renderTablaInventario();
+}
+function eliminarProductoDesdeEdicion() {
+    let cod = document.getElementById('e_cod_original').value;
+    if (!cod || !inv[cod]) return alert("❌ No se encontró el producto.");
+
+    let pO = inv[cod];
+    let nom = pO.nom || "Desconocido";
+
+    // Pedimos confirmación extrema para evitar accidentes
+    if (!confirm(`⚠️ ¿Estás COMPLETAMENTE SEGURO de eliminar "${nom}" del inventario?\nEsta acción borrará el producto de la nube.`)) return;
+
+    // 📸 FOTOGRAFÍA (Leemos el stock antes de que el producto desaparezca)
+    let stockReal = 0;
+    if (pO.stock && typeof pO.stock === 'object') {
+        stockReal = parseFloat(pO.stock[sucursalActual]) || 0;
+    } else {
+        stockReal = parseFloat(pO.stock) || parseFloat(pO.existencia) || parseFloat(pO.can) || 0;
+    }
+
+    // 1. Lo borramos localmente de la RAM
+    delete inv[cod];
+    localStorage.setItem("pos_precision_v6", JSON.stringify(inv));
+
+    // 2. Lo borramos de Firebase / PocketBase
+    db.collection("inventario").doc(String(cod)).delete()
+    .then(() => {
+        alert("🗑️ Producto eliminado exitosamente.");
+
+        // 🌟 KARDEX: Registramos la muerte del producto. (Cant. en negativo, Stock Después = 0)
+        if (typeof registrarEnKardex === 'function') {
+            registrarEnKardex(cod, nom, "AJUSTE", -stockReal, pO.pv||0, pO.cos||0, stockReal, 0);
+        }
+
+        cerrarModales();
+        renderTablaInventario();
+    })
+    .catch(e => {
+        console.error("Error al borrar:", e);
+        alert("Error al eliminar el producto de la nube.");
+    });
 }
 function procesarImportacion() {
     let text = document.getElementById('import_data').value.trim();
@@ -1849,8 +1931,25 @@ window.confirmarVenta = function(cambioFinal = 0) {
 
         carV.forEach(x => {
             let pO = inv[x.cod] || {};
-            if(pO.tipo === 'kit') { if(pO.comp) pO.comp.forEach(c => descontarStock(c.cod, c.can * x.can)); }
-            else descontarStock(x.cod, x.can);
+            
+            // 📸 FOTOGRAFÍA 1: Entramos al diccionario de sucursales para sacar el stock real
+            let stockAntesReal = 0;
+            if (pO.stock && typeof pO.stock === 'object') {
+                // Buscamos el stock específico de la sucursal actual (ej. "San Martin" o "La Parroquia")
+                stockAntesReal = parseFloat(pO.stock[sucursalActual]) || 0;
+            } else {
+                // Respaldo por si algún producto viejo no tiene el formato de diccionario
+                stockAntesReal = parseFloat(pO.stock) || parseFloat(pO.existencia) || parseFloat(pO.can) || 0;
+            }
+
+            if(pO.tipo === 'kit') { 
+                if(pO.comp) pO.comp.forEach(c => descontarStock(c.cod, c.can * x.can)); 
+            } else {
+                descontarStock(x.cod, x.can);
+            }
+
+            // 📸 FOTOGRAFÍA 2: Calculamos el "Después" restando lo del carrito
+            let stockDespuesReal = stockAntesReal - parseFloat(x.can);
 
             if(x.promo_ref) {
                 x.promo_ref.usadas = (x.promo_ref.usadas||0) + x.usos_promo;
@@ -1859,7 +1958,6 @@ window.confirmarVenta = function(cambioFinal = 0) {
 
             let cReal = (pO.cos_promedio !== undefined ? parseFloat(pO.cos_promedio) : parseFloat(pO.cos || 0)) * (1 + (parseFloat(pO.iva)||0)/100);
             
-            // 🎯 EL MISTERIO RESUELTO: Si el producto tiene un "precioManual", ese manda. Si no, usa el normal.
             let precioUnitarioReal = 0;
             if (x.precioManual !== undefined) {
                 precioUnitarioReal = parseFloat(x.precioManual);
@@ -1867,19 +1965,17 @@ window.confirmarVenta = function(cambioFinal = 0) {
                 precioUnitarioReal = parseFloat(x.pv) || parseFloat(pO.pv) || 0;
             }
 
-            // Calculamos el subtotal multiplicando la cantidad por ese precio real
             let subtotalSeguro = (parseFloat(x.can) || 1) * precioUnitarioReal;
             
-            // Y por si acaso el sistema original mandó su propio subtotal (para cosas que no editaste):
             if (x.precioManual === undefined && (parseFloat(x.final_subtotal) || parseFloat(x.subtotal))) {
                  subtotalSeguro = parseFloat(x.final_subtotal) || parseFloat(x.subtotal);
             }
             
             if (typeof registrarEnKardex === 'function') {
-                registrarEnKardex(x.cod, x.nom, "VENTA", -x.can, precioUnitarioReal, pO.cos||0);
+                // 🌟 ENVIAMOS LAS FOTOS EXACTAS AL KARDEX
+                registrarEnKardex(x.cod, x.nom, "VENTA", -x.can, precioUnitarioReal, pO.cos||0, stockAntesReal, stockDespuesReal);
             }
 
-            // Inyectamos el importe matemáticamente exacto en el ticket
             itemsHtml += `<tr><td>${x.can}</td><td>${(x.nom||'').substring(0,15)}</td><td style="text-align:right">$${subtotalSeguro.toFixed(2)}</td></tr>`;
             
             detalles.push({ 
@@ -2319,7 +2415,7 @@ async function procesarGuardadoEInventario(totalCompra, metodoNombre, metaPago) 
     let prov = document.getElementById('c_proveedor').value.trim();
     let esInventarioInicial = document.getElementById('c_inventario_inicial') ? document.getElementById('c_inventario_inicial').checked : false;
 
-    // --- 1. Tu lógica original intacta para actualizar existencias y costos ---
+    // --- 1. Lógica para actualizar existencias y costos ---
     for (let x of carC) { 
         try {
             let prod = inv[x.cod];
@@ -2336,15 +2432,37 @@ async function procesarGuardadoEInventario(totalCompra, metodoNombre, metaPago) 
                 }
             } else if (prod) {
                 let maestro = obtenerProductoMaestro(x.cod);
-                if(!maestro.stock) maestro.stock = {}; 
                 
-                let stockAnterior = maestro.stock[sucursalActual] || 0;
-                if (stockAnterior < 0) stockAnterior = 0;
+                // 📸 FOTOGRAFÍA 1: Lectura blindada del stock antes de recibir la compra
+                let stockAntesReal = 0;
+                if (maestro.stock && typeof maestro.stock === 'object') {
+                    stockAntesReal = parseFloat(maestro.stock[sucursalActual]) || 0;
+                } else {
+                    stockAntesReal = parseFloat(maestro.stock) || parseFloat(maestro.existencia) || parseFloat(maestro.can) || 0;
+                }
+                if (stockAntesReal < 0) stockAntesReal = 0;
 
-                maestro.stock[sucursalActual] = stockAnterior + x.can; 
+                // 📸 FOTOGRAFÍA 2: Sumamos lo que acaba de llegar en la compra
+                let stockDespuesReal = stockAntesReal + parseFloat(x.can);
+
+                if(!maestro.stock) maestro.stock = {}; 
+                maestro.stock[sucursalActual] = stockDespuesReal; 
                 
                 let conceptoKardex = esInventarioInicial ? "CARGA INICIAL" : "COMPRA";
-                registrarEnKardex(x.cod, prod.nom, conceptoKardex, x.can, x.pre || prod.pv, x.cos || prod.cos);
+                
+                // 🌟 ENVIAMOS LAS FOTOS AL KARDEX
+                if (typeof registrarEnKardex === 'function') {
+                    registrarEnKardex(
+                        x.cod, 
+                        prod.nom, 
+                        conceptoKardex, 
+                        x.can, 
+                        x.pre || prod.pv, 
+                        x.cos || prod.cos, 
+                        stockAntesReal, 
+                        stockDespuesReal
+                    );
+                }
 
                 let costoCompraUnitarioBase = 0;
                 if (x.cos_base !== undefined) { 
@@ -2356,9 +2474,9 @@ async function procesarGuardadoEInventario(totalCompra, metodoNombre, metaPago) 
 
                 if (costoCompraUnitarioBase > 0) {
                     let costoHistorico = prod.cos_promedio !== undefined ? parseFloat(prod.cos_promedio) : (parseFloat(prod.cos) || 0);
-                    let valorViejo = stockAnterior * costoHistorico;
+                    let valorViejo = stockAntesReal * costoHistorico;
                     let valorNuevo = x.can * costoCompraUnitarioBase;
-                    let piezasTotales = stockAnterior + x.can;
+                    let piezasTotales = stockAntesReal + x.can;
 
                     let costoPromedio = (valorViejo + valorNuevo) / piezasTotales;
                     
@@ -2389,7 +2507,7 @@ async function procesarGuardadoEInventario(totalCompra, metodoNombre, metaPago) 
         }
     }
     
-    // --- 2. Tu guardado de datos original usando el objeto 'db' ---
+    // --- 2. Guardado de datos original usando el objeto 'db' ---
     localStorage.setItem("pos_precision_v6", JSON.stringify(inv));
     let idCompra = Date.now();
     
@@ -2418,32 +2536,28 @@ async function procesarGuardadoEInventario(totalCompra, metodoNombre, metaPago) 
     if (metaPago && metaPago.metodo === "Mixto Especial" && metaPago.cajas_afectadas) {
         let cajas = metaPago.cajas_afectadas;
         
-        // Revisamos cada caja de la que jalaste dinero
         for (let cajeroAfectado of Object.keys(cajas)) {
             let montoRetirado = parseFloat(cajas[cajeroAfectado]) || 0;
             
-            // Si sacamos dinero de esta caja y no es el "Banco", creamos el movimiento de retiro
             if (montoRetirado > 0 && cajeroAfectado !== "Banco_Directo") {
-                let idMov = Date.now() + Math.floor(Math.random() * 1000); // Evita duplicados si procesa rápido
+                let idMov = Date.now() + Math.floor(Math.random() * 1000); 
                 
                 let nuevoRetiro = {
                     id: idMov,
                     fecha: getFechaLocal(),
                     hora: new Date().toLocaleTimeString(),
-                    cajero: cajeroAfectado, // <--- Vinculado directamente al dueño de la caja sacada
+                    cajero: cajeroAfectado, 
                     sucursal: sucursalActual,
                     tipo: 'Retiro',
                     monto: montoRetirado,
                     motivo: `COMPRA MIXTA ESP. (Fondo tomado por Admin para proveedor: ${prov || "General"})`
                 };
                 
-                // A. Insertar en memoria local inmediata para que el selector se actualice al momento
                 if (typeof movimientos !== 'undefined') {
                     movimientos.push(nuevoRetiro);
                     localStorage.setItem("pos_movimientos_v1", JSON.stringify(movimientos));
                 }
                 
-                // B. Subir a la nube de Firebase para reporte oficial
                 if (typeof db !== 'undefined') {
                     await db.collection("movimientos").doc(String(idMov)).set(nuevoRetiro)
                         .catch(e => console.error("Error registrando retiro de auditoría:", e));
@@ -2452,21 +2566,16 @@ async function procesarGuardadoEInventario(totalCompra, metodoNombre, metaPago) 
         }
     }
 
-
-
     // 🌟 PARCHE 2: ANOTAR LA DEUDA EN LA LIBRETA DEL PROVEEDOR
     if (metaPago && metaPago.es_credito && metaPago.monto_credito > 0) {
         let nombreProv = prov || "Proveedor General";
         
-        // 1. Si el proveedor es nuevo y no existe, le creamos su expediente
         if (!proveedores[nombreProv]) {
             proveedores[nombreProv] = { sucursal: sucursalActual, saldo: 0, historial: [] };
         }
         
-        // 2. Le sumamos el dinero que le debemos
         proveedores[nombreProv].saldo = (proveedores[nombreProv].saldo || 0) + metaPago.monto_credito;
         
-        // 3. Lo anotamos en su Estado de Cuenta (Historial)
         if (!proveedores[nombreProv].historial) proveedores[nombreProv].historial = [];
         proveedores[nombreProv].historial.push({ 
             fecha: getFechaLocal(), 
@@ -2476,20 +2585,16 @@ async function procesarGuardadoEInventario(totalCompra, metodoNombre, metaPago) 
             detalle: `Folio Ticket Nube: ${idCompra}` 
         });
 
-        // 4. Guardamos todo en Disco Duro local y en la Nube
         localStorage.setItem("pos_proveedores_v1", JSON.stringify(proveedores));
         if (typeof db !== 'undefined') db.collection("proveedores").doc(nombreProv).set(proveedores[nombreProv]);
         
-        // 5. Refrescamos la pantalla de proveedores al instante
         if (typeof renderProveedores === 'function') renderProveedores();
     }
-
 
     // --- 4. Limpieza del carrito ---
     carC = []; renderC(); renderI(); renderCorte(); 
     if(esInventarioInicial) { document.getElementById('c_inventario_inicial').checked = false; }
 }
-    
 
 function pausarCompraActual() {
     if(carC.length === 0) return alert("❌ Lista vacía.");
@@ -3542,13 +3647,30 @@ function anularVentaVisor() {
     
     if(vReal.detalles) { 
         vReal.detalles.forEach(d => { 
-            let it = inv[d.cod]; 
-            if(it) { 
-                if(!it.stock) it.stock={}; 
-                it.stock[vReal.sucursal||sucursalActual] = (it.stock[vReal.sucursal||sucursalActual]||0) + d.can; 
-                db.collection("inventario").doc(d.cod).set(it); 
+            let sucursalVenta = vReal.sucursal || sucursalActual;
+            let it = inv[d.cod] || {}; 
+            
+            // 📸 FOTOGRAFÍA 1
+            let stockAntesReal = 0;
+            if (it.stock && typeof it.stock === 'object') {
+                stockAntesReal = parseFloat(it.stock[sucursalVenta]) || 0;
+            } else {
+                stockAntesReal = parseFloat(it.stock) || parseFloat(it.existencia) || parseFloat(it.can) || 0;
+            }
+            
+            // 📸 FOTOGRAFÍA 2
+            let stockDespuesReal = stockAntesReal + parseFloat(d.can);
+
+            if(inv[d.cod]) { 
+                if(!inv[d.cod].stock) inv[d.cod].stock = {}; 
+                inv[d.cod].stock[sucursalVenta] = stockDespuesReal; 
+                db.collection("inventario").doc(d.cod).set(inv[d.cod]); 
             } 
-            registrarEnKardex(d.cod, d.nom, "ANULACIÓN", d.can, 0, 0); 
+            
+            // 🌟 ENVIAMOS LAS FOTOS
+            if (typeof registrarEnKardex === 'function') {
+                registrarEnKardex(d.cod, d.nom, "ANULACIÓN", d.can, 0, 0, stockAntesReal, stockDespuesReal); 
+            }
         }); 
     }
     
@@ -3560,12 +3682,9 @@ function anularVentaVisor() {
     vReal.anulada = true; 
     visorIndices[currentVisorPos].anulada = true;
     db.collection("ventas").doc(String(vReal.id)).set(vReal).then(() => {
-        // 🎯 AQUÍ OCURRE LA MAGIA DE REVERSIÓN:
-        // Le mandamos la venta al acumulador pero con la bandera "true" para que RESTA todo el dinero y la ganancia
         if (typeof actualizarAcumuladorDiario === 'function') {
             actualizarAcumuladorDiario(vReal, true);
         }
-        
         alert("✅ Venta anulada y restada de las estadísticas correctamente."); 
         renderVisorActivo(); 
         renderCorte(); 
@@ -3573,16 +3692,55 @@ function anularVentaVisor() {
         renderClientes(); 
     });
 }
+
 function devolverArticuloVisor(indexDetalle) {
     let vRef = visorIndices[currentVisorPos]; let vReal = ventas[vRef.indexGlobal]; if(vReal.anulada) return;
     let d = vReal.detalles[indexDetalle]; if(!d || d.can <= 0) return;
     let c = parseFloat(prompt(`Devolver "${d.nom}" (Max: ${d.can}):`, "1")); if(isNaN(c) || c <= 0 || c > d.can) return;
     let m = c * (d.subtotal / d.can); if(!confirm(`Devolver ${c} uds por $${m.toFixed(2)}?`)) return;
+    
     d.can -= c; d.subtotal -= m; vReal.total -= m; if(vReal.total <= 0) { vReal.anulada = true; vReal.total = 0; }
-    let itemInv = inv[d.cod]; if(itemInv) { if(!itemInv.stock) itemInv.stock = {}; itemInv.stock[vReal.sucursal || sucursalActual] = (itemInv.stock[vReal.sucursal || sucursalActual] || 0) + c; db.collection("inventario").doc(d.cod).set(itemInv); }
-    if(vReal.metodo && vReal.metodo.includes('Crédito') && vReal.cliente_tel && clientes[vReal.cliente_tel]) { clientes[vReal.cliente_tel].saldo = Math.max(0, clientes[vReal.cliente_tel].saldo - m); db.collection("clientes").doc(vReal.cliente_tel).set(clientes[vReal.cliente_tel]); } 
-    else { let idMov = Date.now(); let nm = { id: idMov, fecha: getFechaLocal(), hora: new Date().toLocaleTimeString(), cajero: usuarioActual, sucursal: sucursalActual, tipo: 'Retiro', monto: m, motivo: `DEVOLUCIÓN: ${d.nom}` }; movimientos.push(nm); db.collection("movimientos").doc(String(idMov)).set(nm); }
-    db.collection("ventas").doc(String(vReal.id)).set(vReal).then(() => { alert("✅ Reembolso: $"+m.toFixed(2)); renderVisorActivo(); renderCorte(); renderI(); });
+    
+    let sucursalVenta = vReal.sucursal || sucursalActual;
+    let itemInv = inv[d.cod] || {}; 
+    
+    // 📸 FOTOGRAFÍA 1
+    let stockAntesReal = 0;
+    if (itemInv.stock && typeof itemInv.stock === 'object') {
+        stockAntesReal = parseFloat(itemInv.stock[sucursalVenta]) || 0;
+    } else {
+        stockAntesReal = parseFloat(itemInv.stock) || parseFloat(itemInv.existencia) || parseFloat(itemInv.can) || 0;
+    }
+    
+    // 📸 FOTOGRAFÍA 2
+    let stockDespuesReal = stockAntesReal + c;
+
+    if(inv[d.cod]) { 
+        if(!inv[d.cod].stock) inv[d.cod].stock = {}; 
+        inv[d.cod].stock[sucursalVenta] = stockDespuesReal; 
+        db.collection("inventario").doc(d.cod).set(inv[d.cod]); 
+    }
+    
+    // 🌟 INYECCIÓN: Registro de Kardex para devoluciones parciales (antes inexistente)
+    if (typeof registrarEnKardex === 'function') {
+        registrarEnKardex(d.cod, d.nom, "ANULACIÓN", c, 0, 0, stockAntesReal, stockDespuesReal);
+    }
+
+    if(vReal.metodo && vReal.metodo.includes('Crédito') && vReal.cliente_tel && clientes[vReal.cliente_tel]) { 
+        clientes[vReal.cliente_tel].saldo = Math.max(0, clientes[vReal.cliente_tel].saldo - m); 
+        db.collection("clientes").doc(vReal.cliente_tel).set(clientes[vReal.cliente_tel]); 
+    } else { 
+        let idMov = Date.now(); 
+        let nm = { id: idMov, fecha: getFechaLocal(), hora: new Date().toLocaleTimeString(), cajero: usuarioActual, sucursal: sucursalActual, tipo: 'Retiro', monto: m, motivo: `DEVOLUCIÓN: ${d.nom}` }; 
+        movimientos.push(nm); 
+        db.collection("movimientos").doc(String(idMov)).set(nm); 
+    }
+    db.collection("ventas").doc(String(vReal.id)).set(vReal).then(() => { 
+        alert("✅ Reembolso: $"+m.toFixed(2)); 
+        renderVisorActivo(); 
+        renderCorte(); 
+        renderI(); 
+    });
 }
 
 // Visor Compras
@@ -4042,7 +4200,7 @@ function seleccionarProductoCaja(codigo, nombre, piezas, impuesto) {
 // ====================================================================
 
 // Registrar un movimiento en el Kardex (Función Interna Maestro)
-function registrarEnKardex(productoCod, productoNom, tipoMov, cantidad, precio, costo) {
+window.registrarEnKardex = function(productoCod, productoNom, tipoMov, cantidad, precio, costo, stockAntes, stockDespues) {
     let idKardex = Date.now() + Math.floor(Math.random() * 1000);
     let nuevoRegistro = {
         id: idKardex,
@@ -4051,8 +4209,13 @@ function registrarEnKardex(productoCod, productoNom, tipoMov, cantidad, precio, 
         hora: new Date().toLocaleTimeString(),
         codigo: productoCod,
         nombre: productoNom,
-        tipo: tipoMov, // VENTA, COMPRA, EDICIÓN, AJUSTE, ANULACIÓN
+        tipo: tipoMov,
         cantidad: parseFloat(cantidad) || 0,
+        
+        // 📸 AQUÍ GUARDAMOS LA VERDAD ABSOLUTA
+        stock_antes: parseFloat(stockAntes) || 0,
+        stock_despues: parseFloat(stockDespues) || 0,
+        
         precio: parseFloat(precio) || 0,
         costo: parseFloat(costo) || 0,
         sucursal: sucursalActual,
@@ -4099,7 +4262,6 @@ window.renderKardex = function() {
 // Filtrar el Kardex según los inputs del usuario
 window.filtrarKardex = function() {
     try {
-        // 🛡️ ESCUDO: Si historialKardex no existe o no tiene datos, no hacemos nada para no romper el sistema
         if (typeof historialKardex === 'undefined' || !Array.isArray(historialKardex)) {
             console.warn("⏳ Esperando datos del Kardex...");
             return;
@@ -4122,7 +4284,7 @@ window.filtrarKardex = function() {
         });
 
         let html = '';
-        registrosFiltrados.slice(0, 150).forEach(reg => { // Limitamos a 150 filas por rendimiento visual
+        registrosFiltrados.slice(0, 150).forEach(reg => {
             let colorTipo = '#000';
             if (reg.tipo === 'VENTA') colorTipo = 'var(--s)';
             if (reg.tipo === 'COMPRA') colorTipo = '#17a2b8';
@@ -4134,9 +4296,9 @@ window.filtrarKardex = function() {
             let costoSeguro = parseFloat(reg.costo) || 0;
             let cantidadSegura = parseFloat(reg.cantidad) || 0;
 
-            // 🔍 EXTRAEMOS LAS VARIABLES DIRECTAS DE POCKETBASE (Mapeo elástico según guarde tu backend)
-            let stockAntes = reg.stock_anterior !== undefined ? reg.stock_anterior : (reg.existencia_antes !== undefined ? reg.existencia_antes : 'N/A');
-            let stockDespues = reg.stock_actual !== undefined ? reg.stock_actual : (reg.existencia !== undefined ? reg.existencia : 'N/A');
+            // 🎯 AQUÍ ESTABA EL ERROR: AHORA BUSCAMOS LOS NOMBRES EXACTOS QUE GUARDAMOS
+            let stockAntes = reg.stock_antes !== undefined ? reg.stock_antes : 'N/A';
+            let stockDespues = reg.stock_despues !== undefined ? reg.stock_despues : 'N/A';
 
             html += `<tr style="border-bottom: 1px solid #eee;">
                 <td style="padding:8px;">${reg.fecha} <br><small style="color:#888;">${reg.hora}</small></td>
@@ -4157,7 +4319,6 @@ window.filtrarKardex = function() {
 
         let tbody = document.getElementById('kardex_tabla_body');
         if (tbody) {
-            // Nota: Cambiado el colspan a 10 por las nuevas 2 columnas añadidas
             tbody.innerHTML = html || `<tr><td colspan="10" style="text-align:center; padding:20px; color:#999;">No se encontraron movimientos.</td></tr>`;
         }
 
@@ -4299,14 +4460,30 @@ function ejecutarTransferencia() {
     
     // Descontamos stock del origen
     carT.forEach(x => { 
-        if(!inv[x.cod].stock) inv[x.cod].stock = {}; 
-        let dispOri = inv[x.cod].stock[ori] || 0; 
-        inv[x.cod].stock[ori] = dispOri - x.can; 
-        if(typeof db !== 'undefined') db.collection("inventario").doc(x.cod).set(inv[x.cod]);
+        let pO = inv[x.cod] || {};
+        if(!pO.stock) pO.stock = {}; 
         
-        // Registrar en Kardex si la función existe
+        // 📸 FOTOGRAFÍA 1: Leer el stock exacto en la sucursal de origen ANTES del envío
+        let stockAntesReal = parseFloat(pO.stock[ori]) || 0;
+        
+        // 📸 FOTOGRAFÍA 2: Restar lo que se está enviando en el camión/paquete
+        let stockDespuesReal = stockAntesReal - parseFloat(x.can);
+        
+        pO.stock[ori] = stockDespuesReal; 
+        if(typeof db !== 'undefined') db.collection("inventario").doc(x.cod).set(pO);
+        
+        // 🌟 ENVIAMOS LAS FOTOS AL KARDEX
         if(typeof registrarEnKardex === 'function') {
-            registrarEnKardex(x.cod, x.nom, "TRANSFERENCIA (SALIDA)", -x.can, inv[x.cod].pv||0, x.cReal);
+            registrarEnKardex(
+                x.cod, 
+                x.nom, 
+                "TRANSFERENCIA (SALIDA)", 
+                -x.can, 
+                pO.pv || 0, 
+                x.cReal || pO.cos || 0,
+                stockAntesReal,       // 👈 Foto 1
+                stockDespuesReal      // 👈 Foto 2
+            );
         }
     }); 
     
@@ -4449,14 +4626,32 @@ function confirmarRecepcion() {
     
     carR.forEach(x => { 
         if(x.can_rec > 0) { 
-            if(!inv[x.cod].stock) inv[x.cod].stock = {}; 
-            // Sumamos lo que "realmente llegó" (can_rec)
-            inv[x.cod].stock[sucursalActual] = (inv[x.cod].stock[sucursalActual] || 0) + x.can_rec; 
+            let pO = inv[x.cod] || {};
+            if(!pO.stock) pO.stock = {}; 
             
-            if(typeof db !== 'undefined') db.collection("inventario").doc(x.cod).set(inv[x.cod]);
+            // 📸 FOTOGRAFÍA 1: Leer el stock exacto en la sucursal destino ANTES de recibir
+            let stockAntesReal = parseFloat(pO.stock[sucursalActual]) || 0;
             
+            // 📸 FOTOGRAFÍA 2: Sumar lo que realmente llegó (can_rec)
+            let stockDespuesReal = stockAntesReal + parseFloat(x.can_rec);
+            
+            // Actualizamos la memoria
+            pO.stock[sucursalActual] = stockDespuesReal; 
+            
+            if(typeof db !== 'undefined') db.collection("inventario").doc(x.cod).set(pO);
+            
+            // 🌟 ENVIAMOS LAS FOTOS AL KARDEX
             if(typeof registrarEnKardex === 'function') {
-                registrarEnKardex(x.cod, x.nom, "TRANSFERENCIA (ENTRADA)", x.can_rec, inv[x.cod].pv||0, x.cReal);
+                registrarEnKardex(
+                    x.cod, 
+                    x.nom, 
+                    "TRANSFERENCIA (ENTRADA)", 
+                    x.can_rec, 
+                    pO.pv || 0, 
+                    x.cReal || pO.cos || 0,
+                    stockAntesReal,       // 👈 Foto 1
+                    stockDespuesReal      // 👈 Foto 2
+                );
             }
         } 
     }); 
@@ -4473,7 +4668,6 @@ function confirmarRecepcion() {
     alert("✅ Recepción completada. El stock se sumó correctamente a tu inventario."); 
     renderI(); cerrarModales(); actualizarContadorRecepciones(); 
 }
-
 
 // ====================================================================
 // === 🛑 MÓDULO DE CIERRE DE CAJA (CORTE Z / X) ======================
