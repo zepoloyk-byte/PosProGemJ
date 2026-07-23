@@ -765,6 +765,7 @@
                     <option value="TRANSFERENCIA (ENTRADA)">Recepción (Entrada)</option>
                     <option value="EDICIÓN">Edición Manual</option>
                     <option value="AJUSTE">Ajuste de Stock</option>
+                    <option value="AUDITORÍA INVENTARIO">Auditoría</option>
                     <option value="ANULACIÓN">Anulación de Venta</option>
                 </select>
             </div>
@@ -894,6 +895,7 @@
         <div class="c-grid">
             <div style="grid-column: span 2;"><label>Código</label><input type="text" id="e_cod"></div>
             <div><label>Departamento</label><input type="text" id="e_dep" placeholder="Ej. General"></div>
+            
             <div style="grid-column: span 2;"><label>Nombre</label><input type="text" id="e_nom"></div>
             <div><label>Tipo</label>
                 <select id="e_tipo">
@@ -902,14 +904,24 @@
                     <option value="kit">KIT</option>
                 </select>
             </div>
+            
             <div><label>Costo Base</label><input type="number" id="e_cos" step="0.01" oninput="recalcPrecioEdicion()"></div>
             <div><label>IVA/ISR %</label><input type="number" id="e_iva" step="0.01" oninput="recalcPrecioEdicion()"></div>
             <div><label style="color:var(--s); font-weight:bold;">% Ganancia</label><input type="number" id="e_gan" step="0.01" oninput="recalcPrecioEdicion()"></div>
+            
             <div><label>P. Venta</label><input type="number" id="e_pv" step="0.01" oninput="recalcGanEdicion()"></div>
             <div><label>P. Mayo</label><input type="number" id="e_pm"></div>
             <div><label>Min Mayo</label><input type="number" id="e_md"></div>
-            <div style="grid-column: span 3;"><label style="color:var(--danger)">Faltante Local</label><input type="number" id="e_fal" disabled style="background:#eee;"></div>
+            
+            <!-- 🌟 AQUÍ INYECTAMOS EL NUEVO CAMPO MAESTRO -->
+            <div style="grid-column: span 2;">
+                <label style="color:var(--p); font-weight:bold;">👑 Código Maestro (Jefe)</label>
+                <input type="text" id="e_grupo" placeholder="Ej. 12345 (Vacío si este es el Jefe)">
+            </div>
+            
+            <div><label style="color:var(--danger)">Faltante Local</label><input type="number" id="e_fal" disabled style="background:#eee;"></div>
         </div>
+        
         <div style="display: flex; gap: 10px; margin-top: 15px;">
             <button class="btn-final" style="background:var(--danger); color:white; flex: 1;" onclick="eliminarProductoDesdeEdicion()">🗑️ ELIMINAR</button>
             <button class="btn-final" style="background:#eee; color:#333; flex: 1;" onclick="cerrarModales()">CANCELAR</button>

@@ -589,7 +589,14 @@ window.subirFondos = async function() {
 
 function obtenerProductoMaestro(cod) {
     let p = inv[cod];
-    if (p && p.grupo && inv[p.grupo]) return inv[p.grupo]; 
+    if (!p) return null;
+    
+    // Si tiene un "grupo" (que usaremos como el puente al Maestro) y ese Maestro existe
+    if (p.grupo && inv[p.grupo]) {
+        return inv[p.grupo]; 
+    }
+    
+    // Si no tiene grupo, él mismo es su propio Maestro
     return p;
 }
 
@@ -1172,17 +1179,38 @@ function renderTablaInventario() {
             let isFocused = (i === focusInvIndex);
             let bgRow = isFocused ? 'background:#e0f0ff; border-left: 4px solid var(--p);' : '';
             
-            let st = getVirtualStock(x); 
-            let fal = (x.sold_without_stock && x.sold_without_stock[sucursalActual]) || 0; 
+            // 🌟 DETECTOR DE ESPEJOS
+            let esEspejo = x.grupo && inv[x.grupo];
+            let pMaestro = esEspejo ? inv[x.grupo] : x;
+            let codMaestro = esEspejo ? x.grupo : k;
+
+            // Obligamos a que calcule el stock y faltantes usando al Maestro
+            let st = getVirtualStock(pMaestro); 
+            let fal = (pMaestro.sold_without_stock && pMaestro.sold_without_stock[sucursalActual]) || 0; 
+            let precioUnidad = parseFloat(pMaestro.pv) || 0;
             
+            // 🎨 DISEÑO DIFERENCIADO PARA EL NOMBRE
+            let celdaNombre = esEspejo 
+                ? `${x.nom} <span class="badge-kit" style="background:#17a2b8; font-size:0.75em; margin-left:5px; padding:2px 6px;" title="Hereda inventario de: ${pMaestro.nom}">🔗 ESPEJO</span>` 
+                : x.nom;
+            
+            // 🎨 DISEÑO ATENUADO PARA STOCK Y PRECIO
+            let celdaStock = esEspejo
+                ? `<td style="color:#aaa; font-style:italic;" title="Stock compartido con el código ${codMaestro}"><b>${st}</b> 🔗</td>`
+                : `<td><b>${st}</b></td>`;
+                
+            let celdaPrecio = esEspejo
+                ? `<td style="color:#aaa; font-style:italic;" title="Precio heredado">$${precioUnidad.toFixed(2)}</td>`
+                : `<td>$${precioUnidad.toFixed(2)}</td>`;
+
             html += `<tr style="${bgRow}">
                 <td>${isFocused ? '👉 ' : ''}${k}</td>
-                <td>${x.nom}</td>
+                <td>${celdaNombre}</td>
                 <td><span class="badge-kit" style="background:#6c757d">${x.dep||'General'}</span></td>
                 <td>${(x.tipo||'pieza').toUpperCase()}</td>
-                <td><b>${st}</b></td>
+                ${celdaStock}
                 <td style="color:red">${fal}</td>
-                <td>$${(parseFloat(x.pv)||0).toFixed(2)}</td>
+                ${celdaPrecio}
                 <td>
                     <button class="no-print" style="background:var(--info); color:white; border:none; padding:5px 10px; border-radius:5px; margin-right:5px; cursor:pointer;" title="Ajustar Stock" onclick="abrirAjusteStock('${k}')">📦</button>
                     <button class="no-print" style="background:var(--p); color:white; border:none; padding:5px 10px; border-radius:5px; cursor:pointer;" title="Editar Datos" onclick="abrirEditar('${k}')">✏️</button>
@@ -1375,7 +1403,7 @@ function recalcGanEdicion() {
     }
 }
 
- function guardarEdicion() {
+function guardarEdicion() {
     let codViejo = document.getElementById('e_cod_original').value; 
     let codNuevo = document.getElementById('e_cod').value.trim(); 
     let nuevoNom = document.getElementById('e_nom').value.trim();
@@ -1388,10 +1416,22 @@ function recalcGanEdicion() {
     let nuevoPm = parseFloat(document.getElementById('e_pm').value) || 0;
     let nuevoMd = parseFloat(document.getElementById('e_md').value) || 10;
     
+    // 🌟 NUEVO: Capturamos el Código Maestro
+    let inputGrupo = document.getElementById('e_grupo');
+    let nuevoGrupo = inputGrupo ? inputGrupo.value.trim() : "";
+
     if(!codNuevo) return alert("❌ El código no puede estar vacío.");
     if(!nuevoNom) return alert("❌ El nombre no puede estar vacío.");
+    
+    // Validamos que el Maestro exista (para que no lo enlacen a un fantasma)
+    if (nuevoGrupo && !inv[nuevoGrupo]) {
+        return alert(`❌ El Código Maestro "${nuevoGrupo}" no existe en el inventario.`);
+    }
+    // Evitamos que un producto sea su propio maestro en un bucle infinito
+    if (nuevoGrupo === codNuevo) {
+        return alert("❌ Un producto no puede ser maestro de sí mismo.");
+    }
 
-    // 📸 FOTOGRAFÍA DE INVENTARIO: Leemos cuántas piezas hay antes de editar
     let pO = inv[codViejo] || {};
     let stockReal = 0;
     if (pO.stock && typeof pO.stock === 'object') {
@@ -1407,6 +1447,13 @@ function recalcGanEdicion() {
         inv[codNuevo].cos = nuevoCos; inv[codNuevo].iva = nuevoIva; inv[codNuevo].gan = nuevaGan;
         inv[codNuevo].pv = nuevoPv; inv[codNuevo].pm = nuevoPm; inv[codNuevo].md = nuevoMd;
         
+        // 🌟 NUEVO: Asignamos el enlace Maestro
+        if (nuevoGrupo) {
+            inv[codNuevo].grupo = nuevoGrupo;
+        } else {
+            delete inv[codNuevo].grupo; // Si lo dejaron vacío, rompemos el enlace
+        }
+        
         inv[codNuevo].updatedAt = Date.now(); 
         
         delete inv[codViejo];
@@ -1419,6 +1466,13 @@ function recalcGanEdicion() {
         inv[codViejo].cos = nuevoCos; inv[codViejo].iva = nuevoIva; inv[codViejo].gan = nuevaGan;
         inv[codViejo].pv = nuevoPv; inv[codViejo].pm = nuevoPm; inv[codViejo].md = nuevoMd;
         
+        // 🌟 NUEVO: Asignamos el enlace Maestro
+        if (nuevoGrupo) {
+            inv[codViejo].grupo = nuevoGrupo;
+        } else {
+            delete inv[codViejo].grupo;
+        }
+        
         inv[codViejo].updatedAt = Date.now();
         
         db.collection("inventario").doc(String(codViejo)).set(inv[codViejo])
@@ -1427,7 +1481,6 @@ function recalcGanEdicion() {
     
     localStorage.setItem("pos_precision_v6", JSON.stringify(inv)); 
     
-    // 🌟 KARDEX BLINDADO: Enviamos stockReal dos veces (Antes y Después es lo mismo porque es Edición)
     let codAuditar = (codNuevo !== codViejo) ? codNuevo : codViejo;
     if (typeof registrarEnKardex === 'function') {
         registrarEnKardex(codAuditar, nuevoNom, "EDICIÓN", 0, nuevoPv, nuevoCos, stockReal, stockReal);
@@ -1511,39 +1564,65 @@ function procesarImportacion() {
 function handleVenta(e) { 
     if(e.key === 'Enter') { 
         try {
-            let cod = document.getElementById('v_cod').value.trim(); 
-            if(!cod) return;
-            if(!inv[cod]) { 
-                document.getElementById('pnf_cod').innerText = cod;
+            let codOriginal = document.getElementById('v_cod').value.trim(); 
+            if(!codOriginal) return;
+            
+            let pOriginal = inv[codOriginal];
+            if(!pOriginal) { 
+                document.getElementById('pnf_cod').innerText = codOriginal;
                 document.getElementById('modalProdNoEncontrado').style.display = 'block';
                 return; 
             } 
             
-            let hoy = getFechaLocal(); let promoAgotada = null;
-            if(Array.isArray(promociones)) { promoAgotada = promociones.find(pr => pr && pr.cod === cod && (!pr.sucursal || pr.sucursal === 'Todas' || pr.sucursal === sucursalActual) && ( (pr.fecha_fin && hoy > pr.fecha_fin) || (pr.limite > 0 && (pr.usadas||0) >= pr.limite) )); }
-            if (promoAgotada && !carV.some(item => item.cod === cod)) { 
-                document.getElementById('pa_nom').innerText = inv[cod].nom || 'Producto'; 
+            // 🌟 MAGIA MAESTRO-ESCLAVO: Buscamos al Jefe absoluto de este código
+            let pMaestro = obtenerProductoMaestro(codOriginal);
+            
+            let hoy = getFechaLocal(); 
+            let promoAgotada = null;
+            
+            // Evaluamos promociones usando el código original o el código del Maestro
+            if(Array.isArray(promociones)) { 
+                promoAgotada = promociones.find(pr => 
+                    pr && (pr.cod === codOriginal || pr.cod === pMaestro.grupo) && 
+                    (!pr.sucursal || pr.sucursal === 'Todas' || pr.sucursal === sucursalActual) && 
+                    ( (pr.fecha_fin && hoy > pr.fecha_fin) || (pr.limite > 0 && (pr.usadas||0) >= pr.limite) )
+                ); 
+            }
+            
+            if (promoAgotada && !carV.some(item => item.cod === codOriginal)) { 
+                document.getElementById('pa_nom').innerText = pOriginal.nom || 'Producto'; 
                 document.getElementById('modalPromoAgotada').style.display = 'block'; 
                 setTimeout(() => document.getElementById('btn_cerrar_pa').focus(), 100); 
             }
             
-            if(inv[cod].tipo === 'granel') { 
-                abrirGranel(cod); 
+            // 🌟 El tipo de venta (Granel o Pieza) lo dicta el Maestro, no el dependiente
+            if(pMaestro.tipo === 'granel') { 
+                abrirGranel(codOriginal); 
             } else { 
-                let i = carV.findIndex(x => x.cod === cod); 
+                let i = carV.findIndex(x => x.cod === codOriginal); 
                 if(i > -1) { 
-                    carV[i].can++; focusVentaIndex = i; 
+                    carV[i].can++; 
+                    focusVentaIndex = i; 
                 } else { 
-                    carV.push({cod, nom: inv[cod].nom || 'Producto', can: 1, tipo: inv[cod].tipo || 'pieza'}); 
+                    // Inyectamos la referencia del Maestro en el carrito
+                    carV.push({
+                        cod: codOriginal, 
+                        nom: pOriginal.nom || 'Producto', 
+                        can: 1, 
+                        tipo: pMaestro.tipo || 'pieza',
+                        maestro_cod: (pOriginal.grupo && inv[pOriginal.grupo]) ? pOriginal.grupo : codOriginal 
+                    }); 
                     focusVentaIndex = carV.length - 1; 
                 } 
                 renderV(); 
             }
             document.getElementById('v_cod').value = ""; 
-        } catch(err) { console.error(err); alert("Error al escanear: " + err.message); }
+        } catch(err) { 
+            console.error(err); 
+            alert("Error al escanear: " + err.message); 
+        }
     } 
 }
-
 function irARegistrarProdVenta() {
     let cod = document.getElementById('pnf_cod').innerText;
     cerrarModales();
@@ -1562,12 +1641,18 @@ window.renderV = function() {
     try {
         let t = 0; let hoy = getFechaLocal();
         document.getElementById('v_lista').innerHTML = carV.map((x, i) => { 
-            let pO = inv[x.cod] || {}; 
-            let minM = pO.md || 10; 
             
-            let precioVentaNormal = pO.pv || 0;
-            if (pO.pre_sucursales && pO.pre_sucursales[sucursalActual] !== undefined) precioVentaNormal = pO.pre_sucursales[sucursalActual];
-            let precioMayoreo = pO.pm || precioVentaNormal;
+            // 🌟 MAGIA MAESTRO-ESPEJO: Identificamos quién manda sobre este código
+            let pOriginal = inv[x.cod] || {}; 
+            let codMaestro = x.maestro_cod || (pOriginal.grupo && inv[pOriginal.grupo] ? pOriginal.grupo : x.cod);
+            let pMaestro = inv[codMaestro] || pOriginal;
+            
+            // Extraemos las reglas de negocio directamente del Maestro
+            let minM = pMaestro.md || 10; 
+            
+            let precioVentaNormal = pMaestro.pv || 0;
+            if (pMaestro.pre_sucursales && pMaestro.pre_sucursales[sucursalActual] !== undefined) precioVentaNormal = pMaestro.pre_sucursales[sucursalActual];
+            let precioMayoreo = pMaestro.pm || precioVentaNormal;
 
             let aplicaMayoreo = forceWholesale && ((x.can||1) >= minM); 
             let subtotalNormal = (x.can||1) * precioVentaNormal;
@@ -1576,7 +1661,8 @@ window.renderV = function() {
             let subtotalPromo = subtotalNormal;
             let promoActiva = null;
             if(Array.isArray(promociones)) {
-                promoActiva = promociones.find(pr => pr && pr.cod === x.cod && (!pr.sucursal || pr.sucursal === 'Todas' || pr.sucursal === sucursalActual) && pr.fecha_ini <= hoy && (!pr.fecha_fin || pr.fecha_fin >= hoy) && (pr.limite === 0 || (pr.usadas||0) < pr.limite));
+                // Buscamos si hay promo para el código específico o para su Maestro
+                promoActiva = promociones.find(pr => pr && (pr.cod === x.cod || pr.cod === codMaestro) && (!pr.sucursal || pr.sucursal === 'Todas' || pr.sucursal === sucursalActual) && pr.fecha_ini <= hoy && (!pr.fecha_fin || pr.fecha_fin >= hoy) && (pr.limite === 0 || (pr.usadas||0) < pr.limite));
             }
 
             if (promoActiva) {
@@ -1625,6 +1711,7 @@ window.renderV = function() {
             let p = s / (x.can || 1); 
             t += s; 
             
+            // Conservamos el nombre original del producto escaneado
             let printName = x.nom || 'Producto'; 
             let unitPrice = p.toFixed(2);
             let isFocused = (i === focusVentaIndex);
@@ -1658,7 +1745,6 @@ window.renderV = function() {
 
     } catch(err) { console.error("Error renderizando lista:", err); }
 };
-
 
 
 function calcCambio() { 
@@ -1888,7 +1974,7 @@ window.confirmarVenta = function(cambioFinal = 0) {
         let tot = parseFloat(document.getElementById('v_total').innerText); if(tot <= 0 || isNaN(tot)) return;
         
         let hoy = getFechaLocal(); 
-        let idV = Date.now() + Math.floor(Math.random()*1000); // 🌟 ID generado arriba
+        let idV = Date.now() + Math.floor(Math.random()*1000); 
         
         let nombresCli = [];
         let ventaAbortada = false;
@@ -1906,7 +1992,6 @@ window.confirmarVenta = function(cambioFinal = 0) {
                 }
                 c.saldo = saldoActual + montoCobrado; 
                 
-                // 📖 GUARDAR EN LA LIBRETA DEL CLIENTE
                 if (!c.historial) c.historial = [];
                 c.historial.push({
                     id_venta: idV, fecha: hoy, hora: new Date().toLocaleTimeString(),
@@ -1927,25 +2012,25 @@ window.confirmarVenta = function(cambioFinal = 0) {
         let metodosStr = pagosCobro.map(p => p.metodo).join(' + ') || 'Efectivo';
         let itemsHtml = ''; let detalles = [];
 
-        // ... El resto de tu función carV.forEach(...) queda exactamente igual hacia abajo ...
-
         carV.forEach(x => {
-            let pO = inv[x.cod] || {};
+            // 🌟 MAGIA MAESTRO-ESPEJO: Determinamos a quién le vamos a descontar el stock
+            let pOriginal = inv[x.cod] || {};
+            let codMaestro = x.maestro_cod || (pOriginal.grupo && inv[pOriginal.grupo] ? pOriginal.grupo : x.cod);
+            let pMaestro = inv[codMaestro] || pOriginal;
             
-            // 📸 FOTOGRAFÍA 1: Entramos al diccionario de sucursales para sacar el stock real
+            // 📸 FOTOGRAFÍA 1: Entramos al diccionario del MAESTRO para sacar el stock real
             let stockAntesReal = 0;
-            if (pO.stock && typeof pO.stock === 'object') {
-                // Buscamos el stock específico de la sucursal actual (ej. "San Martin" o "La Parroquia")
-                stockAntesReal = parseFloat(pO.stock[sucursalActual]) || 0;
+            if (pMaestro.stock && typeof pMaestro.stock === 'object') {
+                stockAntesReal = parseFloat(pMaestro.stock[sucursalActual]) || 0;
             } else {
-                // Respaldo por si algún producto viejo no tiene el formato de diccionario
-                stockAntesReal = parseFloat(pO.stock) || parseFloat(pO.existencia) || parseFloat(pO.can) || 0;
+                stockAntesReal = parseFloat(pMaestro.stock) || parseFloat(pMaestro.existencia) || parseFloat(pMaestro.can) || 0;
             }
 
-            if(pO.tipo === 'kit') { 
-                if(pO.comp) pO.comp.forEach(c => descontarStock(c.cod, c.can * x.can)); 
+            if(pMaestro.tipo === 'kit') { 
+                if(pMaestro.comp) pMaestro.comp.forEach(c => descontarStock(c.cod, c.can * x.can)); 
             } else {
-                descontarStock(x.cod, x.can);
+                // 🚀 DESCONTAMOS DIRECTAMENTE AL MAESTRO EN LUGAR DEL ORIGINAL
+                descontarStock(codMaestro, x.can);
             }
 
             // 📸 FOTOGRAFÍA 2: Calculamos el "Después" restando lo del carrito
@@ -1956,13 +2041,14 @@ window.confirmarVenta = function(cambioFinal = 0) {
                 if(typeof db !== 'undefined') db.collection("promociones").doc(String(x.promo_ref.id)).set(x.promo_ref);
             }
 
-            let cReal = (pO.cos_promedio !== undefined ? parseFloat(pO.cos_promedio) : parseFloat(pO.cos || 0)) * (1 + (parseFloat(pO.iva)||0)/100);
+            // El costo lo sacamos de lo que pagaste por el Maestro
+            let cReal = (pMaestro.cos_promedio !== undefined ? parseFloat(pMaestro.cos_promedio) : parseFloat(pMaestro.cos || 0)) * (1 + (parseFloat(pMaestro.iva)||0)/100);
             
             let precioUnitarioReal = 0;
             if (x.precioManual !== undefined) {
                 precioUnitarioReal = parseFloat(x.precioManual);
             } else {
-                precioUnitarioReal = parseFloat(x.pv) || parseFloat(pO.pv) || 0;
+                precioUnitarioReal = parseFloat(x.pv) || parseFloat(pMaestro.pv) || 0;
             }
 
             let subtotalSeguro = (parseFloat(x.can) || 1) * precioUnitarioReal;
@@ -1972,20 +2058,21 @@ window.confirmarVenta = function(cambioFinal = 0) {
             }
             
             if (typeof registrarEnKardex === 'function') {
-                // 🌟 ENVIAMOS LAS FOTOS EXACTAS AL KARDEX
-                registrarEnKardex(x.cod, x.nom, "VENTA", -x.can, precioUnitarioReal, pO.cos||0, stockAntesReal, stockDespuesReal);
+                // 🌟 ENVIAMOS LAS FOTOS AL KARDEX, ASIGNADAS AL CÓDIGO MAESTRO
+                registrarEnKardex(codMaestro, x.nom, "VENTA", -x.can, precioUnitarioReal, pMaestro.cos||0, stockAntesReal, stockDespuesReal);
             }
 
             itemsHtml += `<tr><td>${x.can}</td><td>${(x.nom||'').substring(0,15)}</td><td style="text-align:right">$${subtotalSeguro.toFixed(2)}</td></tr>`;
             
             detalles.push({ 
                 cod: x.cod, 
+                cod_maestro: (codMaestro !== x.cod) ? codMaestro : null, // Dejamos el rastro por si acaso
                 nom: x.nom, 
                 can: x.can, 
                 subtotal: subtotalSeguro, 
                 pv: precioUnitarioReal, 
                 costo: cReal, 
-                dep: pO.dep||"General" 
+                dep: pMaestro.dep||"General" 
             });
         });
 
@@ -1994,13 +2081,11 @@ window.confirmarVenta = function(cambioFinal = 0) {
         document.getElementById('ticket_total').innerText = tot.toFixed(2);
         document.getElementById('ticket_metodo').innerText = metodosStr;
         
-        // 🌟 EL PARCHE: Sumamos todo el dinero que entregó el cliente y lo pintamos
         let pagoCliente = pagosCobro.reduce((suma, pago) => suma + (parseFloat(pago.montoEntregado) || 0), 0);
         document.getElementById('ticket_pagado').innerText = pagoCliente.toFixed(2);
         document.getElementById('ticket_cambio').innerText = (parseFloat(cambioFinal) || 0).toFixed(2);
         document.getElementById('ticket_cajero').innerText = usuarioActual;
 
-        // 🌟 Guardamos la venta con los datos exactos
         let nuevaV = { 
             id: idV, 
             fecha: hoy, 
@@ -2137,26 +2222,55 @@ function handleCompraScan(e) {
     if(e.key === 'Enter') { 
         let c = document.getElementById('c_cod').value.trim(); 
         if(!c) return;
+        
         if(inv[c]) { 
-            document.getElementById('c_nom').value = inv[c].nom; 
-            document.getElementById('c_dep').value = inv[c].dep || "General"; 
-            document.getElementById('c_tipo').value = inv[c].tipo || "pieza";
-            document.getElementById('c_cos').value = inv[c].cos || 0; 
-            document.getElementById('c_iva').value = inv[c].iva || 0; 
-            document.getElementById('c_pv').value = inv[c].pv || 0; 
-            document.getElementById('c_pm').value = inv[c].pm || 0; 
-            document.getElementById('c_md').value = inv[c].md || 10; 
+            // 🌟 MAGIA MAESTRO-ESPEJO: Detectamos si es un producto dependiente
+            let pOriginal = inv[c];
+            let codMaestro = c;
+            let pMaestro = pOriginal;
+
+            if (pOriginal.grupo && inv[pOriginal.grupo]) {
+                codMaestro = pOriginal.grupo;
+                pMaestro = inv[codMaestro];
+                
+                // Avisamos al cajero que el sistema hizo un desvío automático
+                alert(`⚠️ CÓDIGO DEPENDIENTE DETECTADO\n\n"${pOriginal.nom}" es un espejo.\n\nLa compra y el stock se registrarán directamente en su Producto Maestro:\n👉 ${pMaestro.nom}`);
+                
+                // 🪄 El truco: Cambiamos el código en pantalla por el del Maestro
+                document.getElementById('c_cod').value = codMaestro;
+            }
+
+            // Llenamos el formulario con los datos del Maestro (o del original si no es espejo)
+            document.getElementById('c_nom').value = pMaestro.nom || ""; 
+            document.getElementById('c_dep').value = pMaestro.dep || "General"; 
+            document.getElementById('c_tipo').value = pMaestro.tipo || "pieza";
+            document.getElementById('c_cos').value = pMaestro.cos || 0; 
+            document.getElementById('c_iva').value = pMaestro.iva || 0; 
+            document.getElementById('c_pv').value = pMaestro.pv || 0; 
+            document.getElementById('c_pm').value = pMaestro.pm || 0; 
+            document.getElementById('c_md').value = pMaestro.md || 10; 
             
-            let cReal = (inv[c].cos || 0) * (1 + ((inv[c].iva || 0) / 100));
+            let cReal = (pMaestro.cos || 0) * (1 + ((pMaestro.iva || 0) / 100));
             document.getElementById('c_real').value = cReal.toFixed(2);
-            if (cReal > 0) document.getElementById('c_gan').value = ((((inv[c].pv || 0) / cReal) - 1) * 100).toFixed(2);
-            else document.getElementById('c_gan').value = inv[c].gan || 30;
+            
+            if (cReal > 0) {
+                document.getElementById('c_gan').value = ((((pMaestro.pv || 0) / cReal) - 1) * 100).toFixed(2);
+            } else {
+                document.getElementById('c_gan').value = pMaestro.gan || 30;
+            }
 
             setTimeout(() => { document.getElementById('c_cant').focus(); document.getElementById('c_cant').select(); }, 50); 
         } else {
-            document.getElementById('c_nom').value = ""; document.getElementById('c_dep').value = "General"; document.getElementById('c_tipo').value = "pieza";
-            document.getElementById('c_cos').value = ""; document.getElementById('c_iva').value = "0"; document.getElementById('c_gan').value = "30"; 
-            document.getElementById('c_pv').value = ""; document.getElementById('c_pm').value = ""; document.getElementById('c_md').value = "10"; 
+            // Si el producto no existe
+            document.getElementById('c_nom').value = ""; 
+            document.getElementById('c_dep').value = "General"; 
+            document.getElementById('c_tipo').value = "pieza";
+            document.getElementById('c_cos').value = ""; 
+            document.getElementById('c_iva').value = "0"; 
+            document.getElementById('c_gan').value = "30"; 
+            document.getElementById('c_pv').value = ""; 
+            document.getElementById('c_pm').value = ""; 
+            document.getElementById('c_md').value = "10"; 
             document.getElementById('c_real').value = "0.00";
             alert("🛒 Producto no registrado.");
             setTimeout(() => { document.getElementById('c_nom').focus(); }, 50); 
@@ -6039,21 +6153,17 @@ function aprobarYAjustarInventario() {
         let itemsAplicados = [];
         let conteoRestante = []; 
 
-        // 🛡️ PARCHE DE SEGURIDAD: Sincronizar obligatoriamente lo que se ve en pantalla
         if (!window.memoriaFaltantes) window.memoriaFaltantes = new Set();
         let casillasVisibles = document.querySelectorAll('.chk_item_auditoria:checked');
         
         casillasVisibles.forEach(casilla => {
             let idx = casilla.getAttribute('data-index');
-            // Si la casilla está marcada en el HTML, la inyectamos a la fuerza en la memoria
             if (sesionEnRevisionActiva.conteo[idx]) {
                 window.memoriaFaltantes.add(String(sesionEnRevisionActiva.conteo[idx].cod));
             }
         });
 
-        // 🎯 EL NUEVO RADAR GLOBAL
         sesionEnRevisionActiva.conteo.forEach((item) => {
-            // Evaluamos si el código está en nuestra memoria unificada
             if (window.memoriaFaltantes.has(String(item.cod))) {
                 let prod = inv[item.cod];
                 if (prod) {
@@ -6067,10 +6177,26 @@ function aprobarYAjustarInventario() {
                     if (!prod.stock) prod.stock = {};
                     prod.stock[sucursalActual] = stockFinalCalculado;
                     
-                    if (typeof db !== 'undefined') db.collection("inventario").doc(item.cod).set(prod);
+                    // 🌟 ESCUDO 1: Renovar la hora para forzar a la Nube a aceptar el cambio
+                    prod.updatedAt = Date.now();
+
+                    // 🌟 ESCUDO 2: Convertir el ID a texto (String) para que Firebase no colapse
+                    if (typeof db !== 'undefined') {
+                        db.collection("inventario").doc(String(item.cod)).set(prod)
+                        .catch(e => console.error("Error al subir a la nube el código " + item.cod, e));
+                    }
 
                     if (typeof registrarEnKardex === 'function') {
-                        registrarEnKardex(item.cod, prod.nom || "Desconocido", "AUDITORÍA INVENTARIO", ajusteMatematico, prod.pv || 0, prod.cos || 0);
+                        registrarEnKardex(
+                            item.cod, 
+                            prod.nom || "Desconocido", 
+                            "AUDITORÍA INVENTARIO", 
+                            ajusteMatematico, 
+                            prod.pv || 0, 
+                            prod.cos || 0,
+                            stockActualEnVivo,     
+                            stockFinalCalculado    
+                        );
                     }
 
                     itemsAplicados.push({
@@ -6081,11 +6207,9 @@ function aprobarYAjustarInventario() {
                         diferencia: ajusteMatematico
                     });
                     
-                    // Lo sacamos de la memoria porque ya fue procesado
                     window.memoriaFaltantes.delete(String(item.cod));
                 }
             } else {
-                // Los que no marcaste se salvan para la siguiente ronda
                 conteoRestante.push(item);
             }
         });
@@ -6095,7 +6219,6 @@ function aprobarYAjustarInventario() {
             return;
         }
 
-        // Registro global en Firebase / PocketBase
         let registroHistorico = {
             id_sesion: sesionEnRevisionActiva.id || Date.now(),
             fecha_aplicacion: new Date().toLocaleString(),
@@ -6109,7 +6232,6 @@ function aprobarYAjustarInventario() {
             db.collection("historial_auditorias").doc(idAuditoria).set(registroHistorico);
         }
 
-        // 🧠 ACTUALIZACIÓN DE LA SESIÓN LOCAL
         let pendientes = JSON.parse(localStorage.getItem('pos_sesiones_inventario') || "[]");
         let idxSesion = pendientes.findIndex(b => b.id === sesionEnRevisionActiva.id);
         
@@ -6125,13 +6247,14 @@ function aprobarYAjustarInventario() {
             localStorage.setItem('pos_sesiones_inventario', JSON.stringify(pendientes));
         }
 
+        // 🌟 PARCHE DE SINCRONIZACIÓN: Guardamos la memoria antes de redibujar
+        localStorage.setItem("pos_precision_v6", JSON.stringify(inv));
+
         alert(`✅ Éxito. Se actualizaron ${itemsAplicados.length} artículos.\nFaltan ${conteoRestante.length} por revisar.`);
         
-        // Refrescar vistas
         if (typeof cargarBorradoresPendientes === 'function') cargarBorradoresPendientes();
         if (typeof renderI === 'function') renderI(); 
         
-        // Cerramos la ventana para que al abrirla se limpie y redibuje lo restante
         if (conteoRestante.length > 0) {
              document.getElementById('panel_detalle_auditoria').style.display = 'none';
         }
@@ -6235,28 +6358,47 @@ function ejecutarEscaneoDirecto(cod) {
         return;
     }
 
-    let producto = inv[cod]; 
-    if (!producto) {
+    let productoOriginal = inv[cod]; 
+    if (!productoOriginal) {
         alert(`⚠️ El código [${cod}] no existe en tu catálogo.`);
         let input = document.getElementById('input_escaneo_ciego');
         if (input) { input.value = ''; input.focus(); }
         return;
     }
 
-    // Buscamos si el producto ya estaba en la lista del conteo actual para saber qué celda enfocar
-    let existe = conteoActualCiego.find(item => item.cod === cod);
+    // 🌟 MAGIA MAESTRO-ESPEJO: Detectar y desviar al Jefe
+    let productoFinal = productoOriginal;
+    let codFinal = cod;
+    
+    if (productoOriginal.grupo && inv[productoOriginal.grupo]) {
+        let pMaestro = inv[productoOriginal.grupo];
+        
+        // Avisamos al cajero del desvío
+        alert(`⚠️ CÓDIGO DEPENDIENTE DETECTADO\n\n"${productoOriginal.nom}" depende de otro producto.\n\nEl conteo se sumará a su Producto Maestro:\n👉 ${pMaestro.nom}`);
+        
+        // Hacemos el cambiazo
+        productoFinal = pMaestro;
+        codFinal = productoOriginal.grupo;
+    }
+
+    // Buscamos si el producto (ahora el final) ya estaba en la lista del conteo actual
+    let existe = conteoActualCiego.find(item => item.cod === codFinal);
     let indexAEditar;
 
     if (existe) {
         indexAEditar = conteoActualCiego.indexOf(existe);
     } else {
         conteoActualCiego.push({
-            cod: cod,
-            nom: producto.nom || 'Desconocido',
+            cod: codFinal,
+            nom: productoFinal.nom || 'Desconocido',
             can_fisica: 1 // Arranca en 1 por defecto
         });
         indexAEditar = conteoActualCiego.length - 1;
     }
+
+    // Limpiamos la caja de texto para que esté lista para el siguiente escaneo
+    let input = document.getElementById('input_escaneo_ciego');
+    if (input) { input.value = ''; }
 
     // Redibujamos la tabla para pintar la nueva fila
     actualizarTablaCiego();
