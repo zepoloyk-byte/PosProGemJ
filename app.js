@@ -1830,9 +1830,11 @@ window.agregarPagoVenta = async function(terminalSeleccionada = null) {
         }
 
         let telClienteSeleccionado = null;
-        if (met === 'Crédito') { 
+        
+        // 🛡️ BÚSQUEDA FLEXIBLE: Atrapa "Crédito", "Credito", o "Crédito (Fiado)"
+        if (met.includes('Crédit') || met.includes('Credit') || met.includes('Fiado')) { 
             telClienteSeleccionado = document.getElementById('m_cliente_select').value; 
-            if(!telClienteSeleccionado) return alert("❌ Selecciona cliente."); 
+            if(!telClienteSeleccionado) return alert("❌ Selecciona a un cliente para poder fiarle."); 
         }
 
         let pagoAplicado = Math.min(r, Math.round(restanteCobro * 100) / 100); 
@@ -1867,7 +1869,14 @@ window.agregarPagoVenta = async function(terminalSeleccionada = null) {
         }
 
         if (typeof pagosCobro === 'undefined') window.pagosCobro = [];
-        pagosCobro.push({ metodo: met, montoAplicado: Number(pagoAplicado.toFixed(2)), montoEntregado: Number(r.toFixed(2)), cliente_tel: telClienteSeleccionado || "" });
+        
+        // 🌟 Empujamos el pago a la lista, asegurando que el teléfono del cliente vaya incluido
+        pagosCobro.push({ 
+            metodo: met, 
+            montoAplicado: Number(pagoAplicado.toFixed(2)), 
+            montoEntregado: Number(r.toFixed(2)), 
+            cliente_tel: telClienteSeleccionado || "" 
+        });
 
         restanteCobro = Math.max(0, restanteCobro - pagoAplicado);
         if(typeof renderPagosCobro === "function") renderPagosCobro();
@@ -1877,7 +1886,7 @@ window.agregarPagoVenta = async function(terminalSeleccionada = null) {
         } else {
             document.getElementById('m_recibido').value = restanteCobro.toFixed(2);
             document.getElementById('m_recibido').select();
-            calcCambio();
+            if(typeof calcCambio === 'function') calcCambio();
         }
     } catch (err) { alert("Error en el pago: " + err.message); }
 };
@@ -2002,8 +2011,14 @@ window.confirmarVenta = function(cambioFinal = 0) {
         let nombresCli = [];
         let ventaAbortada = false;
 
+        // 🌟 VARIABLES DE RASTREO PARA EL TICKET
+        let telefonoClienteCredito = "";
+        let esVentaCredito = false;
+        let montoCreditoTotal = 0;
+        let sucReal = String(sucursalActual || "").replace(/📍/g, '').trim();
+
         pagosCobro.forEach(p => {
-            if(p.metodo === 'Crédito') {
+            if(p.metodo.includes('Crédit') || p.metodo.includes('Credit')) {
                 let c = clientes[p.cliente_tel]; 
                 if(!c) { alert("Cliente no encontrado"); ventaAbortada = true; return; }
                 
@@ -2025,6 +2040,11 @@ window.confirmarVenta = function(cambioFinal = 0) {
                 localStorage.setItem("pos_clientes_v7", JSON.stringify(clientes));
                 if(typeof db !== 'undefined') db.collection("clientes").doc(p.cliente_tel).set(c); 
                 nombresCli.push(c.nom);
+
+                // 🌟 ATRAPAMOS LOS DATOS DEL CRÉDITO
+                telefonoClienteCredito = p.cliente_tel;
+                esVentaCredito = true;
+                montoCreditoTotal += montoCobrado;
             }
         });
 
@@ -2036,15 +2056,15 @@ window.confirmarVenta = function(cambioFinal = 0) {
         let itemsHtml = ''; let detalles = [];
 
         carV.forEach(x => {
-            // 🌟 MAGIA MAESTRO-ESPEJO: Determinamos a quién le vamos a descontar el stock
+            // 🌟 MAGIA MAESTRO-ESPEJO
             let pOriginal = inv[x.cod] || {};
             let codMaestro = x.maestro_cod || (pOriginal.grupo && inv[pOriginal.grupo] ? pOriginal.grupo : x.cod);
             let pMaestro = inv[codMaestro] || pOriginal;
             
-            // 📸 FOTOGRAFÍA 1: Entramos al diccionario del MAESTRO para sacar el stock real
+            // 📸 FOTOGRAFÍA 1
             let stockAntesReal = 0;
             if (pMaestro.stock && typeof pMaestro.stock === 'object') {
-                stockAntesReal = parseFloat(pMaestro.stock[sucursalActual]) || 0;
+                stockAntesReal = parseFloat(pMaestro.stock[sucReal]) || 0;
             } else {
                 stockAntesReal = parseFloat(pMaestro.stock) || parseFloat(pMaestro.existencia) || parseFloat(pMaestro.can) || 0;
             }
@@ -2052,11 +2072,10 @@ window.confirmarVenta = function(cambioFinal = 0) {
             if(pMaestro.tipo === 'kit') { 
                 if(pMaestro.comp) pMaestro.comp.forEach(c => descontarStock(c.cod, c.can * x.can)); 
             } else {
-                // 🚀 DESCONTAMOS DIRECTAMENTE AL MAESTRO EN LUGAR DEL ORIGINAL
                 descontarStock(codMaestro, x.can);
             }
 
-            // 📸 FOTOGRAFÍA 2: Calculamos el "Después" restando lo del carrito
+            // 📸 FOTOGRAFÍA 2
             let stockDespuesReal = stockAntesReal - parseFloat(x.can);
 
             if(x.promo_ref) {
@@ -2064,7 +2083,6 @@ window.confirmarVenta = function(cambioFinal = 0) {
                 if(typeof db !== 'undefined') db.collection("promociones").doc(String(x.promo_ref.id)).set(x.promo_ref);
             }
 
-            // El costo lo sacamos de lo que pagaste por el Maestro
             let cReal = (pMaestro.cos_promedio !== undefined ? parseFloat(pMaestro.cos_promedio) : parseFloat(pMaestro.cos || 0)) * (1 + (parseFloat(pMaestro.iva)||0)/100);
             
             let precioUnitarioReal = 0;
@@ -2081,7 +2099,6 @@ window.confirmarVenta = function(cambioFinal = 0) {
             }
             
             if (typeof registrarEnKardex === 'function') {
-                // 🌟 ENVIAMOS LAS FOTOS AL KARDEX, ASIGNADAS AL CÓDIGO MAESTRO
                 registrarEnKardex(codMaestro, x.nom, "VENTA", -x.can, precioUnitarioReal, pMaestro.cos||0, stockAntesReal, stockDespuesReal);
             }
 
@@ -2089,7 +2106,7 @@ window.confirmarVenta = function(cambioFinal = 0) {
             
             detalles.push({ 
                 cod: x.cod, 
-                cod_maestro: (codMaestro !== x.cod) ? codMaestro : null, // Dejamos el rastro por si acaso
+                cod_maestro: (codMaestro !== x.cod) ? codMaestro : null, 
                 nom: x.nom, 
                 can: x.can, 
                 subtotal: subtotalSeguro, 
@@ -2099,7 +2116,7 @@ window.confirmarVenta = function(cambioFinal = 0) {
             });
         });
 
-        document.getElementById('ticket_fecha').innerText = new Date().toLocaleString() + " - " + sucursalActual + "\nCliente: " + labelCliente;
+        document.getElementById('ticket_fecha').innerText = new Date().toLocaleString() + " - " + sucReal + "\nCliente: " + labelCliente;
         document.getElementById('ticket_items').innerHTML = itemsHtml;
         document.getElementById('ticket_total').innerText = tot.toFixed(2);
         document.getElementById('ticket_metodo').innerText = metodosStr;
@@ -2114,7 +2131,7 @@ window.confirmarVenta = function(cambioFinal = 0) {
             fecha: hoy, 
             hora: new Date().toLocaleTimeString(), 
             cajero: usuarioActual, 
-            sucursal: sucursalActual, 
+            sucursal: sucReal, // 🌟 Sucursal Limpia
             total: tot, 
             metodo: metodosStr, 
             pagos: pagosCobro, 
@@ -2122,7 +2139,12 @@ window.confirmarVenta = function(cambioFinal = 0) {
             detalles: detalles, 
             anulada: false, 
             pagoCon: pagoCliente, 
-            cambio: cambioFinal 
+            cambio: cambioFinal,
+            // 🌟 NUEVOS CAMPOS BLINDADOS PARA RECONOCIMIENTO FÁCIL:
+            cliente_tel: telefonoClienteCredito,
+            es_credito: esVentaCredito,
+            monto_credito: montoCreditoTotal,
+            nom_cliente: labelCliente
         };
         
         ventas.push(nuevaV); 
@@ -2140,7 +2162,6 @@ window.confirmarVenta = function(cambioFinal = 0) {
         console.error("Error al cobrar:", err); 
     }
 };
-
 // Granel
 function calcGranel(p) { 
     if(p) document.getElementById('g_total_m').value = (document.getElementById('g_cant').value * (tempGranel.pv||1)).toFixed(2); 
@@ -3115,36 +3136,94 @@ function eliminarPromo(index) {
 // === CLIENTES Y PROVEEDORES ===
 // ====================================================================
 function renderClientes() { 
-    let html = ''; let selectHtml = '<option value="">-- Seleccionar --</option>'; let count = 0;
-    Object.keys(clientes).forEach(tel => { 
-        let c = clientes[tel]; 
-        if (c.sucursal === sucursalActual || (!c.sucursal && sucursalActual === 'Matriz')) {
+    let html = ''; 
+    let count = 0;
+    
+    let sucActiva = (typeof sucursalActual !== 'undefined' ? sucursalActual : '').toString();
+    let sucursalFiltro = sucActiva.replace(/📍/g, '').trim().toLowerCase();
+
+    Object.keys(clientes).forEach(clave => { 
+        let c = clientes[clave]; 
+        
+        let sucCli = c.sucursal ? String(c.sucursal).replace(/📍/g, '').trim() : 'Matriz';
+        let sucCliLimpia = sucCli.toLowerCase();
+
+        // 🌟 CONDICIÓN: Aislamiento total por sucursal
+        let mostrar = (sucursalFiltro === 'todas' || sucursalFiltro === '' || sucursalFiltro === sucCliLimpia);
+
+        if (mostrar) {
             count++;
+            
+            // 🌟 TRUCO VISUAL: Mostramos el teléfono limpio (Ej. "1") aunque internamente sea "1_Matriz"
+            let telParaMostrar = c.tel || clave.split('_')[0];
+
+            let badgeSucursal = `<br><small style="color:gray; font-size:10px;">📍 ${sucCli}</small>`;
+            
             html += `<tr>
-                <td>${tel}</td><td><b>${c.nom}</b></td>
-                <td>$${(c.limite||0).toFixed(2)}</td>
-                <td style="color:${c.saldo > 0 ? 'var(--danger)' : '#000'}; font-weight:bold;">$${(c.saldo||0).toFixed(2)}</td>
+                <td>${telParaMostrar}</td>
+                <td><b>${c.nom}</b> ${badgeSucursal}</td>
+                <td>$${(parseFloat(c.limite)||0).toFixed(2)}</td>
+                <td style="color:${c.saldo > 0 ? 'var(--danger)' : '#000'}; font-weight:bold;">$${(parseFloat(c.saldo)||0).toFixed(2)}</td>
                 <td>
-                    <button title="Ver Estado de Cuenta" style="background:var(--info); color:white; border:none; padding:5px 10px; border-radius:5px; cursor:pointer;" onclick="abrirHistorialCli('${tel}')">📋</button>
-                    <button title="Recibir Abono" style="background:var(--s); color:white; border:none; padding:5px 10px; border-radius:5px; cursor:pointer;" onclick="abrirModalAbono('${tel}')">💲</button> 
-                    <button title="Editar Cliente" style="background:var(--p); color:white; border:none; padding:5px 10px; border-radius:5px; cursor:pointer;" onclick="editarCliente('${tel}')">✏️</button> 
-                    <button title="Eliminar Cliente" style="background:var(--danger); color:white; border:none; padding:5px 10px; border-radius:5px; cursor:pointer;" onclick="abrirModalAuthCli('${tel}')">🗑️</button>
+                    <button title="Ver Estado de Cuenta" style="background:var(--info); color:white; border:none; padding:5px 10px; border-radius:5px; cursor:pointer;" onclick="abrirHistorialCli('${clave}')">📋</button>
+                    <button title="Recibir Abono" style="background:var(--s); color:white; border:none; padding:5px 10px; border-radius:5px; cursor:pointer;" onclick="abrirModalAbono('${clave}')">💲</button> 
+                    <button title="Editar Cliente" style="background:var(--p); color:white; border:none; padding:5px 10px; border-radius:5px; cursor:pointer;" onclick="editarCliente('${clave}')">✏️</button> 
+                    <button title="Eliminar Cliente" style="background:var(--danger); color:white; border:none; padding:5px 10px; border-radius:5px; cursor:pointer;" onclick="abrirModalAuthCli('${clave}')">🗑️</button>
                 </td>
             </tr>`; 
-            selectHtml += `<option value="${tel}">${c.nom}</option>`; 
         }
     }); 
-    if(document.getElementById('cli_lista')) document.getElementById('cli_lista').innerHTML = count > 0 ? html : `<tr><td colspan="5" style="text-align:center;">Vacio</td></tr>`; 
-    actualizarSelectClientesCobro();
+    
+    let tbody = document.getElementById('cli_lista');
+    if (tbody) {
+        tbody.innerHTML = count > 0 ? html : `<tr><td colspan="5" style="text-align:center; padding:15px; color:gray;">No hay clientes en esta sucursal</td></tr>`; 
+    }
+    
+    if (typeof actualizarSelectClientesCobro === 'function') {
+        actualizarSelectClientesCobro();
+    }
 }
 function filtrarClientes() { let txt = document.getElementById('buscar_cli').value.toLowerCase(); let trs = document.getElementById('cli_lista').getElementsByTagName('tr'); for(let tr of trs) { if(tr.cells.length > 1) { tr.style.display = (tr.cells[0].innerText.toLowerCase().includes(txt) || tr.cells[1].innerText.toLowerCase().includes(txt)) ? '' : 'none'; } } }
 function abrirModalCliente() { document.getElementById('cli_tel').value = ''; document.getElementById('cli_tel').readOnly = false; document.getElementById('cli_nom').value = ''; document.getElementById('cli_limite').value = '1000'; document.getElementById('modalCliente').style.display = 'block'; setTimeout(()=>document.getElementById('cli_tel').focus(), 100); }
 function editarCliente(tel) { document.getElementById('cli_tel').value = tel; document.getElementById('cli_tel').readOnly = true; document.getElementById('cli_nom').value = clientes[tel].nom; document.getElementById('cli_limite').value = clientes[tel].limite; document.getElementById('modalCliente').style.display = 'block'; }
 function guardarCliente() { 
-    let tel = document.getElementById('cli_tel').value.trim(); let nom = document.getElementById('cli_nom').value.trim(); let lim = parseFloat(document.getElementById('cli_limite').value) || 0; 
-    if(!tel || !nom) return alert("Faltan datos."); 
-    if(!clientes[tel]) clientes[tel] = { nom: nom, limite: lim, saldo: 0, sucursal: sucursalActual }; else { clientes[tel].nom = nom; clientes[tel].limite = lim; if(!clientes[tel].sucursal) clientes[tel].sucursal = sucursalActual; } 
-    if (typeof db !== 'undefined') db.collection("clientes").doc(tel).set(clientes[tel]).then(() => { alert("✅ Guardado."); cerrarModales(); }).catch(e=>console.log(e)); 
+    let telInput = document.getElementById('cli_tel').value.trim(); 
+    let nom = document.getElementById('cli_nom').value.trim(); 
+    let lim = parseFloat(document.getElementById('cli_limite').value) || 0; 
+    
+    if(!telInput || !nom) return alert("⚠️ Faltan datos (Teléfono o Nombre)."); 
+    
+    // 🛡️ Limpiamos la sucursal
+    let sucLimpia = String(sucursalActual || "").replace(/📍/g, '').trim();
+    
+    // 🌟 MAGIA DE AISLAMIENTO: Creamos un ID único por sucursal (Ej. "1_Matriz")
+    let idUnico = telInput + "_" + sucLimpia;
+    
+    if(!clientes[idUnico]) {
+        // Creamos un cliente 100% independiente para esta sucursal
+        clientes[idUnico] = { tel: telInput, nom: nom, limite: lim, saldo: 0, sucursal: sucLimpia }; 
+    } else { 
+        // Actualizamos solo el de esta sucursal
+        clientes[idUnico].nom = nom; 
+        clientes[idUnico].limite = lim; 
+        clientes[idUnico].sucursal = sucLimpia;
+        clientes[idUnico].tel = telInput; // Guardamos el número original por si acaso
+    } 
+    
+    // 💾 Guardado
+    localStorage.setItem("pos_clientes_v7", JSON.stringify(clientes));
+
+    if (typeof db !== 'undefined') {
+        db.collection("clientes").doc(idUnico).set(clientes[idUnico]).then(() => { 
+            alert("✅ Cliente guardado de forma independiente en: " + sucLimpia); 
+            if(typeof cerrarModales === 'function') cerrarModales(); 
+            if(typeof renderClientes === 'function') renderClientes(); 
+        }).catch(e => console.log("Error al guardar en la nube:", e)); 
+    } else {
+        alert("✅ Cliente guardado localmente."); 
+        if(typeof cerrarModales === 'function') cerrarModales(); 
+        if(typeof renderClientes === 'function') renderClientes();
+    }
 }
 function abrirModalAbono(tel) { telAbonoActual = tel; document.getElementById('abono_nom').innerText = clientes[tel].nom; document.getElementById('abono_deuda').innerText = (clientes[tel].saldo||0).toFixed(2); document.getElementById('abono_monto').value = ''; document.getElementById('modalAbono').style.display = 'block'; setTimeout(()=>document.getElementById('abono_monto').focus(), 100); }
 function confirmarAbono() { 
@@ -3852,13 +3931,14 @@ function anularVentaVisor() {
     let vReal = ventas[visorIndices[currentVisorPos].indexGlobal]; 
     if(vReal.anulada || !confirm("¿Anular esta venta?\nSe devolverá el stock al sistema y se ajustarán las gráficas.")) return;
     
-    if(vReal.detalles) { 
-        vReal.detalles.forEach(d => { 
+    // 📦 1. DEVOLUCIÓN DE STOCK Y KARDEX
+    if(vReal.detalles || vReal.items) { 
+        let listaDetalles = vReal.detalles || vReal.items || [];
+        listaDetalles.forEach(d => { 
             let sucursalVenta = vReal.sucursal || sucursalActual;
             
             // 🌟 MAGIA MAESTRO-ESPEJO: Buscamos a quién le vamos a devolver la mercancía
             let pOriginal = inv[d.cod] || {}; 
-            // Buscamos el rastro del maestro en el ticket, o calculamos el maestro actual
             let codMaestro = d.cod_maestro || (pOriginal.grupo && inv[pOriginal.grupo] ? pOriginal.grupo : d.cod);
             let pMaestro = inv[codMaestro] || pOriginal;
             
@@ -3877,52 +3957,102 @@ function anularVentaVisor() {
             if(inv[codMaestro]) { 
                 if(!inv[codMaestro].stock) inv[codMaestro].stock = {}; 
                 inv[codMaestro].stock[sucursalVenta] = stockDespuesReal; 
-                db.collection("inventario").doc(codMaestro).set(inv[codMaestro]); 
+                if (typeof db !== 'undefined') db.collection("inventario").doc(codMaestro).set(inv[codMaestro]); 
             } 
             
-            // 🌟 ENVIAMOS LAS FOTOS AL KARDEX (Se asigna al Maestro, pero imprimimos el nombre del sabor)
+            // 🌟 ENVIAMOS LAS FOTOS AL KARDEX
             if (typeof registrarEnKardex === 'function') {
                 registrarEnKardex(codMaestro, d.nom, "ANULACIÓN", d.can, 0, 0, stockAntesReal, stockDespuesReal); 
             }
         }); 
     }
     
-    if(vReal.metodo.includes('Crédito') && vReal.cliente_tel && clientes[vReal.cliente_tel]) { 
-        clientes[vReal.cliente_tel].saldo = Math.max(0, clientes[vReal.cliente_tel].saldo - vReal.total); 
-        db.collection("clientes").doc(vReal.cliente_tel).set(clientes[vReal.cliente_tel]); 
+    // 🌟 2. AJUSTE FINANCIERO DEL CLIENTE (Búsqueda inteligente por Nombre o Teléfono)
+    let met = String(vReal.metodo || "").toLowerCase();
+    let esCredito = vReal.es_credito || met.includes('cr');
+
+    // Buscamos la identidad del cliente en cualquier propiedad posible del ticket
+    let idCliente = vReal.cliente_tel || vReal.cliente || vReal.cli || vReal.nom_cliente || "";
+
+    if (esCredito && idCliente) {
+        // Buscamos la llave correcta en el objeto de clientes (por si la llave es el Teléfono o el Nombre)
+        let claveCliente = clientes[idCliente] ? idCliente : Object.keys(clientes).find(k => k === idCliente || clientes[k].nom === idCliente || clientes[k].tel === idCliente);
+
+        if (claveCliente && clientes[claveCliente]) {
+            let dineroARestar = parseFloat(vReal.monto_credito) || parseFloat(vReal.total) || 0;
+            let saldoActual = parseFloat(clientes[claveCliente].saldo) || 0;
+            let nuevoSaldo = Math.max(0, saldoActual - dineroARestar);
+
+            // Actualizamos en memoria local
+            clientes[claveCliente].saldo = nuevoSaldo;
+
+            // Sincronizamos con la nube
+            if (typeof db !== 'undefined') {
+                db.collection("clientes").doc(claveCliente).set(clientes[claveCliente]).catch(e => console.error("Error al actualizar cliente offline:", e));
+            }
+            console.log(`✅ Saldo restado al cliente ${claveCliente}: ${saldoActual} -> ${nuevoSaldo}`);
+        }
     }
     
+    // 🏷️ 3. MARCAMOS COMO ANULADA Y GUARDAMOS
     vReal.anulada = true; 
     visorIndices[currentVisorPos].anulada = true;
-    db.collection("ventas").doc(String(vReal.id)).set(vReal).then(() => {
+
+    let guardarPromesa = (typeof db !== 'undefined') 
+        ? db.collection("ventas").doc(String(vReal.id)).set(vReal) 
+        : Promise.resolve();
+
+    guardarPromesa.then(() => {
         if (typeof actualizarAcumuladorDiario === 'function') {
             actualizarAcumuladorDiario(vReal, true);
         }
-        alert("✅ Venta anulada y restada de las estadísticas correctamente."); 
+        
+        localStorage.setItem("pos_ventas_local", JSON.stringify(ventas));
+        
+        alert("✅ Venta anulada, stock devuelto y saldo restado al cliente correctamente."); 
+
+        // 🔄 4. REFRESCAMOS TODAS LAS PANTALLAS
         if(typeof renderVisorActivo === 'function') renderVisorActivo(); 
         if(typeof renderCorte === 'function') renderCorte(); 
         if(typeof renderTablaInventario === 'function') renderTablaInventario(); 
         else if(typeof renderI === 'function') renderI(); 
         if(typeof renderClientes === 'function') renderClientes(); 
+    }).catch(err => {
+        console.error("Error al guardar la anulación:", err);
+        alert("⚠️ Venta anulada localmente.");
     });
 }
 
 function devolverArticuloVisor(indexDetalle) {
-    let vRef = visorIndices[currentVisorPos]; let vReal = ventas[vRef.indexGlobal]; if(vReal.anulada) return;
-    let d = vReal.detalles[indexDetalle]; if(!d || d.can <= 0) return;
-    let c = parseFloat(prompt(`Devolver "${d.nom}" (Max: ${d.can}):`, "1")); if(isNaN(c) || c <= 0 || c > d.can) return;
-    let m = c * (d.subtotal / d.can); if(!confirm(`Devolver ${c} uds por $${m.toFixed(2)}?`)) return;
+    let vRef = visorIndices[currentVisorPos]; 
+    let vReal = ventas[vRef.indexGlobal]; 
+    if(vReal.anulada) return;
+
+    let d = vReal.detalles ? vReal.detalles[indexDetalle] : (vReal.items ? vReal.items[indexDetalle] : null); 
+    if(!d || d.can <= 0) return;
+
+    let c = parseFloat(prompt(`Devolver "${d.nom}" (Max: ${d.can}):`, "1")); 
+    if(isNaN(c) || c <= 0 || c > d.can) return;
+
+    let m = c * (d.subtotal / d.can); 
+    if(!confirm(`Devolver ${c} uds por $${m.toFixed(2)}?`)) return;
     
-    d.can -= c; d.subtotal -= m; vReal.total -= m; if(vReal.total <= 0) { vReal.anulada = true; vReal.total = 0; }
+    // 🏷️ 1. ACTUALIZAMOS EL TICKET
+    d.can -= c; 
+    d.subtotal -= m; 
+    vReal.total -= m; 
+    if(vReal.total <= 0) { 
+        vReal.anulada = true; 
+        vReal.total = 0; 
+    }
     
     let sucursalVenta = vReal.sucursal || sucursalActual;
     
-    // 🌟 MAGIA MAESTRO-ESPEJO: Buscamos a quién le vamos a devolver la mercancía
+    // 📦 2. DEVOLUCIÓN DE STOCK AL INVENTARIO (MAESTRO-ESPEJO)
     let pOriginal = inv[d.cod] || {}; 
     let codMaestro = d.cod_maestro || (pOriginal.grupo && inv[pOriginal.grupo] ? pOriginal.grupo : d.cod);
     let pMaestro = inv[codMaestro] || pOriginal;
     
-    // 📸 FOTOGRAFÍA 1: Leemos el stock del JEFE
     let stockAntesReal = 0;
     if (pMaestro.stock && typeof pMaestro.stock === 'object') {
         stockAntesReal = parseFloat(pMaestro.stock[sucursalVenta]) || 0;
@@ -3930,37 +4060,72 @@ function devolverArticuloVisor(indexDetalle) {
         stockAntesReal = parseFloat(pMaestro.stock) || parseFloat(pMaestro.existencia) || parseFloat(pMaestro.can) || 0;
     }
     
-    // 📸 FOTOGRAFÍA 2: Sumamos la pieza devuelta al JEFE
     let stockDespuesReal = stockAntesReal + c;
 
-    // Guardamos el stock en la base de datos del Maestro
     if(inv[codMaestro]) { 
         if(!inv[codMaestro].stock) inv[codMaestro].stock = {}; 
         inv[codMaestro].stock[sucursalVenta] = stockDespuesReal; 
-        db.collection("inventario").doc(codMaestro).set(inv[codMaestro]); 
+        if (typeof db !== 'undefined') db.collection("inventario").doc(codMaestro).set(inv[codMaestro]); 
     }
     
-    // 🌟 INYECCIÓN: Registro de Kardex para devoluciones parciales
     if (typeof registrarEnKardex === 'function') {
-        registrarEnKardex(codMaestro, d.nom, "ANULACIÓN", c, 0, 0, stockAntesReal, stockDespuesReal);
+        registrarEnKardex(codMaestro, d.nom, "ANULACIÓN PARCIAL", c, 0, 0, stockAntesReal, stockDespuesReal);
     }
 
-    if(vReal.metodo && vReal.metodo.includes('Crédito') && vReal.cliente_tel && clientes[vReal.cliente_tel]) { 
-        clientes[vReal.cliente_tel].saldo = Math.max(0, clientes[vReal.cliente_tel].saldo - m); 
-        db.collection("clientes").doc(vReal.cliente_tel).set(clientes[vReal.cliente_tel]); 
+    // 🌟 3. AJUSTE FINANCIERO (CRÉDITO VS MOVIENTO DE CAJA)
+    let met = String(vReal.metodo || "").toLowerCase();
+    let esCredito = vReal.es_credito || met.includes('cr');
+    let idCliente = vReal.cliente_tel || vReal.cliente || vReal.cli || vReal.nom_cliente || "";
+
+    if (esCredito && idCliente) {
+        // Buscamos la clave del cliente en la memoria
+        let claveCliente = clientes[idCliente] ? idCliente : Object.keys(clientes).find(k => k === idCliente || clientes[k].nom === idCliente || clientes[k].tel === idCliente);
+
+        if (claveCliente && clientes[claveCliente]) {
+            let saldoActual = parseFloat(clientes[claveCliente].saldo) || 0;
+            let nuevoSaldo = Math.max(0, saldoActual - m);
+
+            clientes[claveCliente].saldo = nuevoSaldo;
+
+            if (typeof db !== 'undefined') {
+                db.collection("clientes").doc(claveCliente).set(clientes[claveCliente]).catch(e => console.error(e));
+            }
+            console.log(`✅ Devolución parcial restada al cliente ${claveCliente}: ${saldoActual} -> ${nuevoSaldo}`);
+        }
     } else { 
+        // Si fue pago de contado, se registra la salida física de caja
         let idMov = Date.now(); 
-        let nm = { id: idMov, fecha: getFechaLocal(), hora: new Date().toLocaleTimeString(), cajero: usuarioActual, sucursal: sucursalActual, tipo: 'Retiro', monto: m, motivo: `DEVOLUCIÓN: ${d.nom}` }; 
+        let nm = { 
+            id: idMov, 
+            fecha: (typeof getFechaLocal === 'function' ? getFechaLocal() : new Date().toISOString().split('T')[0]), 
+            hora: new Date().toLocaleTimeString(), 
+            cajero: usuarioActual, 
+            sucursal: sucursalVenta, 
+            tipo: 'Retiro', 
+            monto: m, 
+            motivo: `DEVOLUCIÓN: ${d.nom}` 
+        }; 
         movimientos.push(nm); 
-        db.collection("movimientos").doc(String(idMov)).set(nm); 
+        if (typeof db !== 'undefined') db.collection("movimientos").doc(String(idMov)).set(nm); 
     }
     
-    db.collection("ventas").doc(String(vReal.id)).set(vReal).then(() => { 
-        alert("✅ Reembolso: $"+m.toFixed(2)); 
+    // 🔄 4. GUARDADO Y REFRESCO
+    localStorage.setItem("pos_ventas_local", JSON.stringify(ventas));
+
+    let guardarPromesa = (typeof db !== 'undefined') 
+        ? db.collection("ventas").doc(String(vReal.id)).set(vReal) 
+        : Promise.resolve();
+
+    guardarPromesa.then(() => { 
+        alert("✅ Devolución procesada: $" + m.toFixed(2)); 
         if(typeof renderVisorActivo === 'function') renderVisorActivo(); 
         if(typeof renderCorte === 'function') renderCorte(); 
         if(typeof renderTablaInventario === 'function') renderTablaInventario(); 
         else if(typeof renderI === 'function') renderI(); 
+        if(typeof renderClientes === 'function') renderClientes(); 
+    }).catch(err => {
+        console.error("Error guardando devolución:", err);
+        alert("⚠️ Devolución guardada en memoria local.");
     });
 }
 
