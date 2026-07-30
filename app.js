@@ -2394,8 +2394,36 @@ function calcVentaDesdeGanancia() {
 }
 
 function calcGananciaDesdeVenta() {
-    let costoReal = parseFloat(document.getElementById('c_real').value) || 0; let precioVenta = parseFloat(document.getElementById('c_pv').value) || 0;
-    if (costoReal > 0) document.getElementById('c_gan').value = (((precioVenta / costoReal) - 1) * 100).toFixed(2);
+    let costoReal = parseFloat(document.getElementById('c_real').value) || 0; 
+    let precioVenta = parseFloat(document.getElementById('c_pv').value) || 0;
+    
+    // 🌟 MAGIA MAESTRO-ESPEJO: Detectamos si este producto tiene un Jefe asignado
+    let inputGrupo = document.getElementById('c_grupo'); // Asumiendo que c_grupo es el ID de la casilla del Maestro
+    let codMaestro = inputGrupo ? inputGrupo.value.trim() : "";
+    
+    // Si tiene un Maestro y este existe en el inventario, tomamos el costo del Jefe
+    if (codMaestro && typeof inv !== 'undefined' && inv[codMaestro]) {
+        let pMaestro = inv[codMaestro];
+        
+        // Obtenemos el costo del Maestro (tomando en cuenta si tiene costo promedio o IVA)
+        let costoMaestro = parseFloat(pMaestro.cos_promedio !== undefined ? pMaestro.cos_promedio : (pMaestro.cos || 0));
+        let ivaMaestro = parseFloat(pMaestro.iva) || 0;
+        
+        // Sobreescribimos el costoReal con el del Jefe
+        costoReal = costoMaestro * (1 + (ivaMaestro / 100));
+        
+        // Si el precio de venta está vacío, también usamos el del Jefe por defecto
+        if (precioVenta === 0) {
+            precioVenta = parseFloat(pMaestro.pv) || 0;
+        }
+    }
+
+    // Hacemos la matemática final solo si hay un costo válido
+    if (costoReal > 0) {
+        document.getElementById('c_gan').value = (((precioVenta / costoReal) - 1) * 100).toFixed(2);
+    } else {
+        document.getElementById('c_gan').value = "0.00";
+    }
 }
 
 function manualAddToList() {
@@ -4269,15 +4297,42 @@ function abrirBuscador() { document.getElementById('modalBuscar').style.display 
 function buscarProductos() { 
     clearTimeout(timerBusquedaModal);
     timerBusquedaModal = setTimeout(() => {
-        let txt = document.getElementById('b_input').value.toLowerCase(); if (txt === ultimoTextoBuscado) return; ultimoTextoBuscado = txt; 
-        let terms = txt.split(/%|\s+/).filter(t => t.trim() !== ""); searchResultsList = []; 
+        let txt = document.getElementById('b_input').value.toLowerCase(); 
+        
+        // 🛑 ELIMINAMOS el bloqueo que causaba el "efecto fantasma" al buscar lo mismo dos veces
+        ultimoTextoBuscado = txt; 
+        
+        let terms = txt.split(/%|\s+/).filter(t => t.trim() !== ""); 
+        searchResultsList = []; 
         let codigos = Object.keys(inv);
+        
         for(let i = 0; i < codigos.length; i++) {
-            let cod = codigos[i]; let p = inv[cod]; if (!p) continue;
-            let match = terms.every(t => (String(cod).toLowerCase() + " " + String(p.nom || '').toLowerCase()).includes(t));
-            if(terms.length === 0 || match) { searchResultsList.push({cod: cod, ...p}); if (searchResultsList.length >= 50) break; } 
+            let cod = codigos[i]; 
+            let pOriginal = inv[cod]; 
+            if (!pOriginal) continue;
+            
+            let match = terms.every(t => (String(cod).toLowerCase() + " " + String(pOriginal.nom || '').toLowerCase()).includes(t));
+            
+            if(terms.length === 0 || match) { 
+                
+                // 🌟 MAGIA MAESTRO-ESPEJO: Detectamos si es variante y jalamos los datos del Jefe
+                let pMaestro = (pOriginal.grupo && inv[pOriginal.grupo]) ? inv[pOriginal.grupo] : pOriginal;
+                
+                // Armamos el resultado inyectándole siempre el Precio y Stock más fresco
+                searchResultsList.push({
+                    ...pOriginal, // Trae el nombre y la foto del espejo
+                    cod: cod,
+                    pv: pMaestro.pv !== undefined ? pMaestro.pv : pOriginal.pv, // Precio Real
+                    stock: pMaestro.stock !== undefined ? pMaestro.stock : pOriginal.stock, // Stock Real
+                    cos: pMaestro.cos !== undefined ? pMaestro.cos : pOriginal.cos // Costo Real
+                }); 
+                
+                if (searchResultsList.length >= 50) break; 
+            } 
         }
-        focusSearchIndex = searchResultsList.length > 0 ? 0 : -1; renderTablaBuscador();
+        
+        focusSearchIndex = searchResultsList.length > 0 ? 0 : -1; 
+        if (typeof renderTablaBuscador === 'function') renderTablaBuscador();
     }, 200); 
 }
 function renderTablaBuscador() {
@@ -4858,6 +4913,48 @@ function ejecutarTransferencia() {
     if(!confirm(`📦 ¿Confirmas el envío de mercancía hacia ${des}?`)) return; 
     
     let idEnvio = Date.now();
+    
+    // Descontamos stock del origen y aplicamos la Magia Maestro-Espejo
+    carT.forEach(x => { 
+        let pOriginal = inv[x.cod] || {};
+        
+        // 🌟 MAGIA MAESTRO-ESPEJO: Encontramos al Jefe de inmediato
+        let codMaestro = (pOriginal.grupo && inv[pOriginal.grupo]) ? pOriginal.grupo : x.cod;
+        let pMaestro = inv[codMaestro] || pOriginal;
+
+        if(!pMaestro.stock) pMaestro.stock = {}; 
+        
+        // 📸 FOTOGRAFÍA 1: Leer el stock exacto del MAESTRO en la sucursal de origen
+        let stockAntesReal = parseFloat(pMaestro.stock[ori]) || 0;
+        
+        // 📸 FOTOGRAFÍA 2: Restar lo que se está enviando
+        let stockDespuesReal = stockAntesReal - parseFloat(x.can);
+        
+        pMaestro.stock[ori] = stockDespuesReal; 
+        
+        // ☁️ Guardamos al Maestro modificado en la nube
+        if(typeof db !== 'undefined') db.collection("inventario").doc(codMaestro).set(pMaestro);
+        
+        // 🌟 ENVIAMOS LAS FOTOS AL KARDEX, REFERENCIANDO AL MAESTRO
+        if(typeof registrarEnKardex === 'function') {
+            registrarEnKardex(
+                codMaestro, // 👈 Usamos el código del Jefe para que los reportes cuadren
+                x.nom,      // Pero conservamos el nombre de la variante que enviaron físicamente
+                "TRANSFERENCIA (SALIDA)", 
+                -x.can, 
+                pMaestro.pv !== undefined ? pMaestro.pv : (pOriginal.pv || 0), 
+                x.cReal || pMaestro.cos || pOriginal.cos || 0,
+                stockAntesReal,       // 👈 Foto 1
+                stockDespuesReal      // 👈 Foto 2
+            );
+        }
+        
+        // 🚀 TRUCO MAESTRO: Cambiamos el código del ítem en el carrito para que 
+        // cuando la sucursal destino lo reciba, le sume el stock directo al Maestro.
+        x.cod = codMaestro;
+    }); 
+    
+    // Creamos el paquete de transferencia ahora que ya convertimos todos a Maestros
     let nuevaTransferencia = { 
         id: idEnvio, 
         fecha: new Date().toLocaleString(), 
@@ -4868,42 +4965,14 @@ function ejecutarTransferencia() {
         estado: 'pendiente', obs: '' 
     };
     
-    // Descontamos stock del origen
-    carT.forEach(x => { 
-        let pO = inv[x.cod] || {};
-        if(!pO.stock) pO.stock = {}; 
-        
-        // 📸 FOTOGRAFÍA 1: Leer el stock exacto en la sucursal de origen ANTES del envío
-        let stockAntesReal = parseFloat(pO.stock[ori]) || 0;
-        
-        // 📸 FOTOGRAFÍA 2: Restar lo que se está enviando en el camión/paquete
-        let stockDespuesReal = stockAntesReal - parseFloat(x.can);
-        
-        pO.stock[ori] = stockDespuesReal; 
-        if(typeof db !== 'undefined') db.collection("inventario").doc(x.cod).set(pO);
-        
-        // 🌟 ENVIAMOS LAS FOTOS AL KARDEX
-        if(typeof registrarEnKardex === 'function') {
-            registrarEnKardex(
-                x.cod, 
-                x.nom, 
-                "TRANSFERENCIA (SALIDA)", 
-                -x.can, 
-                pO.pv || 0, 
-                x.cReal || pO.cos || 0,
-                stockAntesReal,       // 👈 Foto 1
-                stockDespuesReal      // 👈 Foto 2
-            );
-        }
-    }); 
-    
     transferencias.push(nuevaTransferencia); 
     localStorage.setItem("pos_precision_v6", JSON.stringify(inv)); 
     localStorage.setItem("pos_transferencias_v6", JSON.stringify(transferencias)); 
     if(typeof db !== 'undefined') db.collection("transferencias").doc(String(idEnvio)).set(nuevaTransferencia);
 
     alert(`✅ Envío creado exitosamente. Ya fue notificado a ${des}.`); 
-    carT = []; renderI(); cerrarModales(); actualizarContadorRecepciones(); 
+    carT = []; renderI(); cerrarModales(); 
+    if(typeof actualizarContadorRecepciones === 'function') actualizarContadorRecepciones(); 
 }
 
 // ---------------------------------------------------------
