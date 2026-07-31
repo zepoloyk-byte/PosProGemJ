@@ -1247,7 +1247,7 @@ function getVirtualStock(p) {
     return (p.stock && p.stock[sucursalActual]) || 0; 
 }
 
-function descontarStock(cod, cant) { 
+window.descontarStock = function(cod, cant) { 
     // 🔥 MAGIA: Redirige la resta de inventario al Maestro si pertenece a un grupo
     let itemOriginal = inv[cod] || {}; 
     let codMaestro = (itemOriginal.grupo && inv[itemOriginal.grupo]) ? itemOriginal.grupo : cod;
@@ -1263,19 +1263,12 @@ function descontarStock(cod, cant) {
         itemMaestro.stock[sucursalActual] = stockNumerico;
     }
 
-    if(!itemMaestro.sold_without_stock) itemMaestro.sold_without_stock = {}; 
-    
-    let disp = Math.max(0, parseFloat(itemMaestro.stock[sucursalActual]) || 0); 
+    // 📸 LEEMOS LA REALIDAD: Sin candados, tomando el número tal cual es (incluso negativos)
+    let stockActual = parseFloat(itemMaestro.stock[sucursalActual]) || 0; 
     let cantRestar = parseFloat(cant) || 0;
 
-    // AHORA SÍ: Comparamos y restamos correctamente
-    if(disp >= cantRestar) { 
-        itemMaestro.stock[sucursalActual] = disp - cantRestar; 
-    } else { 
-        let fal = cantRestar - disp; 
-        itemMaestro.stock[sucursalActual] = 0; 
-        itemMaestro.sold_without_stock[sucursalActual] = (parseFloat(itemMaestro.sold_without_stock[sucursalActual]) || 0) + fal; 
-    } 
+    // 💥 RESTA PURA Y DURA: Dejamos que el Kardex y el Stock sigan su curso matemático
+    itemMaestro.stock[sucursalActual] = stockActual - cantRestar; 
     
     // 🛡️ ACTUALIZACIÓN CRÍTICA: Nos aseguramos de mantener el tipo correcto
     if(inv[codMaestro]) {
@@ -1284,11 +1277,11 @@ function descontarStock(cod, cant) {
         itemMaestro.dep = inv[codMaestro].dep || itemMaestro.dep;
     }
     
-    // Subir el stock actualizado a la nube SIN perder las propiedades esenciales
+    // ☁️ Subir el stock actualizado a la nube
     if(typeof db !== 'undefined') {
         db.collection("inventario").doc(String(codMaestro)).set(itemMaestro).catch(e => console.error("Error al restar stock:", e));
     }
-}
+};
 
 // Funciones de Ajuste Manual de Stock
 let codAjusteStock = "";
