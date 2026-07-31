@@ -2061,10 +2061,17 @@ window.confirmarVenta = function(cambioFinal = 0) {
             let codMaestro = x.maestro_cod || (pOriginal.grupo && inv[pOriginal.grupo] ? pOriginal.grupo : x.cod);
             let pMaestro = inv[codMaestro] || pOriginal;
             
-            // 📸 FOTOGRAFÍA 1
+            // 📸 FOTOGRAFÍA 1: BÚSQUEDA BLINDADA DEL STOCK
             let stockAntesReal = 0;
             if (pMaestro.stock && typeof pMaestro.stock === 'object') {
-                stockAntesReal = parseFloat(pMaestro.stock[sucReal]) || 0;
+                if (pMaestro.stock[sucReal] !== undefined) {
+                    stockAntesReal = parseFloat(pMaestro.stock[sucReal]) || 0;
+                } else if (pMaestro.stock['Matriz'] !== undefined) {
+                    stockAntesReal = parseFloat(pMaestro.stock['Matriz']) || 0;
+                } else {
+                    // Respaldo total: si no halla la sucursal, suma lo que haya
+                    stockAntesReal = Object.values(pMaestro.stock).reduce((a, b) => (parseFloat(a)||0) + (parseFloat(b)||0), 0);
+                }
             } else {
                 stockAntesReal = parseFloat(pMaestro.stock) || parseFloat(pMaestro.existencia) || parseFloat(pMaestro.can) || 0;
             }
@@ -2131,7 +2138,7 @@ window.confirmarVenta = function(cambioFinal = 0) {
             fecha: hoy, 
             hora: new Date().toLocaleTimeString(), 
             cajero: usuarioActual, 
-            sucursal: sucReal, // 🌟 Sucursal Limpia
+            sucursal: sucReal, 
             total: tot, 
             metodo: metodosStr, 
             pagos: pagosCobro, 
@@ -2140,7 +2147,6 @@ window.confirmarVenta = function(cambioFinal = 0) {
             anulada: false, 
             pagoCon: pagoCliente, 
             cambio: cambioFinal,
-            // 🌟 NUEVOS CAMPOS BLINDADOS PARA RECONOCIMIENTO FÁCIL:
             cliente_tel: telefonoClienteCredito,
             es_credito: esVentaCredito,
             monto_credito: montoCreditoTotal,
@@ -4641,8 +4647,11 @@ function seleccionarProductoCaja(codigo, nombre, piezas, impuesto) {
 // ====================================================================
 
 // Registrar un movimiento en el Kardex (Función Interna Maestro)
-window.registrarEnKardex = function(productoCod, productoNom, tipoMov, cantidad, precio, costo, stockAntes, stockDespues) {
+window.registrarEnKardex = function(productoCod, productoNom, tipoMov, cantidad, precio, costo, stockAntes, stockDespues, sucursalInyectada = null) {
     
+    // 🌟 1. IDENTIFICAR LA SUCURSAL EXACTA (Usa la inyectada si existe, si no usa la global)
+    let sucKardex = sucursalInyectada ? sucursalInyectada : String(typeof sucursalActual !== 'undefined' ? sucursalActual : 'Matriz').replace(/📍/g, '').trim();
+
     // 🌟 MAGIA MAESTRO-ESPEJO: El Escudo Definitivo
     let pOriginal = inv[productoCod] || {};
     let esEspejo = pOriginal.grupo && inv[pOriginal.grupo];
@@ -4654,7 +4663,8 @@ window.registrarEnKardex = function(productoCod, productoNom, tipoMov, cantidad,
         let pMaestro = inv[codigoFinal];
         let stockMaestro = 0;
         if (pMaestro.stock && typeof pMaestro.stock === 'object') {
-            stockMaestro = parseFloat(pMaestro.stock[sucursalActual]) || 0;
+            // 👈 Ahora lee el stock de la sucursal correcta
+            stockMaestro = parseFloat(pMaestro.stock[sucKardex]) || 0; 
         } else {
             stockMaestro = parseFloat(pMaestro.stock) || parseFloat(pMaestro.existencia) || parseFloat(pMaestro.can) || 0;
         }
@@ -4684,8 +4694,8 @@ window.registrarEnKardex = function(productoCod, productoNom, tipoMov, cantidad,
         
         precio: parseFloat(precio) || 0,
         costo: parseFloat(costo) || 0,
-        sucursal: sucursalActual,
-        cajero: usuarioActual || "Admin"
+        sucursal: sucKardex, // 👈 USAMOS LA SUCURSAL ELEGIDA
+        cajero: (typeof usuarioActual !== 'undefined' ? usuarioActual : "Admin")
     };
 
     // Mandamos directo a la colección de la nube
@@ -4904,13 +4914,17 @@ function renderT() {
     document.getElementById('t_total_val').innerText = tVal.toFixed(2); 
 }
 
-function ejecutarTransferencia() { 
+window.ejecutarTransferencia = function() { 
     let ori = document.getElementById('t_origen').value; 
     let des = document.getElementById('t_destino').value; 
     
-    if(ori === des) return alert("❌ El Origen y el Destino no pueden ser iguales."); 
+    // Limpiamos emojis y espacios extra
+    let oriLimpio = String(ori || "").replace(/📍/g, '').trim();
+    let desLimpio = String(des || "").replace(/📍/g, '').trim();
+    
+    if(oriLimpio === desLimpio) return alert("❌ El Origen y el Destino no pueden ser iguales."); 
     if(carT.length === 0) return alert("❌ El carrito de envíos está vacío."); 
-    if(!confirm(`📦 ¿Confirmas el envío de mercancía hacia ${des}?`)) return; 
+    if(!confirm(`📦 ¿Confirmas el envío de mercancía desde ${oriLimpio} hacia ${desLimpio}?`)) return; 
     
     let idEnvio = Date.now();
     
@@ -4922,43 +4936,47 @@ function ejecutarTransferencia() {
         let codMaestro = (pOriginal.grupo && inv[pOriginal.grupo]) ? pOriginal.grupo : x.cod;
         let pMaestro = inv[codMaestro] || pOriginal;
 
-        if(!pMaestro.stock) pMaestro.stock = {}; 
+        if(!pMaestro.stock || typeof pMaestro.stock !== 'object') {
+             let stockAntiguo = parseFloat(pMaestro.stock) || 0;
+             pMaestro.stock = {}; 
+             // Si el objeto no existía, asumimos que el stock viejo pertenece a Matriz
+             pMaestro.stock['Matriz'] = stockAntiguo;
+        }
         
-        // 📸 FOTOGRAFÍA 1: Leer el stock exacto del MAESTRO en la sucursal de origen
-        let stockAntesReal = parseFloat(pMaestro.stock[ori]) || 0;
+        // 📸 FOTOGRAFÍA 1: Leer el stock exacto del MAESTRO en la sucursal de origen limpia
+        let stockAntesReal = parseFloat(pMaestro.stock[oriLimpio]) || 0;
         
         // 📸 FOTOGRAFÍA 2: Restar lo que se está enviando
         let stockDespuesReal = stockAntesReal - parseFloat(x.can);
         
-        pMaestro.stock[ori] = stockDespuesReal; 
+        pMaestro.stock[oriLimpio] = stockDespuesReal; 
         
         // ☁️ Guardamos al Maestro modificado en la nube
         if(typeof db !== 'undefined') db.collection("inventario").doc(codMaestro).set(pMaestro);
         
-        // 🌟 ENVIAMOS LAS FOTOS AL KARDEX, REFERENCIANDO AL MAESTRO
+        // 🌟 ENVIAMOS LAS FOTOS AL KARDEX (Inyectando el Origen Limpio)
         if(typeof registrarEnKardex === 'function') {
             registrarEnKardex(
-                codMaestro, // 👈 Usamos el código del Jefe para que los reportes cuadren
-                x.nom,      // Pero conservamos el nombre de la variante que enviaron físicamente
+                codMaestro, 
+                x.nom, 
                 "TRANSFERENCIA (SALIDA)", 
                 -x.can, 
-                pMaestro.pv !== undefined ? pMaestro.pv : (pOriginal.pv || 0), 
-                x.cReal || pMaestro.cos || pOriginal.cos || 0,
+                parseFloat(pMaestro.pv) || parseFloat(pOriginal.pv) || 0, 
+                parseFloat(x.cReal) || parseFloat(pMaestro.cos) || parseFloat(pOriginal.cos) || 0,
                 stockAntesReal,       // 👈 Foto 1
-                stockDespuesReal      // 👈 Foto 2
+                stockDespuesReal,     // 👈 Foto 2
+                oriLimpio             // 🌟 INYECTAMOS LA SUCURSAL DE ORIGEN (OBLIGATORIO)
             );
         }
         
-        // 🚀 TRUCO MAESTRO: Cambiamos el código del ítem en el carrito para que 
-        // cuando la sucursal destino lo reciba, le sume el stock directo al Maestro.
+        // 🚀 TRUCO MAESTRO: Cambiamos el código para que al recibir, sume al Maestro
         x.cod = codMaestro;
     }); 
     
-    // Creamos el paquete de transferencia ahora que ya convertimos todos a Maestros
     let nuevaTransferencia = { 
         id: idEnvio, 
         fecha: new Date().toLocaleString(), 
-        origen: ori, destino: des, 
+        origen: oriLimpio, destino: desLimpio, 
         items: [...carT], 
         valor: document.getElementById('t_total_val').innerText, 
         total_art: document.getElementById('t_total_art').innerText,
@@ -4970,10 +4988,10 @@ function ejecutarTransferencia() {
     localStorage.setItem("pos_transferencias_v6", JSON.stringify(transferencias)); 
     if(typeof db !== 'undefined') db.collection("transferencias").doc(String(idEnvio)).set(nuevaTransferencia);
 
-    alert(`✅ Envío creado exitosamente. Ya fue notificado a ${des}.`); 
-    carT = []; renderI(); cerrarModales(); 
+    alert(`✅ Envío creado exitosamente. Ya fue notificado a ${desLimpio}.`); 
+    carT = []; if(typeof renderI === 'function') renderI(); if(typeof cerrarModales === 'function') cerrarModales(); 
     if(typeof actualizarContadorRecepciones === 'function') actualizarContadorRecepciones(); 
-}
+};
 
 // ---------------------------------------------------------
 // 2. RECIBIR MERCANCÍA (ENTRADAS - 2 PASOS)
