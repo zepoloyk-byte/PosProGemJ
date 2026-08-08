@@ -3649,17 +3649,14 @@ function guardarMovimiento() {
     let tipo = document.getElementById('mov_tipo').value; 
     let monto = parseFloat(document.getElementById('mov_monto').value) || 0; 
     let motivo = document.getElementById('mov_motivo').value.trim() || 'Manual';
-    
     if(monto <= 0) return alert("❌ Monto inválido.");
     
     let miNombre = typeof usuarioActual !== 'undefined' ? usuarioActual : 'Admin';
     let hoy = typeof getFechaLocal === 'function' ? getFechaLocal() : new Date().toISOString().split('T')[0];
     let hora = new Date().toLocaleTimeString();
     
-    // 🌟 Atrapamos el ID del turno para que cuadre perfecto en el corte de caja
     let idSesionTurno = (window.sesionCajaActual ? window.sesionCajaActual.id : null);
 
-    // 🌟 SI SE TRATA DE UNA TRANSFERENCIA DE EFECTIVO:
     if (tipo === 'Transferencia') {
         let cajeroDestino = document.getElementById('mov_cajero_destino').value;
         if (!cajeroDestino) return alert("❌ Selecciona quién recibirá el dinero.");
@@ -3667,49 +3664,33 @@ function guardarMovimiento() {
         let idBase = Date.now();
         let descripcionUnica = `🔄 TRASPASO: de ${miNombre} a ${cajeroDestino} (${motivo.toUpperCase()})`;
 
-        // Doble asiento contable (Vinculados al turno actual si existe):
+        // 🚨 CORRECCIÓN AQUÍ: El Retiro es tuyo, el Ingreso NO lleva tu ID de turno
         let mRetiro = { id: idBase, id_sesion_caja: idSesionTurno, fecha: hoy, hora: hora, cajero: miNombre, sucursal: sucursalActual, tipo: 'Retiro', monto: monto, motivo: descripcionUnica };
-        let mIngreso = { id: idBase + 1, id_sesion_caja: idSesionTurno, fecha: hoy, hora: hora, cajero: cajeroDestino, sucursal: sucursalActual, tipo: 'Ingreso', monto: monto, motivo: descripcionUnica };
+        let mIngreso = { id: idBase + 1, id_sesion_caja: null, fecha: hoy, hora: hora, cajero: cajeroDestino, sucursal: sucursalActual, tipo: 'Ingreso', monto: monto, motivo: descripcionUnica };
 
         movimientos.push(mRetiro, mIngreso);
-
         if (typeof db !== 'undefined') {
-            db.collection("movimientos").doc(String(mRetiro.id)).set(mRetiro).catch(e => console.log(e));
-            db.collection("movimientos").doc(String(mIngreso.id)).set(mIngreso).catch(e => console.log(e));
+            db.collection("movimientos").doc(String(mRetiro.id)).set(mRetiro).catch(e=>console.log(e));
+            db.collection("movimientos").doc(String(mIngreso.id)).set(mIngreso).catch(e=>console.log(e));
         }
-
         cerrarModales(); 
         alert(`✅ Traspaso completado: Se movieron $${monto.toFixed(2)} a la caja de ${cajeroDestino}.`);
     
     } else {
-        // 🔼 INGRESO O RETIRO REGULAR
         let idMov = Date.now(); 
         let nuevoMov = { id: idMov, id_sesion_caja: idSesionTurno, fecha: hoy, hora: hora, cajero: miNombre, sucursal: sucursalActual, tipo: tipo, monto: monto, motivo: motivo };
-        
         movimientos.push(nuevoMov); 
-        
-        if (typeof db !== 'undefined') {
-            db.collection("movimientos").doc(String(idMov)).set(nuevoMov).catch(e => console.log(e));
-        }
-        
-        cerrarModales(); 
-        alert(`✅ ${tipo} registrado.`); 
+        if (typeof db !== 'undefined') db.collection("movimientos").doc(String(idMov)).set(nuevoMov).catch(e=>console.log(e));
+        cerrarModales(); alert(`✅ ${tipo} registrado.`); 
     }
 
-    // =================================================================
-    // 🛡️ GUARDADO BLINDADO CONTRA MEMORIA LLENA (Aplica para ambos casos)
-    // =================================================================
     try {
         localStorage.setItem("pos_movimientos_v1", JSON.stringify(movimientos));
     } catch (e) {
-        console.warn("Memoria local llena, recortando historial de movimientos...");
-        movimientos = movimientos.slice(-200); // Mantiene solo los últimos 200 en memoria local
+        movimientos = movimientos.slice(-200); 
         localStorage.setItem("pos_movimientos_v1", JSON.stringify(movimientos));
     }
-
-    if(typeof tabActual !== 'undefined' && tabActual === 'r-tab' && typeof renderCorte === 'function') {
-        renderCorte();
-    }
+    if(typeof tabActual !== 'undefined' && tabActual === 'r-tab' && typeof renderCorte === 'function') renderCorte();
 }
 function registrarGasto() { let monto = parseFloat(prompt("💸 ¿Cuánto vas a retirar?")); if (isNaN(monto) || monto <= 0) return; let motivo = prompt("¿Motivo?"); if (!motivo) return; procesarRetiroCaja(monto, `GASTO: ${motivo.toUpperCase()}`); }
 window.registrarPrecorte = function() { 
@@ -4400,7 +4381,7 @@ window.anularVentaVisor = function() {
     if(vReal.detalles || vReal.items) { 
         let listaDetalles = vReal.detalles || vReal.items || [];
         listaDetalles.forEach(d => { 
-            let sucursalVenta = vReal.sucursal || sucursalActual;
+            let sucursalVenta = vReal.sucursal || (typeof sucursalActual !== 'undefined' ? sucursalActual : 'Matriz');
             
             // 🌟 MAGIA MAESTRO-ESPEJO
             let pOriginal = inv[d.cod] || {}; 
@@ -4415,8 +4396,8 @@ window.anularVentaVisor = function() {
                 stockAntesReal = parseFloat(pMaestro.stock) || parseFloat(pMaestro.existencia) || parseFloat(pMaestro.can) || 0;
             }
             
-            // 📸 FOTOGRAFÍA 2: Sumamos la pieza devuelta (Obligando a 3 decimales)
-            let cantDevuelta = parseFloat(d.can);
+            // 📸 FOTOGRAFÍA 2: Sumamos la pieza devuelta
+            let cantDevuelta = parseFloat(d.can) || 0;
             let stockDespuesReal = parseFloat((stockAntesReal + cantDevuelta).toFixed(3));
 
             // Guardamos el stock localmente
@@ -4424,18 +4405,26 @@ window.anularVentaVisor = function() {
                 if(!inv[codMaestro].stock) inv[codMaestro].stock = {}; 
                 inv[codMaestro].stock[sucursalVenta] = stockDespuesReal; 
                 
-                // ☁️ 🚀 SUBIDA BLINDADA A LA NUBE (Firebase suma dinámicamente)
-                if (typeof db !== 'undefined') {
+                // ☁️ 🚀 SUBIDA BLINDADA A LA NUBE (Compatible PocketBase / Firebase)
+                if (typeof db !== 'undefined' && db) {
                     let campoStock = `stock.${sucursalVenta}`;
-                    db.collection("inventario").doc(String(codMaestro)).set({
-                        [campoStock]: firebase.firestore.FieldValue.increment(cantDevuelta)
-                    }, { merge: true }).catch(e => console.error("Error al devolver stock en la nube:", e)); 
+                    
+                    if (typeof firebase !== 'undefined' && firebase.firestore) {
+                        db.collection("inventario").doc(String(codMaestro)).set({
+                            [campoStock]: firebase.firestore.FieldValue.increment(cantDevuelta)
+                        }, { merge: true }).catch(e => console.error("Error nube:", e)); 
+                    } else {
+                        let updateData = {};
+                        updateData[campoStock] = stockDespuesReal;
+                        if (typeof db.collection === 'function') {
+                            db.collection("inventario").doc(String(codMaestro)).set(updateData, { merge: true }).catch(e => console.error("Error nube:", e));
+                        }
+                    }
                 }
             } 
             
             // 🌟 ENVIAMOS LAS FOTOS AL KARDEX
             if (typeof registrarEnKardex === 'function') {
-                // Inyectamos la sucursal de la venta para que el registro sea exacto
                 registrarEnKardex(codMaestro, d.nom, "ANULACIÓN", cantDevuelta, 0, 0, stockAntesReal, stockDespuesReal, sucursalVenta); 
             }
         }); 
@@ -4449,7 +4438,7 @@ window.anularVentaVisor = function() {
     let esCredito = vReal.es_credito || met.includes('cr');
     let idCliente = vReal.cliente_tel || vReal.cliente || vReal.cli || vReal.nom_cliente || "";
 
-    if (esCredito && idCliente) {
+    if (esCredito && idCliente && typeof clientes !== 'undefined') {
         let claveCliente = clientes[idCliente] ? idCliente : Object.keys(clientes).find(k => k === idCliente || clientes[k].nom === idCliente || clientes[k].tel === idCliente);
 
         if (claveCliente && clientes[claveCliente]) {
@@ -4461,22 +4450,29 @@ window.anularVentaVisor = function() {
             clientes[claveCliente].saldo = nuevoSaldo;
             try { localStorage.setItem("pos_clientes_v1", JSON.stringify(clientes)); } catch(e){}
 
-            // ☁️ 🚀 DEUDA BLINDADA: Firebase descuenta el dinero de forma segura sin borrar abonos recientes
-            if (typeof db !== 'undefined') {
-                db.collection("clientes").doc(String(claveCliente)).set({
-                    saldo: firebase.firestore.FieldValue.increment(-dineroARestar)
-                }, { merge: true }).catch(e => console.error("Error al actualizar cliente offline:", e));
+            // ☁️ 🚀 DEUDA BLINDADA A LA NUBE
+            if (typeof db !== 'undefined' && db) {
+                if (typeof firebase !== 'undefined' && firebase.firestore) {
+                    db.collection("clientes").doc(String(claveCliente)).set({
+                        saldo: firebase.firestore.FieldValue.increment(-dineroARestar)
+                    }, { merge: true }).catch(e => console.error(e));
+                } else {
+                    if (typeof db.collection === 'function') {
+                        db.collection("clientes").doc(String(claveCliente)).set({ saldo: nuevoSaldo }, { merge: true }).catch(e => console.error(e));
+                    }
+                }
             }
-            console.log(`✅ Saldo restado al cliente ${claveCliente} de manera segura.`);
         }
     }
     
     // 🏷️ 3. MARCAMOS COMO ANULADA Y GUARDAMOS EL TICKET
     vReal.anulada = true; 
-    visorIndices[currentVisorPos].anulada = true;
+    if (visorIndices && visorIndices[currentVisorPos]) {
+        visorIndices[currentVisorPos].anulada = true;
+    }
 
     // Solo subimos los cambios puntuales (la bandera de anulada)
-    let guardarPromesa = (typeof db !== 'undefined') 
+    let guardarPromesa = (typeof db !== 'undefined' && typeof db.collection === 'function') 
         ? db.collection("ventas").doc(String(vReal.id)).set({ anulada: true }, { merge: true }) 
         : Promise.resolve();
 
@@ -4486,11 +4482,7 @@ window.anularVentaVisor = function() {
         }
         
         // 🛡️ PARACAÍDAS DE MEMORIA (Ventas)
-        try { 
-            localStorage.setItem("pos_ventas_local", JSON.stringify(ventas)); 
-        } catch(e) { 
-            console.warn("Memoria local de ventas llena, pero guardado en la nube exitoso."); 
-        }
+        try { localStorage.setItem("pos_ventas_v6", JSON.stringify(ventas)); } catch(e) {}
         
         alert("✅ Venta anulada, stock devuelto y saldo restado al cliente correctamente."); 
 
@@ -4504,7 +4496,7 @@ window.anularVentaVisor = function() {
         console.error("Error al guardar la anulación en la nube:", err);
         alert("⚠️ Venta anulada localmente (Error de conexión).");
     });
-}
+};
 
 window.devolverArticuloVisor = function(indexDetalle) {
     let vRef = visorIndices[currentVisorPos]; 
@@ -8109,13 +8101,13 @@ window.abrirMontoInicialCaja = function() {
     if (typeof renderCorte === 'function') renderCorte();
 };
 
-// 🔒 FINALIZAR TURNO (VINCULADO AL CORTE Y CON MATEMÁTICA EXACTA ESTRICTA)
-window.cerrarTurnoActual = function() {
-    if (!window.sesionCajaActual || window.sesionCajaActual.estado !== 'abierta') {
-        return alert("⚠️ No hay ninguna sesión de caja abierta actualmente.");
-    }
+// Variable temporal para recordar el dinero que pidió el sistema
+window.efectivoEsperadoTemporal = 0;
 
-    // 🔄 1. LLAMAMOS AL CORTE DE CAJA PRIMERO
+// 🔒 1. PREPARAR DATOS Y ABRIR CALCULADORA
+window.cerrarTurnoActual = function() {
+    if (!window.sesionCajaActual || window.sesionCajaActual.estado !== 'abierta') return alert("⚠️ No hay sesión abierta.");
+    
     if (typeof renderCorte === 'function') {
         let hoy = typeof getFechaLocal === 'function' ? getFechaLocal() : new Date().toISOString().split('T')[0];
         let inputInicio = document.getElementById('corte_fecha_inicio');
@@ -8125,70 +8117,108 @@ window.cerrarTurnoActual = function() {
         renderCorte();
     }
 
-    // 🧮 2. MATEMÁTICA EXACTA DEL TURNO (A prueba de otras sucursales)
     let idSesion = window.sesionCajaActual.id;
     let sucTurno = window.sesionCajaActual.sucursal || String(typeof sucursalActual !== 'undefined' ? sucursalActual : "Matriz").replace(/📍/g, '').trim();
     let cajeroTurno = window.sesionCajaActual.cajero;
     let fechaHoy = typeof getFechaLocal === 'function' ? getFechaLocal() : new Date().toISOString().split('T')[0];
-
+    
     let fondo = parseFloat(window.sesionCajaActual.monto_inicial) || 0;
     
-    // A) Sumar Ventas cobradas en Efectivo durante el turno
-    let ventasEfectivo = 0;
-    if(typeof ventas !== 'undefined') {
-        ventasEfectivo = ventas.filter(v => {
-            if (v.anulada || !v.metodo.includes("Efectivo")) return false;
-            if (v.id_sesion_caja === idSesion) return true;
-            // 🔒 Candado de respaldo:
-            let sucMov = v.sucursal || "Matriz";
-            return (v.fecha === fechaHoy && sucMov === sucTurno && v.cajero === cajeroTurno);
-        }).reduce((acc, v) => acc + (parseFloat(v.total) || 0), 0);
+    // 🧮 1. VENTAS
+    let ventasEfectivo = 0, ventasAnuladas = 0;
+    if (typeof ventas !== 'undefined' && Array.isArray(ventas)) {
+        ventas.forEach(v => {
+            let metodo = v.metodo || ""; // 🛡️ Escudo para ventas antiguas sin método
+            if (!metodo.includes("Efectivo") || v.cajero !== cajeroTurno) return;
+            if (v.id_sesion_caja === idSesion || (v.fecha === fechaHoy && (v.sucursal || "Matriz") === sucTurno)) {
+                let total = parseFloat(v.total) || 0;
+                if (v.anulada === true || v.cancelada === true || v.estado === 'anulado') ventasAnuladas += total;
+                else ventasEfectivo += total; 
+            }
+        });
     }
     
-    // B) Restar Retiros y Gastos sacados de caja
-    let retirosGastos = 0;
-    if(typeof movimientos !== 'undefined') {
-        retirosGastos = movimientos.filter(m => {
-            if (m.anulado || (m.tipo !== "Retiro" && m.tipo !== "Gasto")) return false;
-            if (m.id_sesion_caja === idSesion) return true;
-            // 🔒 Candado de respaldo:
-            let sucMov = m.sucursal || "Matriz";
-            return (m.fecha === fechaHoy && sucMov === sucTurno && m.cajero === cajeroTurno);
-        }).reduce((acc, m) => acc + (parseFloat(m.monto) || 0), 0);
+    // 🧮 2. INGRESOS Y GASTOS
+    let ingresosExtra = 0, retirosGastos = 0;
+    if (typeof movimientos !== 'undefined' && Array.isArray(movimientos)) {
+        movimientos.forEach(m => {
+            let tipo = m.tipo || ""; // 🛡️ Escudo para movimientos
+            if (m.anulado === true || m.cancelado === true || m.cajero !== cajeroTurno) return;
+            if (m.id_sesion_caja === idSesion || (m.fecha === fechaHoy && (m.sucursal || "Matriz") === sucTurno)) {
+                let monto = parseFloat(m.monto) || 0;
+                if (tipo.includes("Ingreso") || tipo.includes("Entrada")) ingresosExtra += monto;
+                if (tipo.includes("Retiro") || tipo.includes("Gasto")) retirosGastos += monto;
+            }
+        });
     }
 
-    // C) 🚨 Restar COMPRAS pagadas en efectivo de ESTA caja
-    let comprasEfectivo = 0;
-    if (typeof compras !== 'undefined') {
-        comprasEfectivo = compras.filter(c => {
-            if (c.anulada || c.metodo !== "Efectivo") return false;
-            // 1. Prioridad: Si tiene ID de sesión, es de este turno 100% seguro.
-            if (c.id_sesion_caja === idSesion) return true;
-            // 2. 🔒 Candado estricto: Si es una compra antigua sin ID, DEBE ser de esta sucursal y este cajero.
-            let sucCompra = c.sucursal || "Matriz";
-            return (c.fecha === fechaHoy && sucCompra === sucTurno && c.cajero === cajeroTurno);
-        }).reduce((acc, c) => acc + (parseFloat(c.total) || 0), 0);
+    // 🧮 3. COMPRAS
+    let comprasEfectivo = 0, comprasAnuladas = 0;
+    if (typeof compras !== 'undefined' && Array.isArray(compras)) {
+        compras.forEach(c => {
+            let metodo = c.metodo || ""; // 🛡️ Escudo para compras antiguas sin método
+            if (!metodo.includes("Efectivo") || c.cajero !== cajeroTurno) return;
+            if (c.id_sesion_caja === idSesion || (c.fecha === fechaHoy && (c.sucursal || "Matriz") === sucTurno)) {
+                let total = parseFloat(c.total) || 0;
+                if (c.anulada === true || c.cancelada === true || c.estado === 'anulado') comprasAnuladas += total;
+                else comprasEfectivo += total;
+            }
+        });
     }
 
-    // Total Esperado Físicamente en el Cajón
-    let efEsperado = fondo + ventasEfectivo - retirosGastos - comprasEfectivo;
+    let efEsperado = fondo + ventasEfectivo + ingresosExtra - retirosGastos - comprasEfectivo;
+    window.efectivoEsperadoTemporal = efEsperado; // Guardamos en memoria
 
-    // 💵 3. ARQUEO FÍSICO CON DESGLOSE
-    let detalleMatematico = `Fondo Inicial: $${fondo.toFixed(2)}\n(+) Ventas Efectivo: $${ventasEfectivo.toFixed(2)}\n(-) Gastos/Retiros: $${retirosGastos.toFixed(2)}\n(-) Compras: $${comprasEfectivo.toFixed(2)}\n=======================\nESPERADO EN CAJA: $${efEsperado.toFixed(2)}`;
+    let detalleMatematico = `Fondo Inicial: $${fondo.toFixed(2)}\n(+) Ventas: $${ventasEfectivo.toFixed(2)}`;
+    if (ventasAnuladas > 0) detalleMatematico += `\n   *(Omitidas $${ventasAnuladas.toFixed(2)} por anulación)`;
+    detalleMatematico += `\n(+) Otros Ingresos: $${ingresosExtra.toFixed(2)}\n(-) Gastos: $${retirosGastos.toFixed(2)}\n(-) Compras: $${comprasEfectivo.toFixed(2)}`;
+    if (comprasAnuladas > 0) detalleMatematico += `\n   *(Omitidas $${comprasAnuladas.toFixed(2)} por anulación)`;
 
-    let conteoInput = prompt(`🔒 CIERRE DE CAJA / ARQUEO\n\n${detalleMatematico}\n\n👉 Ingrese el dinero real en EFECTIVO que contó físicamente en el cajón:`, efEsperado.toFixed(2));
+    // Enviar datos al modal y resetear calculadora
+    let divDetalle = document.getElementById('arqueo_detalle');
+    if (divDetalle) {
+        divDetalle.innerText = detalleMatematico;
+        document.getElementById('arqueo_esperado_txt').innerText = efEsperado.toFixed(2);
+        document.querySelectorAll('.arq-input').forEach(input => input.value = '');
+        document.getElementById('arqueo_total_contado').innerText = "0.00";
+        document.getElementById('modalArqueo').style.display = 'flex';
+    } else {
+        alert("⚠️ No se encontró la ventana de arqueo en el HTML. Verifica que pegaste el código de la calculadora correctamente.");
+    }
+};
+
+// 🧮 2. CALCULADORA EN TIEMPO REAL
+window.sumarArqueo = function() {
+    let b1000 = (parseInt(document.getElementById('arq_1000').value) || 0) * 1000;
+    let b500 = (parseInt(document.getElementById('arq_500').value) || 0) * 500;
+    let b200 = (parseInt(document.getElementById('arq_200').value) || 0) * 200;
+    let b100 = (parseInt(document.getElementById('arq_100').value) || 0) * 100;
+    let b50 = (parseInt(document.getElementById('arq_50').value) || 0) * 50;
+    let b20 = (parseInt(document.getElementById('arq_20').value) || 0) * 20;
     
-    if (conteoInput === null) return; // Si le da cancelar, se aborta el cierre
+    let m20 = (parseInt(document.getElementById('arq_m20').value) || 0) * 20;
+    let m10 = (parseInt(document.getElementById('arq_10').value) || 0) * 10;
+    let m5 = (parseInt(document.getElementById('arq_5').value) || 0) * 5;
+    let m2 = (parseInt(document.getElementById('arq_2').value) || 0) * 2;
+    let m1 = (parseInt(document.getElementById('arq_1').value) || 0) * 1;
+    let m05 = (parseInt(document.getElementById('arq_05').value) || 0) * 0.5;
 
-    let conteoFisico = parseFloat(conteoInput) || 0;
+    let extra = parseFloat(document.getElementById('arq_extra').value) || 0;
+
+    let totalCalculado = b1000 + b500 + b200 + b100 + b50 + b20 + m20 + m10 + m5 + m2 + m1 + m05 + extra;
+    document.getElementById('arqueo_total_contado').innerText = totalCalculado.toFixed(2);
+};
+
+// 💾 3. FINALIZAR CIERRE EN BASE DE DATOS
+window.confirmarCierreArqueo = function() {
+    let conteoFisico = parseFloat(document.getElementById('arqueo_total_contado').innerText) || 0;
+    let efEsperado = window.efectivoEsperadoTemporal;
     let diferencia = conteoFisico - efEsperado;
 
     let msgDiferencia = diferencia === 0 ? " Exacto (Sin diferencias)" : (diferencia > 0 ? ` Sobrante de +$${diferencia.toFixed(2)}` : ` Faltante de -$${Math.abs(diferencia).toFixed(2)}`);
 
-    // ⚠️ 4. CONFIRMACIÓN FINAL
     if (!confirm(`¿Confirmas cerrar el turno con los siguientes datos?\n\n- Efectivo Contado: $${conteoFisico.toFixed(2)}\n- Balance:${msgDiferencia}`)) return;
 
-    // 💾 5. GUARDADO DE DATOS
     window.sesionCajaActual.estado = 'cerrada';
     window.sesionCajaActual.fecha_cierre = (typeof getFechaLocal === 'function' ? getFechaLocal() : new Date().toISOString().split('T')[0]) + " " + new Date().toLocaleTimeString();
     window.sesionCajaActual.efectivo_esperado = parseFloat(efEsperado.toFixed(2));
@@ -8196,20 +8226,17 @@ window.cerrarTurnoActual = function() {
     window.sesionCajaActual.diferencia = parseFloat(diferencia.toFixed(2));
 
     let idSesionGuardada = window.sesionCajaActual.id;
-
     if (typeof db !== 'undefined') {
-        try {
-            db.collection("cajas_sesiones").doc(String(idSesionGuardada)).set(window.sesionCajaActual, { merge: true })
-              .catch(e => console.warn("Aviso nube:", e));
-        } catch(e) {}
+        try { db.collection("cajas_sesiones").doc(String(idSesionGuardada)).set(window.sesionCajaActual, { merge: true }).catch(e=>{}); } catch(e) {}
     }
-
-    // 🧹 6. LIMPIEZA Y CIERRE VISUAL
+    
     window.sesionCajaActual = null;
     try { localStorage.removeItem("pos_sesion_activa"); } catch(e){}
 
+    // Ocultar Modal
+    document.getElementById('modalArqueo').style.display = 'none';
+
     alert(`✅ Turno cerrado correctamente.${msgDiferencia}`);
-    
     if (typeof actualizarIndicadorTurnoUI === 'function') actualizarIndicadorTurnoUI();
     if (typeof renderCorte === 'function') renderCorte();
 };

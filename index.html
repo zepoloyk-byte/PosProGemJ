@@ -1604,9 +1604,68 @@
         });
     }
     
+    
 </script>
 
 <script src="app.js?v=33"></script>
+<!-- ================= MODAL DE ARQUEO DE CAJA ================= -->
+<div id="modalArqueo" class="modal" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.6); z-index: 9999; align-items: center; justify-content: center;">
+    <div style="background: #fff; width: 95%; max-width: 600px; border-radius: 12px; overflow: hidden; box-shadow: 0 5px 15px rgba(0,0,0,0.3); display: flex; flex-direction: column; max-height: 95vh;">
+        
+        <div style="background: #0d6efd; color: white; padding: 15px; text-align: center;">
+            <h3 style="margin: 0;">🔒 Cierre de Caja y Arqueo</h3>
+        </div>
+
+        <div style="padding: 15px; overflow-y: auto;">
+            <!-- Desglose Matemático -->
+            <div style="background: #f8f9fa; border-left: 4px solid #0d6efd; padding: 10px; font-family: monospace; font-size: 14px; white-space: pre-wrap; margin-bottom: 15px;" id="arqueo_detalle">
+                Calculando...
+            </div>
+
+            <h4 style="text-align: center; color: #333; border-bottom: 2px solid #eee; padding-bottom: 10px;">Cuenta el dinero en caja (Cantidad de billetes/monedas)</h4>
+
+            <!-- Calculadora -->
+            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px;">
+                <!-- Billetes -->
+                <div>
+                    <strong style="color: #198754;">💵 Billetes</strong>
+                    <div class="arq-row"><label>$1000</label><input type="number" class="arq-input" id="arq_1000" min="0" oninput="sumarArqueo()"></div>
+                    <div class="arq-row"><label>$500</label><input type="number" class="arq-input" id="arq_500" min="0" oninput="sumarArqueo()"></div>
+                    <div class="arq-row"><label>$200</label><input type="number" class="arq-input" id="arq_200" min="0" oninput="sumarArqueo()"></div>
+                    <div class="arq-row"><label>$100</label><input type="number" class="arq-input" id="arq_100" min="0" oninput="sumarArqueo()"></div>
+                    <div class="arq-row"><label>$50</label><input type="number" class="arq-input" id="arq_50" min="0" oninput="sumarArqueo()"></div>
+                    <div class="arq-row"><label>$20</label><input type="number" class="arq-input" id="arq_20" min="0" oninput="sumarArqueo()"></div>
+                </div>
+                <!-- Monedas -->
+                <div>
+                    <strong style="color: #6c757d;">🪙 Monedas / Otro</strong>
+                    <div class="arq-row"><label>$20</label><input type="number" class="arq-input" id="arq_m20" min="0" oninput="sumarArqueo()"></div>
+                    <div class="arq-row"><label>$10</label><input type="number" class="arq-input" id="arq_10" min="0" oninput="sumarArqueo()"></div>
+                    <div class="arq-row"><label>$5</label><input type="number" class="arq-input" id="arq_5" min="0" oninput="sumarArqueo()"></div>
+                    <div class="arq-row"><label>$2</label><input type="number" class="arq-input" id="arq_2" min="0" oninput="sumarArqueo()"></div>
+                    <div class="arq-row"><label>$1</label><input type="number" class="arq-input" id="arq_1" min="0" oninput="sumarArqueo()"></div>
+                    <div class="arq-row"><label>$0.50</label><input type="number" class="arq-input" id="arq_05" min="0" oninput="sumarArqueo()"></div>
+                </div>
+            </div>
+
+            <!-- Total Contado Manual -->
+            <div style="margin-top: 15px; text-align: right;">
+                <label style="font-size: 12px; color: #666;">¿Falta algo? Sumar importe extra directo: $</label>
+                <input type="number" id="arq_extra" class="arq-input" style="width: 100px; display: inline-block;" oninput="sumarArqueo()" placeholder="0.00">
+            </div>
+
+            <div style="margin-top: 15px; text-align: center; background: #e9ecef; padding: 10px; border-radius: 8px;">
+                <h2 style="margin: 0; color: #0d6efd;">TOTAL CONTADO: $<span id="arqueo_total_contado">0.00</span></h2>
+                <small style="color: #666;">Esperado en sistema: $<span id="arqueo_esperado_txt">0.00</span></small>
+            </div>
+        </div>
+
+        <div style="padding: 15px; background: #f8f9fa; display: flex; justify-content: space-between; border-top: 1px solid #ddd;">
+            <button onclick="document.getElementById('modalArqueo').style.display='none'" style="padding: 10px 20px; border: none; background: #ccc; border-radius: 5px; cursor: pointer;">Cancelar</button>
+            <button onclick="confirmarCierreArqueo()" style="padding: 10px 20px; border: none; background: #198754; color: white; border-radius: 5px; cursor: pointer; font-weight: bold;">Cerrar Turno ✅</button>
+        </div>
+    </div>
+</div>
 
 </body>
 </html>
