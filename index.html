@@ -441,15 +441,35 @@
 
 <div id="r-tab" class="tabcontent no-print">
     <div style="padding:15px; max-width: 1400px; margin: 0 auto;">
+
+        <!-- 🟢 1. PEGAR AQUÍ: PANEL DE CONTROL DE TURNO DE CAJA -->
+        <div id="panel_control_turno" style="background: white; padding: 15px 20px; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.1); margin-bottom: 20px; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px;">
+            <div>
+                <h3 style="margin: 0; color: #333; font-size: 18px;">🏪 Estado del Turno: <span id="lbl_estado_turno" style="color: #dc3545; font-weight: bold;">CERRADO</span></h3>
+                <p id="lbl_info_turno" style="margin: 5px 0 0 0; color: #666; font-size: 13px;">No hay una caja abierta actualmente en esta sucursal.</p>
+            </div>
+            
+            <div style="display: flex; gap: 10px;">
+                <button id="btn_abrir_turno" onclick="abrirMontoInicialCaja()" style="background: #28a745; color: white; border: none; padding: 10px 18px; border-radius: 6px; font-weight: bold; cursor: pointer; font-size: 14px; display: flex; align-items: center; gap: 5px;">
+                    🔓 Iniciar Turno (Apertura)
+                </button>
+                <button id="btn_cerrar_turno" onclick="cerrarTurnoActual()" style="background: #dc3545; color: white; border: none; padding: 10px 18px; border-radius: 6px; font-weight: bold; cursor: pointer; font-size: 14px; display: flex; align-items: center; gap: 5px;">
+                    🔒 Finalizar Turno (Cierre)
+                </button>
+            </div>
+        </div>
+
+        <!-- 📊 2. BARRA DE FILTROS DE FECHAS (TU CÓDIGO ACTUAL) -->
         <div style="display:flex; gap:10px; margin-bottom: 20px; background: white; padding: 15px; border-radius: 10px; align-items:center; box-shadow: 0 4px 6px rgba(0,0,0,0.05); flex-wrap: wrap;">
             <div style="flex:1; min-width:120px"><label style="font-size:11px; font-weight:bold; color:#666">FECHA INICIO:</label><input type="date" id="corte_fecha_inicio" onchange="renderCorte()"></div>
             <div style="flex:1; min-width:120px"><label style="font-size:11px; font-weight:bold; color:#666">FECHA FIN:</label><input type="date" id="corte_fecha_fin" onchange="renderCorte()"></div>
             <div style="flex:1; min-width:150px"><label style="font-size:11px; font-weight:bold; color:#666">CAJERO:</label><select id="corte_cajero" onchange="renderCorte()"><option value="">Todos los cajeros</option></select></div>
             <div style="flex:1; min-width:150px"><label style="font-size:11px; font-weight:bold; color:#666">SUCURSAL:</label><select id="corte_sucursal" onchange="renderCorte()"><option value="">Todas (Global)</option></select></div>
             <div style="width:100%; display: flex; gap: 10px; flex-wrap: wrap;">
-    <button class="btn-search" style="padding: 12px 20px; background:var(--p); flex: 1; min-width: 250px;" onclick="renderCorte()">📊 ANALIZAR (LOCAL)</button>
-    <button class="btn-search" id="btn_analizar_nube" style="padding: 12px 20px; background:var(--info); flex: 1; min-width: 250px;" onclick="descargarVentasNube()">☁️ DESCARGAR DE LA NUBE</button>
-</div>
+                <button class="btn-search" style="padding: 12px 20px; background:var(--p); flex: 1; min-width: 250px;" onclick="renderCorte()">📊 ANALIZAR (LOCAL)</button>
+                <button class="btn-search" id="btn_analizar_nube" style="padding: 12px 20px; background:var(--info); flex: 1; min-width: 250px;" onclick="descargarVentasNube()">☁️ DESCARGAR DE LA NUBE</button>
+            </div>
+        </div>
         </div>
 
         <div style="display: flex; gap: 10px; margin-bottom: 20px; flex-wrap: wrap;" class="no-print">

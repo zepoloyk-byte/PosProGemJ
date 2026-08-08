@@ -294,3 +294,9 @@ tbody tr { height: auto !important; }
   0% { transform: rotate(0deg); }
   100% { transform: rotate(360deg); }
 }
+/* Forzar que el panel de turno siempre mantenga su estructura */
+#panel_control_turno {
+    display: flex !important;
+    visibility: visible !important;
+    opacity: 1 !important;
+}

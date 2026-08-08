@@ -300,10 +300,10 @@ db.collection("inventario").onSnapshot((querySnapshot) => {
         if (datosLocales && datosLocales.updatedAt && datosNube.updatedAt) {
             // Si el cambio local es más NUEVO que el de la nube, protegemos nuestro precio
             if (datosLocales.updatedAt > datosNube.updatedAt) {
-                // Sincronizamos solo el stock (para no descuadrarnos), pero mantenemos nuestros precios locales
+                // Sincronizamos solo el stock, mantenemos nuestros precios locales
                 datosLocales.stock = datosNube.stock;
                 datosLocales.sold_without_stock = datosNube.sold_without_stock;
-                return; // Saltamos este ciclo para que no aplaste el precio local
+                return; 
             }
         }
 
@@ -312,7 +312,14 @@ db.collection("inventario").onSnapshot((querySnapshot) => {
     });
     
     console.log("📦 Inventario sincronizado (Prioridad de precio local activada).");
-    localStorage.setItem("pos_precision_v6", JSON.stringify(inv));
+    
+    // 🛡️ PARACAÍDAS ANTI-CRASH: Intentamos guardar, si no cabe, el sistema no se rompe.
+    try {
+        localStorage.setItem("pos_precision_v6", JSON.stringify(inv));
+    } catch (error) {
+        console.warn("⚠️ Memoria local llena. El inventario vive en la nube, así que puedes seguir operando sin problema.");
+    }
+    
     if (tabActual === 'i-tab') renderI(); 
 });
 
@@ -751,7 +758,6 @@ function intentarLogin() {
         // 🛡️ GUARDIÁN DE PERMISOS: INVENTARIO CIEGO Y AUDITORÍAS
         // =================================================================
         setTimeout(() => {
-            // ⚠️ CORRECCIÓN: Leemos los permisos correctamente de la base de datos
             let misPermisos = usuariosData[u].permisos || []; 
             let esAdmin = (u === "Admin");
 
@@ -778,6 +784,26 @@ function intentarLogin() {
         renderI();
         renderCorte(); 
         document.getElementById('login_pin').value = '';
+
+        // =================================================================
+        // 🏪 🚨 VERIFICACIÓN AUTOMÁTICA DE TURNO / CAJA AL ENTRAR
+        // =================================================================
+        setTimeout(() => {
+            if (typeof actualizarIndicadorTurnoUI === 'function') {
+                actualizarIndicadorTurnoUI();
+            }
+
+            // Si no hay una sesión abierta en esta sucursal, le proponemos abrir turno
+            if (!window.sesionCajaActual || window.sesionCajaActual.estado !== 'abierta') {
+                let sucNombre = String(typeof sucursalActual !== 'undefined' ? sucursalActual : "Matriz").replace(/📍/g, '').trim();
+                let deseaAbrir = confirm(`🏪 ¡Hola ${u}!\n\nLa caja de la sucursal [ ${sucNombre} ] se encuentra CERRADA.\n\n¿Deseas INICIAR TURNO e ingresar el Fondo Inicial de caja ahora?`);
+                
+                if (deseaAbrir && typeof abrirMontoInicialCaja === 'function') {
+                    abrirMontoInicialCaja();
+                }
+            }
+        }, 400);
+
     } else { 
         alert("PIN Incorrecto"); 
     }
@@ -1247,42 +1273,46 @@ function getVirtualStock(p) {
     return (p.stock && p.stock[sucursalActual]) || 0; 
 }
 
-window.descontarStock = function(cod, cant) { 
-    // 🔥 MAGIA: Redirige la resta de inventario al Maestro si pertenece a un grupo
-    let itemOriginal = inv[cod] || {}; 
-    let codMaestro = (itemOriginal.grupo && inv[itemOriginal.grupo]) ? itemOriginal.grupo : cod;
-    let itemMaestro = inv[codMaestro] || itemOriginal;
-    
-    if(!itemMaestro) return; 
-    
-    // 🚨 EL REPARADOR DE STOCK: Traduce números viejos a formato de sucursales
-    if (typeof itemMaestro.stock !== 'object' || itemMaestro.stock === null) {
-        let stockNumerico = parseFloat(itemMaestro.stock) || parseFloat(itemMaestro.existencia) || parseFloat(itemMaestro.can) || 0;
-        itemMaestro.stock = {};
-        // Le asignamos el stock flotante a la sucursal donde estamos operando
-        itemMaestro.stock[sucursalActual] = stockNumerico;
-    }
+// Asegúrate de que la función anterior haya cerrado bien con su llave } antes de pegar esto:
 
-    // 📸 LEEMOS LA REALIDAD: Sin candados, tomando el número tal cual es (incluso negativos)
-    let stockActual = parseFloat(itemMaestro.stock[sucursalActual]) || 0; 
-    let cantRestar = parseFloat(cant) || 0;
+window.descontarStock = function(cod, cantidad) {
+    try {
+        let cantNum = parseFloat(cantidad) || 0;
+        let p = inv[cod];
+        if (!p) return;
 
-    // 💥 RESTA PURA Y DURA: Dejamos que el Kardex y el Stock sigan su curso matemático
-    itemMaestro.stock[sucursalActual] = stockActual - cantRestar; 
-    
-    // 🛡️ ACTUALIZACIÓN CRÍTICA: Nos aseguramos de mantener el tipo correcto
-    if(inv[codMaestro]) {
-        itemMaestro.tipo = inv[codMaestro].tipo || itemMaestro.tipo || 'pieza';
-        itemMaestro.nom = inv[codMaestro].nom || itemMaestro.nom;
-        itemMaestro.dep = inv[codMaestro].dep || itemMaestro.dep;
-    }
-    
-    // ☁️ Subir el stock actualizado a la nube
-    if(typeof db !== 'undefined') {
-        db.collection("inventario").doc(String(codMaestro)).set(itemMaestro).catch(e => console.error("Error al restar stock:", e));
+        let sucReal = String(typeof sucursalActual !== 'undefined' ? sucursalActual : "Matriz").replace(/📍/g, '').trim();
+        if (!p.stock) p.stock = {};
+
+        // 1. Actualización en memoria local
+        let stockPrevio = parseFloat(p.stock[sucReal]) || 0;
+        let stockNuevo = parseFloat((stockPrevio - cantNum).toFixed(3));
+        p.stock[sucReal] = stockNuevo;
+
+        // 2. Actualización en la Nube
+        if (typeof db !== 'undefined' && db) {
+            let campoStock = `stock.${sucReal}`;
+
+            // Si tienes Firebase oficial
+            if (typeof firebase !== 'undefined' && firebase.firestore && firebase.firestore.FieldValue) {
+                db.collection("inventario").doc(cod).set({
+                    [campoStock]: firebase.firestore.FieldValue.increment(-cantNum)
+                }, { merge: true }).catch(e => console.error("Error nube:", e));
+            } 
+            // Si usas PocketBase (Alternativa)
+            else {
+                let updateData = {};
+                updateData[campoStock] = stockNuevo; 
+                if (typeof db.collection === 'function') {
+                    db.collection("inventario").doc(cod).set(updateData, { merge: true })
+                      .catch(e => console.error("Error nube alternativa:", e));
+                }
+            }
+        }
+    } catch (err) {
+        console.error("Error en descontarStock:", err);
     }
 };
-
 // Funciones de Ajuste Manual de Stock
 let codAjusteStock = "";
 function abrirAjusteStock(cod) {
@@ -1298,7 +1328,7 @@ function abrirAjusteStock(cod) {
     setTimeout(() => document.getElementById('ajuste_nuevo_stock').focus(), 100);
 }
 
-function guardarAjusteStock() {
+window.guardarAjusteStock = function() {
     let nuevoStock = parseFloat(document.getElementById('ajuste_nuevo_stock').value);
     let pin = document.getElementById('ajuste_admin_pin').value;
     
@@ -1308,47 +1338,69 @@ function guardarAjusteStock() {
         
         let pO = inv[codAjusteStock] || {};
         
-        // 📸 FOTOGRAFÍA 1: Leer el stock real ANTES del ajuste directamente del diccionario de la sucursal
+        // El Escudo Definitivo: Funciona para Maestros y Espejos
+        let codMaestro = (pO.grupo && inv[pO.grupo]) ? pO.grupo : codAjusteStock;
+        let pMaestro = inv[codMaestro] || pO;
+
+        // 📸 FOTOGRAFÍA 1
         let stockAntesReal = 0;
-        if (pO.stock && typeof pO.stock === 'object') {
-            stockAntesReal = parseFloat(pO.stock[sucursalActual]) || 0;
+        if (pMaestro.stock && typeof pMaestro.stock === 'object') {
+            stockAntesReal = parseFloat(pMaestro.stock[sucursalActual]) || 0;
         } else {
-            stockAntesReal = parseFloat(pO.stock) || parseFloat(pO.existencia) || parseFloat(pO.can) || 0;
+            stockAntesReal = parseFloat(pMaestro.stock) || parseFloat(pMaestro.existencia) || parseFloat(pMaestro.can) || 0;
         }
 
-        // 📸 FOTOGRAFÍA 2: El stock DESPUÉS es exactamente el número que digitó el administrador
-        let stockDespuesReal = nuevoStock;
-        
-        // Calculamos la diferencia exacta (Ej. Si había 5 y puso 8, registra +3. Si había 10 y puso 2, registra -8)
-        let diferencia = stockDespuesReal - stockAntesReal;
+        // Obligamos a que el sistema trabaje con máximo 3 decimales
+        let stockDespuesReal = parseFloat(nuevoStock.toFixed(3));
+        let diferencia = parseFloat((stockDespuesReal - stockAntesReal).toFixed(3));
 
-        if(!inv[codAjusteStock].stock) inv[codAjusteStock].stock = {};
-        inv[codAjusteStock].stock[sucursalActual] = nuevoStock;
+        // 🚨 REPARADOR CRÍTICO: Si el stock viejo era un texto o número, lo volvemos un contenedor correcto
+        if (typeof pMaestro.stock !== 'object' || pMaestro.stock === null) {
+            pMaestro.stock = {};
+        }
         
-        db.collection("inventario").doc(codAjusteStock).set(inv[codAjusteStock])
+        // Asignamos el stock localmente
+        pMaestro.stock[sucursalActual] = stockDespuesReal;
+        
+        // 🛡️ 1. PARACAÍDAS DE MEMORIA: Guardamos localmente, pero si está lleno, no pasa nada.
+        try {
+            localStorage.setItem("pos_precision_v6", JSON.stringify(inv));
+        } catch (e) {
+            console.warn("⚠️ Caché local lleno. El ajuste se guardará directo en la nube.");
+        }
+
+        // ☁️ 2. GUARDADO BLINDADO EN FIREBASE (Respeta a las otras sucursales)
+        let campoStockSucursal = `stock.${sucursalActual}`;
+        
+        // Solo mandamos a modificar el cajoncito de ESTA sucursal específica
+        db.collection("inventario").doc(String(codMaestro)).set({
+            [campoStockSucursal]: stockDespuesReal
+        }, { merge: true })
         .then(() => {
             
-            // 🌟 ENVIAMOS LAS FOTOS AL KARDEX
             if (typeof registrarEnKardex === 'function') {
                 registrarEnKardex(
                     codAjusteStock, 
-                    inv[codAjusteStock].nom, 
+                    pO.nom, 
                     "AJUSTE", 
                     diferencia, 
-                    inv[codAjusteStock].pv || 0, 
-                    inv[codAjusteStock].cos || 0,
-                    stockAntesReal,       // 👈 Foto 1
-                    stockDespuesReal      // 👈 Foto 2
+                    pO.pv || 0, 
+                    pO.cos || 0,
+                    stockAntesReal,
+                    stockDespuesReal
                 );
             }
             
             document.getElementById('modalAjusteStock').style.display = 'none';
-            alert("✅ Stock actualizado en la NUBE.");
+            alert("✅ Stock ajustado y guardado correctamente.");
             
-            // Refrescar la tabla si tienes la función disponible
             if (typeof renderTablaInventario === 'function') renderTablaInventario();
+            if (typeof renderI === 'function') renderI(); 
             
-        }).catch((e) => alert("❌ Error con la nube."));
+        }).catch((e) => {
+            console.error(e);
+            alert("❌ Error con la nube al ajustar.");
+        });
     } else {
         alert("❌ PIN Incorrecto.");
         document.getElementById('ajuste_admin_pin').value = '';
@@ -1996,9 +2048,10 @@ async function actualizarAcumuladorDiario(venta, esAnulacion = false) {
 // ====================================================================
 window.confirmarVenta = function(cambioFinal = 0) {
     try {
-        let tot = parseFloat(document.getElementById('v_total').innerText); if(tot <= 0 || isNaN(tot)) return;
+        let tot = parseFloat(document.getElementById('v_total').innerText); 
+        if(tot <= 0 || isNaN(tot)) return;
         
-        let hoy = getFechaLocal(); 
+        let hoy = (typeof getFechaLocal === 'function' ? getFechaLocal() : new Date().toISOString().split('T')[0]); 
         let idV = Date.now() + Math.floor(Math.random()*1000); 
         
         let nombresCli = [];
@@ -2008,7 +2061,7 @@ window.confirmarVenta = function(cambioFinal = 0) {
         let telefonoClienteCredito = "";
         let esVentaCredito = false;
         let montoCreditoTotal = 0;
-        let sucReal = String(sucursalActual || "").replace(/📍/g, '').trim();
+        let sucReal = String(typeof sucursalActual !== 'undefined' ? sucursalActual : "Matriz").replace(/📍/g, '').trim();
 
         pagosCobro.forEach(p => {
             if(p.metodo.includes('Crédit') || p.metodo.includes('Credit')) {
@@ -2021,7 +2074,7 @@ window.confirmarVenta = function(cambioFinal = 0) {
                 if(saldoActual + montoCobrado > (parseFloat(c.limite) || 0)) { 
                     if(!confirm(`¿Autorizar sobregiro para ${c.nom}?`)) { ventaAbortada = true; return; } 
                 }
-                c.saldo = saldoActual + montoCobrado; 
+                c.saldo = parseFloat((saldoActual + montoCobrado).toFixed(2)); 
                 
                 if (!c.historial) c.historial = [];
                 c.historial.push({
@@ -2030,7 +2083,7 @@ window.confirmarVenta = function(cambioFinal = 0) {
                 });
 
                 clientes[p.cliente_tel] = c; 
-                localStorage.setItem("pos_clientes_v7", JSON.stringify(clientes));
+                try { localStorage.setItem("pos_clientes_v7", JSON.stringify(clientes)); } catch(e){}
                 if(typeof db !== 'undefined') db.collection("clientes").doc(p.cliente_tel).set(c); 
                 nombresCli.push(c.nom);
 
@@ -2046,10 +2099,15 @@ window.confirmarVenta = function(cambioFinal = 0) {
 
         let labelCliente = nombresCli.length > 0 ? nombresCli.join(', ') : "Público General";
         let metodosStr = pagosCobro.map(p => p.metodo).join(' + ') || 'Efectivo';
-        let itemsHtml = ''; let detalles = [];
+        
+        // ====================================================================
+        // 🛒 CONSTRUCCIÓN DE ITEMS PARA EL TICKET Y KARDEX
+        // ====================================================================
+        let itemsHtml = ''; 
+        let detalles = [];
+        let sumaArticulosSinDescuento = 0; 
 
         carV.forEach(x => {
-            // 🌟 MAGIA MAESTRO-ESPEJO
             let pOriginal = inv[x.cod] || {};
             let codMaestro = x.maestro_cod || (pOriginal.grupo && inv[pOriginal.grupo] ? pOriginal.grupo : x.cod);
             let pMaestro = inv[codMaestro] || pOriginal;
@@ -2062,7 +2120,6 @@ window.confirmarVenta = function(cambioFinal = 0) {
                 } else if (pMaestro.stock['Matriz'] !== undefined) {
                     stockAntesReal = parseFloat(pMaestro.stock['Matriz']) || 0;
                 } else {
-                    // Respaldo total: si no halla la sucursal, suma lo que haya
                     stockAntesReal = Object.values(pMaestro.stock).reduce((a, b) => (parseFloat(a)||0) + (parseFloat(b)||0), 0);
                 }
             } else {
@@ -2075,9 +2132,9 @@ window.confirmarVenta = function(cambioFinal = 0) {
                 descontarStock(codMaestro, x.can);
             }
 
-            // 📸 FOTOGRAFÍA 2
-            let stockDespuesReal = stockAntesReal - parseFloat(x.can);
+            let stockDespuesReal = parseFloat((stockAntesReal - parseFloat(x.can)).toFixed(3));
 
+            // Actualizar contador de promos si existe
             if(x.promo_ref) {
                 x.promo_ref.usadas = (x.promo_ref.usadas||0) + x.usos_promo;
                 if(typeof db !== 'undefined') db.collection("promociones").doc(String(x.promo_ref.id)).set(x.promo_ref);
@@ -2085,37 +2142,51 @@ window.confirmarVenta = function(cambioFinal = 0) {
 
             let cReal = (pMaestro.cos_promedio !== undefined ? parseFloat(pMaestro.cos_promedio) : parseFloat(pMaestro.cos || 0)) * (1 + (parseFloat(pMaestro.iva)||0)/100);
             
-            let precioUnitarioReal = 0;
-            if (x.precioManual !== undefined) {
-                precioUnitarioReal = parseFloat(x.precioManual);
-            } else {
-                precioUnitarioReal = parseFloat(x.pv) || parseFloat(pMaestro.pv) || 0;
-            }
+            // Obtenemos el precio base del producto
+            let precioUnitarioReal = parseFloat(x.precioManual) || parseFloat(x.pv) || parseFloat(x.pre) || parseFloat(pMaestro.pv) || 0;
+            let subtotalBaseItem = parseFloat(x.can) * precioUnitarioReal;
+            
+            sumaArticulosSinDescuento += subtotalBaseItem; 
 
-            let subtotalSeguro = (parseFloat(x.can) || 1) * precioUnitarioReal;
-            
-            if (x.precioManual === undefined && (parseFloat(x.final_subtotal) || parseFloat(x.subtotal))) {
-                 subtotalSeguro = parseFloat(x.final_subtotal) || parseFloat(x.subtotal);
-            }
-            
             if (typeof registrarEnKardex === 'function') {
                 registrarEnKardex(codMaestro, x.nom, "VENTA", -x.can, precioUnitarioReal, pMaestro.cos||0, stockAntesReal, stockDespuesReal);
             }
 
-            itemsHtml += `<tr><td>${x.can}</td><td>${(x.nom||'').substring(0,15)}</td><td style="text-align:right">$${subtotalSeguro.toFixed(2)}</td></tr>`;
+            itemsHtml += `<tr>
+                <td style="vertical-align:top; padding-top:5px;">${x.can}</td>
+                <td style="padding-top:5px;">${(x.nom||'').substring(0, 15)}</td>
+                <td style="text-align:right; vertical-align:top; padding-top:5px;">$${subtotalBaseItem.toFixed(2)}</td>
+            </tr>`;
             
             detalles.push({ 
                 cod: x.cod, 
                 cod_maestro: (codMaestro !== x.cod) ? codMaestro : null, 
                 nom: x.nom, 
-                can: x.can, 
-                subtotal: subtotalSeguro, 
+                can: parseFloat(x.can), 
+                subtotal: parseFloat(subtotalBaseItem.toFixed(2)), 
                 pv: precioUnitarioReal, 
                 costo: cReal, 
                 dep: pMaestro.dep||"General" 
             });
         });
 
+        // =========================================================
+        // 🌟 MAGIA: INYECTAR FILA DE DESCUENTO SI EL TOTAL NO CUADRA
+        // =========================================================
+        // Calculamos la diferencia usando la variable 'tot' que tiene el total real de la venta
+        let diferenciaPromo = sumaArticulosSinDescuento - tot;
+        
+        if (tot > 0 && diferenciaPromo > 0.01) {
+            itemsHtml += `<tr>
+                <td></td>
+                <td style="padding-top:8px; color:#333; font-size:12px;"><strong>📉 Ahorro / Promo:</strong></td>
+                <td style="text-align:right; padding-top:8px; color:#333; font-size:12px;"><strong>-$${diferenciaPromo.toFixed(2)}</strong></td>
+            </tr>`;
+        }
+
+        // ====================================================================
+        // 🖨️ IMPRESIÓN DEL TICKET EN PANTALLA
+        // ====================================================================
         document.getElementById('ticket_fecha').innerText = new Date().toLocaleString() + " - " + sucReal + "\nCliente: " + labelCliente;
         document.getElementById('ticket_items').innerHTML = itemsHtml;
         document.getElementById('ticket_total').innerText = tot.toFixed(2);
@@ -2126,8 +2197,12 @@ window.confirmarVenta = function(cambioFinal = 0) {
         document.getElementById('ticket_cambio').innerText = (parseFloat(cambioFinal) || 0).toFixed(2);
         document.getElementById('ticket_cajero').innerText = usuarioActual;
 
+        // ====================================================================
+        // 💾 GUARDADO EN HISTORIAL
+        // ====================================================================
         let nuevaV = { 
             id: idV, 
+            id_sesion_caja: (window.sesionCajaActual ? window.sesionCajaActual.id : null), // 👈 VÍNCULO MÁGICO CON EL TURNO
             fecha: hoy, 
             hora: new Date().toLocaleTimeString(), 
             cajero: usuarioActual, 
@@ -2147,14 +2222,14 @@ window.confirmarVenta = function(cambioFinal = 0) {
         };
         
         ventas.push(nuevaV); 
-        localStorage.setItem("pos_ventas_v6", JSON.stringify(ventas.slice(-200)));
+        try { localStorage.setItem("pos_ventas_v6", JSON.stringify(ventas.slice(-200))); } catch(e){}
         if(typeof db !== 'undefined') db.collection("ventas").doc(String(idV)).set(nuevaV);
 
         if (typeof actualizarAcumuladorDiario === 'function') { 
             actualizarAcumuladorDiario(nuevaV, false); 
         }
         
-        carV = []; nombreVentaActual = ""; forceWholesale = false; renderV();
+        carV = []; forceWholesale = false; renderV();
         document.getElementById('modalCobro').style.display = 'none';
         document.getElementById('modalTicket').style.display = 'block';
     } catch(err) { 
@@ -2617,7 +2692,7 @@ async function finalizarCompra() {
     }
 }
 
-// 📦 FUNCIÓN AUXILIAR MAESTRA (Con auditoría contable y descuento de cajas en vivo)
+// 📦 FUNCIÓN AUXILIAR MAESTRA (Con auditoría contable, descuento en vivo y BLINDAJE EMPRESARIAL)
 async function procesarGuardadoEInventario(totalCompra, metodoNombre, metaPago) {
     let prov = document.getElementById('c_proveedor').value.trim();
     let esInventarioInicial = document.getElementById('c_inventario_inicial') ? document.getElementById('c_inventario_inicial').checked : false;
@@ -2632,15 +2707,24 @@ async function procesarGuardadoEInventario(totalCompra, metodoNombre, metaPago) 
                     let cantTotalAumentar = (c.can || 1) * x.can; 
                     if(maestroComp) {
                         if(!maestroComp.stock) maestroComp.stock = {};
-                        maestroComp.stock[sucursalActual] = (maestroComp.stock[sucursalActual] || 0) + cantTotalAumentar;
+                        // Actualizamos localmente para la pantalla
+                        maestroComp.stock[sucursalActual] = parseFloat(((maestroComp.stock[sucursalActual] || 0) + cantTotalAumentar).toFixed(3));
+                        
                         let docIdAActualizar = maestroComp === inv[codComp] ? codComp : inv[codComp].grupo;
-                        if(typeof db !== 'undefined') await db.collection("inventario").doc(docIdAActualizar).set(maestroComp); 
+                        
+                        // ☁️ MAGIA FIREBASE PARA KITS (Suma segura)
+                        if(typeof db !== 'undefined') {
+                            let campoStock = `stock.${sucursalActual}`;
+                            await db.collection("inventario").doc(docIdAActualizar).set({
+                                [campoStock]: firebase.firestore.FieldValue.increment(cantTotalAumentar)
+                            }, { merge: true }); 
+                        }
                     }
                 }
             } else if (prod) {
                 let maestro = obtenerProductoMaestro(x.cod);
                 
-                // 📸 FOTOGRAFÍA 1: Lectura blindada del stock antes de recibir la compra
+                // 📸 FOTOGRAFÍA 1: Lectura blindada del stock
                 let stockAntesReal = 0;
                 if (maestro.stock && typeof maestro.stock === 'object') {
                     stockAntesReal = parseFloat(maestro.stock[sucursalActual]) || 0;
@@ -2649,8 +2733,9 @@ async function procesarGuardadoEInventario(totalCompra, metodoNombre, metaPago) 
                 }
                 if (stockAntesReal < 0) stockAntesReal = 0;
 
-                // 📸 FOTOGRAFÍA 2: Sumamos lo que acaba de llegar en la compra
-                let stockDespuesReal = stockAntesReal + parseFloat(x.can);
+                // 📸 FOTOGRAFÍA 2: Sumamos lo que acaba de llegar en la compra (Local)
+                let cantComprada = parseFloat(x.can);
+                let stockDespuesReal = parseFloat((stockAntesReal + cantComprada).toFixed(3));
 
                 if(!maestro.stock) maestro.stock = {}; 
                 maestro.stock[sucursalActual] = stockDespuesReal; 
@@ -2663,7 +2748,7 @@ async function procesarGuardadoEInventario(totalCompra, metodoNombre, metaPago) 
                         x.cod, 
                         prod.nom, 
                         conceptoKardex, 
-                        x.can, 
+                        cantComprada, 
                         x.pre || prod.pv, 
                         x.cos || prod.cos, 
                         stockAntesReal, 
@@ -2671,6 +2756,7 @@ async function procesarGuardadoEInventario(totalCompra, metodoNombre, metaPago) 
                     );
                 }
 
+                // CÁLCULOS DE COSTOS Y PRECIOS
                 let costoCompraUnitarioBase = 0;
                 if (x.cos_base !== undefined) { 
                     costoCompraUnitarioBase = parseFloat(x.cos_base); 
@@ -2682,8 +2768,8 @@ async function procesarGuardadoEInventario(totalCompra, metodoNombre, metaPago) 
                 if (costoCompraUnitarioBase > 0) {
                     let costoHistorico = prod.cos_promedio !== undefined ? parseFloat(prod.cos_promedio) : (parseFloat(prod.cos) || 0);
                     let valorViejo = stockAntesReal * costoHistorico;
-                    let valorNuevo = x.can * costoCompraUnitarioBase;
-                    let piezasTotales = stockAntesReal + x.can;
+                    let valorNuevo = cantComprada * costoCompraUnitarioBase;
+                    let piezasTotales = stockAntesReal + cantComprada;
 
                     let costoPromedio = (valorViejo + valorNuevo) / piezasTotales;
                     
@@ -2702,10 +2788,27 @@ async function procesarGuardadoEInventario(totalCompra, metodoNombre, metaPago) 
                     prod.updatedAt = Date.now(); 
                 }
                 
+                // ☁️ 🚀 SUBIDA BLINDADA A LA NUBE (Respeta Precios + Suma Stock Sin Choques)
                 if(typeof db !== 'undefined') {
-                    await db.collection("inventario").doc(x.cod).set(prod);
+                    let campoStock = `stock.${sucursalActual}`;
+                    
+                    // Clonamos los objetos para subir todo (costos, precios, etc.) MENOS el stock absoluto
+                    let prodSeguro = { ...prod };
+                    delete prodSeguro.stock; 
+                    
+                    let maestroSeguro = { ...maestro };
+                    delete maestroSeguro.stock; 
+                    // Inyectamos la suma dinámica
+                    maestroSeguro[campoStock] = firebase.firestore.FieldValue.increment(cantComprada);
+                    
+                    // Si es espejo, actualizamos el espejo primero (solo precios/costos)
                     if (maestro !== prod) {
-                        await db.collection("inventario").doc(prod.grupo).set(maestro);
+                        await db.collection("inventario").doc(x.cod).set(prodSeguro, { merge: true });
+                        await db.collection("inventario").doc(prod.grupo).set(maestroSeguro, { merge: true });
+                    } else {
+                        // Si es el maestro directo, actualizamos todo junto
+                        prodSeguro[campoStock] = firebase.firestore.FieldValue.increment(cantComprada);
+                        await db.collection("inventario").doc(x.cod).set(prodSeguro, { merge: true });
                     }
                 }
             }
@@ -2714,13 +2817,14 @@ async function procesarGuardadoEInventario(totalCompra, metodoNombre, metaPago) 
         }
     }
     
-    // --- 2. Guardado de datos original usando el objeto 'db' ---
-    localStorage.setItem("pos_precision_v6", JSON.stringify(inv));
-    let idCompra = Date.now();
+    // --- 2. 🛡️ PARACAÍDAS DE MEMORIA Y GUARDADO ---
+    try { localStorage.setItem("pos_precision_v6", JSON.stringify(inv)); } catch(e) {}
     
+    let idCompra = Date.now();
     let objetoCompra = { 
         id: idCompra, 
         doc_id: String(idCompra), 
+        id_sesion_caja: (window.sesionCajaActual ? window.sesionCajaActual.id : null), // 👈 VÍNCULO MÁGICO CON EL TURNO
         fecha: getFechaLocal(), 
         hora: new Date().toLocaleTimeString(), 
         cajero: usuarioActual, 
@@ -2732,8 +2836,11 @@ async function procesarGuardadoEInventario(totalCompra, metodoNombre, metaPago) 
         ...metaPago 
     };
     
+    // Dieta estricta: Solo guardamos las últimas 50 compras localmente
     compras.push(objetoCompra); 
-    localStorage.setItem("pos_compras_local", JSON.stringify(compras));
+    if (compras.length > 50) compras = compras.slice(-50);
+    
+    try { localStorage.setItem("pos_compras_local", JSON.stringify(compras)); } catch(e) {}
     
     if (typeof db !== 'undefined') {
         await db.collection("compras").doc(String(idCompra)).set(objetoCompra).catch(e => alert("Error Nube: " + e));
@@ -2751,6 +2858,7 @@ async function procesarGuardadoEInventario(totalCompra, metodoNombre, metaPago) 
                 
                 let nuevoRetiro = {
                     id: idMov,
+                    id_sesion_caja: (window.sesionCajaActual ? window.sesionCajaActual.id : null), // 👈 VÍNCULO MÁGICO CON EL TURNO
                     fecha: getFechaLocal(),
                     hora: new Date().toLocaleTimeString(),
                     cajero: cajeroAfectado, 
@@ -2762,7 +2870,7 @@ async function procesarGuardadoEInventario(totalCompra, metodoNombre, metaPago) 
                 
                 if (typeof movimientos !== 'undefined') {
                     movimientos.push(nuevoRetiro);
-                    localStorage.setItem("pos_movimientos_v1", JSON.stringify(movimientos));
+                    try { localStorage.setItem("pos_movimientos_v1", JSON.stringify(movimientos)); } catch(e) {}
                 }
                 
                 if (typeof db !== 'undefined') {
@@ -2773,27 +2881,38 @@ async function procesarGuardadoEInventario(totalCompra, metodoNombre, metaPago) 
         }
     }
 
-    // 🌟 PARCHE 2: ANOTAR LA DEUDA EN LA LIBRETA DEL PROVEEDOR
+    // 🌟 PARCHE 2: ANOTAR LA DEUDA EN LA LIBRETA DEL PROVEEDOR BLINDADO
     if (metaPago && metaPago.es_credito && metaPago.monto_credito > 0) {
         let nombreProv = prov || "Proveedor General";
+        let montoCredito = parseFloat(metaPago.monto_credito.toFixed(2));
         
         if (!proveedores[nombreProv]) {
             proveedores[nombreProv] = { sucursal: sucursalActual, saldo: 0, historial: [] };
         }
         
-        proveedores[nombreProv].saldo = (proveedores[nombreProv].saldo || 0) + metaPago.monto_credito;
+        // Actualizamos saldo local
+        proveedores[nombreProv].saldo = parseFloat(((proveedores[nombreProv].saldo || 0) + montoCredito).toFixed(2));
         
-        if (!proveedores[nombreProv].historial) proveedores[nombreProv].historial = [];
-        proveedores[nombreProv].historial.push({ 
+        let nuevoHistorialProv = { 
             fecha: getFechaLocal(), 
             hora: new Date().toLocaleTimeString(), 
             tipo: 'Compra', 
-            monto: metaPago.monto_credito, 
+            monto: montoCredito, 
             detalle: `Folio Ticket Nube: ${idCompra}` 
-        });
+        };
 
-        localStorage.setItem("pos_proveedores_v1", JSON.stringify(proveedores));
-        if (typeof db !== 'undefined') db.collection("proveedores").doc(nombreProv).set(proveedores[nombreProv]);
+        if (!proveedores[nombreProv].historial) proveedores[nombreProv].historial = [];
+        proveedores[nombreProv].historial.push(nuevoHistorialProv);
+
+        try { localStorage.setItem("pos_proveedores_v1", JSON.stringify(proveedores)); } catch(e) {}
+        
+        // ☁️ 🚀 BLINDAJE FIREBASE: Suma segura de deuda y adición al historial sin aplastar otros abonos
+        if (typeof db !== 'undefined') {
+            db.collection("proveedores").doc(nombreProv).set({
+                saldo: firebase.firestore.FieldValue.increment(montoCredito),
+                historial: firebase.firestore.FieldValue.arrayUnion(nuevoHistorialProv)
+            }, { merge: true }).catch(e => console.error("Error guardando deuda proveedor en nube:", e));
+        }
         
         if (typeof renderProveedores === 'function') renderProveedores();
     }
@@ -3253,24 +3372,69 @@ function guardarCliente() {
     }
 }
 function abrirModalAbono(tel) { telAbonoActual = tel; document.getElementById('abono_nom').innerText = clientes[tel].nom; document.getElementById('abono_deuda').innerText = (clientes[tel].saldo||0).toFixed(2); document.getElementById('abono_monto').value = ''; document.getElementById('modalAbono').style.display = 'block'; setTimeout(()=>document.getElementById('abono_monto').focus(), 100); }
-function confirmarAbono() { 
-    let monto = parseFloat(document.getElementById('abono_monto').value) || 0; if(monto <= 0) return; 
-    let c = clientes[telAbonoActual]; if(!c) return; 
-    if(monto > (c.saldo||0)) if(!confirm("Abono > deuda. ¿Saldo a favor?")) return; 
+window.confirmarAbono = function() { 
+    let monto = parseFloat(document.getElementById('abono_monto').value) || 0; 
+    if(monto <= 0) return; 
+    
+    // Obligamos a usar 2 decimales para el dinero
+    monto = parseFloat(monto.toFixed(2));
+    
+    let c = clientes[telAbonoActual]; 
+    if(!c) return; 
+    
+    let saldoActual = parseFloat(c.saldo) || 0;
+    
+    if(monto > saldoActual) {
+        if(!confirm("⚠️ El abono es mayor a la deuda. ¿Deseas dejarle saldo a favor?")) return; 
+    }
+    
     let metodoPago = document.getElementById('abono_metodo_pago').value; 
-    c.saldo = (c.saldo||0) - monto; 
+    
+    // 1. Actualizamos el saldo localmente
+    c.saldo = parseFloat((saldoActual - monto).toFixed(2)); 
     
     let idAbono = Date.now(); 
-    // 📖 GUARDAR EN LA LIBRETA DEL CLIENTE
-    if (!c.historial) c.historial = [];
-    c.historial.push({
-        id_venta: idAbono, fecha: getFechaLocal(), hora: new Date().toLocaleTimeString(),
-        tipo: 'Abono', monto: monto, detalle: `Pago con: ${metodoPago}`
-    });
     
-    db.collection("clientes").doc(telAbonoActual).set(c); 
-    db.collection("ventas").doc(String(idAbono)).set({ id: idAbono, fecha: getFechaLocal(), hora: new Date().toLocaleTimeString(), cajero: usuarioActual, sucursal: sucursalActual, total: monto, metodo: 'Abono ' + metodoPago, items: `Abono de ${c.nom}`, anulada: false }); 
-    alert("✅ Abono registrado."); cerrarModales(); 
+    // 2. Preparamos el registro para la libreta
+    let nuevoHistorial = {
+        id_venta: idAbono, 
+        fecha: (typeof getFechaLocal === 'function' ? getFechaLocal() : new Date().toISOString().split('T')[0]), 
+        hora: new Date().toLocaleTimeString(),
+        tipo: 'Abono', 
+        monto: monto, 
+        detalle: `Pago con: ${metodoPago}`
+    };
+
+    if (!c.historial) c.historial = [];
+    c.historial.push(nuevoHistorial);
+    
+    // 🛡️ PARACAÍDAS DE MEMORIA
+    try { localStorage.setItem("pos_clientes_v1", JSON.stringify(clientes)); } catch(e){}
+    
+    // ☁️ 🚀 BLINDAJE FIREBASE: Resta segura y Escritura segura
+    if (typeof db !== 'undefined') {
+        db.collection("clientes").doc(String(telAbonoActual)).set({
+            saldo: firebase.firestore.FieldValue.increment(-monto),
+            historial: firebase.firestore.FieldValue.arrayUnion(nuevoHistorial)
+        }, { merge: true }).catch(e => console.error("Error al abonar en la nube:", e)); 
+        
+        // Registramos el ticket del abono
+        db.collection("ventas").doc(String(idAbono)).set({ 
+            id: idAbono, 
+            fecha: (typeof getFechaLocal === 'function' ? getFechaLocal() : new Date().toISOString().split('T')[0]), 
+            hora: new Date().toLocaleTimeString(), 
+            cajero: usuarioActual, 
+            sucursal: sucursalActual, 
+            total: monto, 
+            metodo: 'Abono ' + metodoPago, 
+            items: `Abono de ${c.nom}`, 
+            anulada: false 
+        }); 
+    }
+    
+    alert("✅ Abono registrado de forma segura."); 
+    if(typeof cerrarModales === 'function') cerrarModales(); 
+    if(typeof renderClientes === 'function') renderClientes(); // Refrescamos la tabla de clientes
 }
 function abrirModalAuthCli(tel) { cliAEliminar = tel; document.getElementById('auth_cli_nom').innerText = clientes[tel].nom; document.getElementById('auth_admin_pin_cli').value = ''; document.getElementById('modalAuthAdminCli').style.display = 'block'; setTimeout(() => document.getElementById('auth_admin_pin_cli').focus(), 100); }
 function confirmarEliminacionCli() {
@@ -3336,18 +3500,79 @@ function abrirHistorialProv(nombre) {
     document.getElementById('modalHistorialProv').style.display = 'block';
 }
 function abrirModalAbonoProv(nombre) { provAbonoActual = nombre; document.getElementById('abono_prov_nom').innerText = nombre; document.getElementById('abono_prov_deuda').innerText = (proveedores[nombre].saldo||0).toFixed(2); document.getElementById('abono_prov_monto').value = ''; document.getElementById('modalAbonoProv').style.display = 'block'; setTimeout(()=>document.getElementById('abono_prov_monto').focus(), 100); }
-function confirmarAbonoProv() {
-    let nom = document.getElementById('abono_prov_nom').innerText; let monto = parseFloat(document.getElementById('abono_prov_monto').value); let metodo = document.getElementById('abono_prov_metodo').value;
-    if (isNaN(monto) || monto <= 0) return alert("❌ Monto inválido."); if (!proveedores[nom]) return; if (monto > proveedores[nom].saldo) return alert("⚠️ Mayor a deuda.");
-    proveedores[nom].saldo -= monto;
-    if (!proveedores[nom].historial) proveedores[nom].historial = [];
-    proveedores[nom].historial.push({ fecha: getFechaLocal(), hora: new Date().toLocaleTimeString(), tipo: 'Abono', monto: monto, detalle: `Pago: ${metodo}` });
-    if (metodo === 'Efectivo') {
-        let idMov = Date.now(); let nm = { id: idMov, fecha: getFechaLocal(), hora: new Date().toLocaleTimeString(), tipo: 'Retiro', monto: monto, motivo: `Pago: ${nom}`, cajero: usuarioActual, sucursal: sucursalActual };
-        movimientos.push(nm); db.collection("movimientos").doc(String(idMov)).set(nm);
+window.confirmarAbonoProv = function() {
+    let nom = document.getElementById('abono_prov_nom').innerText; 
+    let monto = parseFloat(document.getElementById('abono_prov_monto').value); 
+    let metodo = document.getElementById('abono_prov_metodo').value;
+    
+    if (isNaN(monto) || monto <= 0) return alert("❌ Monto inválido."); 
+    if (!proveedores[nom]) return alert("❌ Proveedor no encontrado."); 
+
+    // Forzamos 2 decimales para evitar bugs financieros
+    monto = parseFloat(monto.toFixed(2));
+    let saldoActual = parseFloat(proveedores[nom].saldo) || 0;
+
+    if (monto > saldoActual) {
+        if (!confirm("⚠️ El abono es mayor a la deuda registrada. ¿Deseas continuar?")) return;
     }
-    localStorage.setItem("pos_proveedores_v1", JSON.stringify(proveedores)); db.collection("proveedores").doc(nom).set(proveedores[nom]);
-    cerrarModales(); renderProveedores(); if (document.getElementById('r-tab').style.display === 'block') renderCorte(); alert("✅ Abono registrado.");
+    
+    // 1. Actualizamos el saldo localmente
+    proveedores[nom].saldo = parseFloat((saldoActual - monto).toFixed(2));
+    
+    let nuevoHistorial = { 
+        fecha: (typeof getFechaLocal === 'function' ? getFechaLocal() : new Date().toISOString().split('T')[0]), 
+        hora: new Date().toLocaleTimeString(), 
+        tipo: 'Abono', 
+        monto: monto, 
+        detalle: `Pago: ${metodo}` 
+    };
+
+    if (!proveedores[nom].historial) proveedores[nom].historial = [];
+    proveedores[nom].historial.push(nuevoHistorial);
+    
+    // 2. Movimiento de caja si es en Efectivo (Salida de dinero física)
+    if (metodo === 'Efectivo') {
+        let idMov = Date.now(); 
+        let nm = { 
+            id: idMov, 
+            fecha: (typeof getFechaLocal === 'function' ? getFechaLocal() : new Date().toISOString().split('T')[0]), 
+            hora: new Date().toLocaleTimeString(), 
+            tipo: 'Retiro', 
+            monto: monto, 
+            motivo: `Pago a proveedor: ${nom}`, 
+            cajero: usuarioActual, 
+            sucursal: sucursalActual 
+        };
+        
+        if (typeof movimientos !== 'undefined') {
+            movimientos.push(nm);
+            // 🛡️ Paracaídas para los retiros de caja locales
+            try { localStorage.setItem("pos_movimientos_v1", JSON.stringify(movimientos)); } catch(e){}
+        }
+        if (typeof db !== 'undefined') {
+            db.collection("movimientos").doc(String(idMov)).set(nm).catch(e => console.error(e));
+        }
+    }
+    
+    // 🛡️ 3. Paracaídas de memoria para la agenda de proveedores
+    try { localStorage.setItem("pos_proveedores_v1", JSON.stringify(proveedores)); } catch(e){} 
+    
+    // ☁️ 🚀 4. BLINDAJE FIREBASE: Resta segura de deuda y guardado en libreta sin choques
+    if (typeof db !== 'undefined') {
+        db.collection("proveedores").doc(nom).set({
+            saldo: firebase.firestore.FieldValue.increment(-monto),
+            historial: firebase.firestore.FieldValue.arrayUnion(nuevoHistorial)
+        }, { merge: true }).catch(e => console.error("Error al abonar a proveedor en la nube:", e));
+    }
+    
+    if (typeof cerrarModales === 'function') cerrarModales(); 
+    if (typeof renderProveedores === 'function') renderProveedores(); 
+    
+    // Refrescamos el corte si estamos en esa pestaña
+    let tabCorte = document.getElementById('r-tab');
+    if (tabCorte && tabCorte.style.display === 'block' && typeof renderCorte === 'function') renderCorte(); 
+    
+    alert("✅ Abono a proveedor registrado de forma segura.");
 }
 function abrirModalAuthProv(nombre) { window.provActualEliminar = nombre; document.getElementById('auth_prov_nom').innerText = nombre; document.getElementById('auth_admin_pin').value = ''; document.getElementById('modalAuthAdminProv').style.display = 'block'; setTimeout(() => document.getElementById('auth_admin_pin').focus(), 100); }
 function confirmarEliminacionProv() {
@@ -3421,11 +3646,18 @@ function abrirModalMovimiento() {
 
 // 💾 3. GUARDADO CONTABLE DOBLE VÍA
 function guardarMovimiento() {
-    let tipo = document.getElementById('mov_tipo').value; let monto = parseFloat(document.getElementById('mov_monto').value) || 0; let motivo = document.getElementById('mov_motivo').value.trim() || 'Manual';
+    let tipo = document.getElementById('mov_tipo').value; 
+    let monto = parseFloat(document.getElementById('mov_monto').value) || 0; 
+    let motivo = document.getElementById('mov_motivo').value.trim() || 'Manual';
+    
     if(monto <= 0) return alert("❌ Monto inválido.");
+    
     let miNombre = typeof usuarioActual !== 'undefined' ? usuarioActual : 'Admin';
-    let hoy = getFechaLocal();
+    let hoy = typeof getFechaLocal === 'function' ? getFechaLocal() : new Date().toISOString().split('T')[0];
     let hora = new Date().toLocaleTimeString();
+    
+    // 🌟 Atrapamos el ID del turno para que cuadre perfecto en el corte de caja
+    let idSesionTurno = (window.sesionCajaActual ? window.sesionCajaActual.id : null);
 
     // 🌟 SI SE TRATA DE UNA TRANSFERENCIA DE EFECTIVO:
     if (tipo === 'Transferencia') {
@@ -3435,12 +3667,11 @@ function guardarMovimiento() {
         let idBase = Date.now();
         let descripcionUnica = `🔄 TRASPASO: de ${miNombre} a ${cajeroDestino} (${motivo.toUpperCase()})`;
 
-        // Doble asiento contable:
-        let mRetiro = { id: idBase, fecha: hoy, hora: hora, cajero: miNombre, sucursal: sucursalActual, tipo: 'Retiro', monto: monto, motivo: descripcionUnica };
-        let mIngreso = { id: idBase + 1, fecha: hoy, hora: hora, cajero: cajeroDestino, sucursal: sucursalActual, tipo: 'Ingreso', monto: monto, motivo: descripcionUnica };
+        // Doble asiento contable (Vinculados al turno actual si existe):
+        let mRetiro = { id: idBase, id_sesion_caja: idSesionTurno, fecha: hoy, hora: hora, cajero: miNombre, sucursal: sucursalActual, tipo: 'Retiro', monto: monto, motivo: descripcionUnica };
+        let mIngreso = { id: idBase + 1, id_sesion_caja: idSesionTurno, fecha: hoy, hora: hora, cajero: cajeroDestino, sucursal: sucursalActual, tipo: 'Ingreso', monto: monto, motivo: descripcionUnica };
 
         movimientos.push(mRetiro, mIngreso);
-        localStorage.setItem("pos_movimientos_v1", JSON.stringify(movimientos));
 
         if (typeof db !== 'undefined') {
             db.collection("movimientos").doc(String(mRetiro.id)).set(mRetiro).catch(e => console.log(e));
@@ -3449,34 +3680,183 @@ function guardarMovimiento() {
 
         cerrarModales(); 
         alert(`✅ Traspaso completado: Se movieron $${monto.toFixed(2)} a la caja de ${cajeroDestino}.`);
+    
     } else {
-        // 🔼 INGRESO O RETIRO REGULAR (Tu código nativo intacto)
-        let idMov = Date.now(); let nuevoMov = { id: idMov, fecha: hoy, hora: hora, cajero: miNombre, sucursal: sucursalActual, tipo: tipo, monto: monto, motivo: motivo };
-        movimientos.push(nuevoMov); localStorage.setItem("pos_movimientos_v1", JSON.stringify(movimientos));
-        if (typeof db !== 'undefined') db.collection("movimientos").doc(String(idMov)).set(nuevoMov).catch(e => console.log(e));
-        cerrarModales(); alert(`✅ ${tipo} registrado.`); 
+        // 🔼 INGRESO O RETIRO REGULAR
+        let idMov = Date.now(); 
+        let nuevoMov = { id: idMov, id_sesion_caja: idSesionTurno, fecha: hoy, hora: hora, cajero: miNombre, sucursal: sucursalActual, tipo: tipo, monto: monto, motivo: motivo };
+        
+        movimientos.push(nuevoMov); 
+        
+        if (typeof db !== 'undefined') {
+            db.collection("movimientos").doc(String(idMov)).set(nuevoMov).catch(e => console.log(e));
+        }
+        
+        cerrarModales(); 
+        alert(`✅ ${tipo} registrado.`); 
     }
 
-    if(typeof tabActual !== 'undefined' && tabActual === 'r-tab') renderCorte();
+    // =================================================================
+    // 🛡️ GUARDADO BLINDADO CONTRA MEMORIA LLENA (Aplica para ambos casos)
+    // =================================================================
+    try {
+        localStorage.setItem("pos_movimientos_v1", JSON.stringify(movimientos));
+    } catch (e) {
+        console.warn("Memoria local llena, recortando historial de movimientos...");
+        movimientos = movimientos.slice(-200); // Mantiene solo los últimos 200 en memoria local
+        localStorage.setItem("pos_movimientos_v1", JSON.stringify(movimientos));
+    }
+
+    if(typeof tabActual !== 'undefined' && tabActual === 'r-tab' && typeof renderCorte === 'function') {
+        renderCorte();
+    }
 }
 function registrarGasto() { let monto = parseFloat(prompt("💸 ¿Cuánto vas a retirar?")); if (isNaN(monto) || monto <= 0) return; let motivo = prompt("¿Motivo?"); if (!motivo) return; procesarRetiroCaja(monto, `GASTO: ${motivo.toUpperCase()}`); }
-function registrarPrecorte() { let ef = calcularEfectivoEnCaja(); let monto = parseFloat(prompt(`✂️ PRECORTE\nEfectivo: $${ef.toFixed(2)}\n¿Cuánto retiras?`)); if (isNaN(monto) || monto <= 0) return; if (ef > 0 && monto > ef && !confirm(`⚠️ Retiras más de lo que hay. ¿Seguro?`)) return; procesarRetiroCaja(monto, "PRECORTE"); }
-function procesarRetiroCaja(monto, motivo) {
-    let idMov = Date.now(); let nuevoMov = { id: idMov, fecha: getFechaLocal(), hora: new Date().toLocaleTimeString(), cajero: usuarioActual, sucursal: sucursalActual, tipo: 'Retiro', monto: monto, motivo: motivo };
-    movimientos.push(nuevoMov); localStorage.setItem("pos_movimientos_v1", JSON.stringify(movimientos)); db.collection("movimientos").doc(String(idMov)).set(nuevoMov);
-    alert(`✅ Registrado.`); if(tabActual==='r-tab') renderCorte();
-}
+window.registrarPrecorte = function() { 
+    let ef = (typeof calcularEfectivoEnCaja === 'function') ? calcularEfectivoEnCaja() : (currentCorteData ? currentCorteData.esperado : 0); 
+    let monto = parseFloat(prompt(`✂️ PRECORTE DE CAJA\nEfectivo Esperado: $${ef.toFixed(2)}\n¿Cuánto vas a retirar a bóveda/dueño?`)); 
+    
+    if (isNaN(monto) || monto <= 0) return; 
+    monto = parseFloat(monto.toFixed(2));
+
+    if (ef > 0 && monto > ef && !confirm(`⚠️ El monto a retirar ($${monto.toFixed(2)}) es mayor al efectivo calculado ($${ef.toFixed(2)}). ¿Deseas continuar?`)) return; 
+    
+    procesarRetiroCaja(monto, "PRECORTE"); 
+};
+
+window.procesarRetiroCaja = function(monto, motivo) {
+    let montoLimpio = parseFloat(parseFloat(monto).toFixed(2));
+    if (isNaN(montoLimpio) || montoLimpio <= 0) return alert("❌ Monto inválido.");
+
+    let idMov = Date.now(); 
+    let nuevoMov = { 
+        id: idMov, 
+        id_sesion_caja: (window.sesionCajaActual ? window.sesionCajaActual.id : null), // 👈 VÍNCULO CON EL TURNO
+        fecha: (typeof getFechaLocal === 'function' ? getFechaLocal() : new Date().toISOString().split('T')[0]), 
+        hora: new Date().toLocaleTimeString(), 
+        cajero: (typeof usuarioActual !== 'undefined' ? usuarioActual : "Admin"), 
+        sucursal: (typeof sucursalActual !== 'undefined' ? sucursalActual : "Matriz"), 
+        tipo: 'Retiro', 
+        monto: montoLimpio, 
+        motivo: motivo 
+    };
+
+    if (typeof movimientos !== 'undefined') {
+        movimientos.push(nuevoMov); 
+        // 🛡️ Paracaídas de memoria local
+        try { localStorage.setItem("pos_movimientos_v1", JSON.stringify(movimientos)); } catch(e){}
+    }
+
+    if (typeof db !== 'undefined') {
+        db.collection("movimientos").doc(String(idMov)).set(nuevoMov)
+          .catch(e => console.error("Error guardando retiro en nube:", e));
+    }
+
+    alert(`✅ Registrado retiro por $${montoLimpio.toFixed(2)} (${motivo})`); 
+
+    if (typeof tabActual !== 'undefined' && tabActual === 'r-tab' && typeof renderCorte === 'function') {
+        renderCorte();
+    }
+};
 
 let movimientoPendienteCancelar = null;
-function abrirCancelacionMovimientos() {
-    let hoy = getFechaLocal(); let movsHoy = movimientos.filter(m => m.fecha === hoy && m.sucursal === sucursalActual);
-    if(movsHoy.length === 0) return alert("No hay movimientos hoy.");
-    let opciones = "📋 MOVIMIENTOS:\n\n" + movsHoy.map((m, i) => `[ ${i + 1} ] 🕒 ${m.hora} - ${m.tipo}: $${parseFloat(m.monto).toFixed(2)} (${m.motivo})`).join('\n') + "\n👉 NÚMERO a ANULAR:";
-    let seleccion = prompt(opciones); if(!seleccion) return;
-    let idx = parseInt(seleccion) - 1; if(isNaN(idx) || idx < 0 || idx >= movsHoy.length) return alert("❌ Inválido.");
-    movimientoPendienteCancelar = movsHoy[idx];
-    document.getElementById('input_pin_seguro').value = ''; document.getElementById('modal_pin_seguro').style.display = 'flex'; setTimeout(() => document.getElementById('input_pin_seguro').focus(), 100); 
-}
+
+window.abrirCancelacionMovimientos = function() {
+    let hoy = (typeof getFechaLocal === 'function' ? getFechaLocal() : new Date().toISOString().split('T')[0]); 
+    let sucReal = String(sucursalActual || "").replace(/📍/g, '').trim();
+    let sesionActiva = (typeof sesionCajaActual !== 'undefined' && sesionCajaActual && sesionCajaActual.estado === 'abierta') ? sesionCajaActual : null;
+
+    // 🌟 FILTRADO INTELIGENTE: Si hay turno nocturno activo, busca los movimientos de ese turno; si no, busca por la fecha del calendario.
+    let movsDelTurno = movimientos.filter(m => {
+        let esMismaSucursal = (!m.sucursal || m.sucursal === sucReal || (sucReal === "Matriz" && !m.sucursal));
+        if (!m || m.anulado) return false;
+
+        if (sesionActiva) {
+            return m.id_sesion_caja === sesionActiva.id && esMismaSucursal;
+        }
+        return m.fecha === hoy && esMismaSucursal;
+    });
+
+    if (movsDelTurno.length === 0) {
+        return alert("⚠️ No hay movimientos o gastos registrados en el turno de hoy para cancelar.");
+    }
+
+    let opciones = "📋 CANCELACIÓN DE MOVIMIENTOS / GASTOS:\n\n" + 
+        movsDelTurno.map((m, i) => `[ ${i + 1} ] 🕒 ${m.hora} - ${m.tipo.toUpperCase()}: $${parseFloat(m.monto).toFixed(2)} (${m.motivo})`).join('\n') + 
+        "\n\n👉 Ingresa el NÚMERO del movimiento que deseas ANULAR:";
+
+    let seleccion = prompt(opciones); 
+    if (!seleccion) return;
+
+    let idx = parseInt(seleccion) - 1; 
+    if (isNaN(idx) || idx < 0 || idx >= movsDelTurno.length) {
+        return alert("❌ Selección inválida.");
+    }
+
+    movimientoPendienteCancelar = movsDelTurno[idx];
+    
+    // Mostramos el modal de seguridad para solicitar el PIN de Administrador
+    let inputPin = document.getElementById('input_pin_seguro');
+    let modalPin = document.getElementById('modal_pin_seguro');
+    
+    if (inputPin && modalPin) {
+        inputPin.value = ''; 
+        modalPin.style.display = 'flex'; 
+        setTimeout(() => inputPin.focus(), 100); 
+    } else {
+        // Si no existe modal, usamos un prompt directo de respaldo
+        let pass = prompt("🔒 Ingrese PIN de Administrador para confirmar la anulación:");
+        if (pass) ejecutarAnulacionMovimiento(pass);
+    }
+};
+
+// 🌟 FUNCIÓN QUE REALIZA LA ANULACIÓN DEFINTIVA TRAS VALIDAR EL PIN
+window.ejecutarAnulacionMovimiento = function(pinIngresado) {
+    if (!movimientoPendienteCancelar) return;
+
+    let pass = pinIngresado || (document.getElementById('input_pin_seguro') ? document.getElementById('input_pin_seguro').value : "");
+    
+    if (!usuariosData || !usuariosData["Admin"] || usuariosData["Admin"].pin !== pass) {
+        return alert("❌ PIN de Administrador incorrecto. Operación cancelada.");
+    }
+
+    try {
+        let mov = movimientoPendienteCancelar;
+        let idMov = mov.id;
+
+        // 1. Marcamos como anulado localmente
+        let mIndex = movimientos.findIndex(m => m.id == idMov);
+        if (mIndex !== -1) {
+            movimientos[mIndex].anulado = true;
+            movimientos[mIndex].motivo = `[ANULADO] ${movimientos[mIndex].motivo}`;
+        }
+
+        // 🛡️ Paracaídas de memoria local
+        try { localStorage.setItem("pos_movimientos_v1", JSON.stringify(movimientos)); } catch(e){}
+
+        // ☁️ 🚀 BLINDAJE FIREBASE: Solo actualizamos la bandera 'anulado'
+        if (typeof db !== 'undefined') {
+            db.collection("movimientos").doc(String(idMov)).set({
+                anulado: true,
+                motivo: `[ANULADO] ${mov.motivo}`
+            }, { merge: true }).catch(e => console.error("Error al anular movimiento en la nube:", e));
+        }
+
+        let modalPin = document.getElementById('modal_pin_seguro');
+        if (modalPin) modalPin.style.display = 'none';
+
+        alert(`✅ Movimiento de $${parseFloat(mov.monto).toFixed(2)} (${mov.motivo}) cancelado correctamente.`);
+        
+        movimientoPendienteCancelar = null;
+
+        // Refrescamos la pantalla de corte
+        if (typeof renderCorte === 'function') renderCorte();
+
+    } catch (error) {
+        console.error("Error al cancelar movimiento:", error);
+        alert("❌ Ocurrió un error al intentar cancelar el movimiento.");
+    }
+};
 function cerrarModalPinSeguro() { document.getElementById('modal_pin_seguro').style.display = 'none'; }
 window.verificarPinYCancelar = function() {
     let pass = document.getElementById('input_pin_seguro').value;
@@ -3502,16 +3882,29 @@ window.renderCorte = function() {
         let fSuc = document.getElementById('corte_sucursal').value; 
         let hoy = getFechaLocal();
 
+        // 🌟 1. DETECCION DE MODO SESION (TURNO) VS MODO HISTORICO (FECHAS)
+        // Si existe una sesión de caja activa y no hay filtros manuales de fechas pasadas, filtramos por la Sesión.
+        let sesionActiva = (typeof sesionCajaActual !== 'undefined' && sesionCajaActual && sesionCajaActual.estado === 'abierta') ? sesionCajaActual : null;
+        let esFiltroHistorico = (fInicio && fInicio !== hoy) || (fFin && fFin !== hoy);
+
+        // 📦 Cargar todas las ventas
         let mapaVentas = {};
         (window.ventas || []).forEach(v => { if(v && v.id) mapaVentas[v.id] = v; });
         (window.ventasHistoricasTemporales || []).forEach(v => { if(v && v.id) mapaVentas[v.id] = v; });
         let todasLasVentas = Object.values(mapaVentas).sort((a,b) => a.id - b.id);
 
+        // 💸 Cargar todos los movimientos de caja (retiros / ingresos)
         let mapaMovs = {};
         (window.movimientos || []).forEach(m => { if(m && m.id) mapaMovs[m.id] = m; });
         (window.movsHistoricosTemporales || []).forEach(m => { if(m && m.id) mapaMovs[m.id] = m; });
         let todosLosMovs = Object.values(mapaMovs).sort((a,b) => a.id - b.id);
 
+        // 🚚 Cargar todas las compras de mercancía
+        let mapaCompras = {};
+        (window.compras || []).forEach(c => { if(c && c.id) mapaCompras[c.id] = c; });
+        let todasLasCompras = Object.values(mapaCompras).sort((a,b) => a.id - b.id);
+
+        // Llenar selector de cajeros
         let selectCajero = document.getElementById('corte_cajero');
         if(selectCajero && selectCajero.options.length <= 1 && todasLasVentas.length > 0) {
             let cajerosUnicos = [...new Set(todasLasVentas.map(v => v.cajero).filter(Boolean))];
@@ -3522,14 +3915,22 @@ window.renderCorte = function() {
         let ventasPorDia = {}, utilPorDia = {}, depsHash = {}, cajerosHash = {}, horasHash = {}, metricasCajero = {}, topProductosHash = {}; 
         let operacionesHTML = []; 
 
-        if (todasLasVentas.length === 0 && todosLosMovs.length === 0) {
+        if (todasLasVentas.length === 0 && todosLosMovs.length === 0 && todasLasCompras.length === 0) {
             if(document.getElementById('r_lista_ventas')) document.getElementById('r_lista_ventas').innerHTML = "<tr><td colspan='6' style='text-align:center'>Vacio</td></tr>";
             if (typeof dibujarTopProductos === 'function') dibujarTopProductos(topProductosHash);
             if (typeof actualizarGraficasBI === 'function') actualizarGraficasBI({}, {}, {}, {}, {});
             return;
         }
 
+        // 🔍 2. FILTRADO INTELIGENTE DE VENTAS (POR SESIÓN / TURNO O FECHA)
         let filteredVentas = todasLasVentas.filter(v => { 
+            // Si hay sesión activa y no se forzó un rango de fechas históricas, agrupamos por id_sesion
+            if (sesionActiva && !esFiltroHistorico) {
+                return v.id_sesion_caja === sesionActiva.id && 
+                       (!fCajero || v.cajero === fCajero) && 
+                       (!fSuc || v.sucursal === fSuc || (fSuc === "Matriz" && !v.sucursal));
+            }
+            // Modo histórico por fechas
             let vFecha = v.fecha || hoy; 
             return (vFecha >= fInicio && vFecha <= fFin) && 
                    (!fCajero || v.cajero === fCajero) && 
@@ -3568,10 +3969,8 @@ window.renderCorte = function() {
                     if(mStr.includes('Efectivo')) ef += tVentaTicket; else if(mStr.includes('Tarjeta')) ta += tVentaTicket; else if(mStr.includes('Transferencia')) trans += tVentaTicket; else if(mStr.includes('Crédito')) cr += tVentaTicket; 
                 }
 
-                // 🚨 AQUÍ ESTABA EL ERROR: Faltaba esta variable vital
                 let utilTicket = 0; 
 
-                // 🧮 EXTRACTOR MAESTRO PARA EL TOP 10 DE PRODUCTOS
                 if (v.detalles && !esAbono) { 
                     v.detalles.forEach(d => { 
                         if(d.can > 0) { 
@@ -3586,7 +3985,6 @@ window.renderCorte = function() {
                                 subtotalItem = parseFloat(d.can || 1) * precioVenta;
                             }
                             
-                            // ACUMULAMOS LA GANANCIA GLOBAL DEL TICKET
                             let gananciaArticulo = subtotalItem - (costoUnitario * parseFloat(String(d.can) || 1));
                             utilTicket += gananciaArticulo;
                             
@@ -3617,49 +4015,84 @@ window.renderCorte = function() {
             });
         }); 
 
+        // 🔍 3. FILTRADO INTELIGENTE DE MOVIMIENTOS (RETIROS / INGRESOS)
         let ing_efectivo = 0, ret_efectivo = 0, flujo_ing_otros = 0, flujo_out_compras = 0, flujo_out_otros = 0;
         let listaRetirosGastos = []; 
         let listaIngresosExtra = []; 
 
-        todosLosMovs.forEach(m => {
-            let mFecha = m.fecha || hoy; 
-            if(mFecha >= fInicio && mFecha <= fFin && (!fCajero || m.cajero === fCajero) && (!fSuc || m.sucursal === fSuc)) { 
-                let montoM = parseFloat(m.monto) || 0; let mMotivo = (m.motivo || '').toLowerCase();
-                
-                if(m.tipo === 'Ingreso') { 
-                    ing_efectivo += montoM; flujo_ing_otros += montoM; 
-                    listaIngresosExtra.push(m);
-                } else if(m.tipo === 'Retiro') { 
-                    ret_efectivo += montoM; 
-                    if (mMotivo.includes('compra') || mMotivo.includes('proveedor')) flujo_out_compras += montoM; else flujo_out_otros += montoM; 
-                    listaRetirosGastos.push(m);
-                }
-                
-                let isIngreso = m.tipo === 'Ingreso';
-                operacionesHTML.push({
-                    id: m.id,
-                    html: `<tr style="background:#fcfcfc;"><td>${m.fecha} ${m.hora}</td><td>${m.cajero || 'Admin'}</td><td>${m.sucursal || 'Matriz'}</td><td style="font-weight:bold; color:${isIngreso?'var(--s)':'var(--danger)'};">${isIngreso?'+':'-'}$$${montoM.toFixed(2)}</td><td><span class="badge-kit" style="background:${isIngreso?'var(--info)':'var(--danger)'}">${m.tipo.toUpperCase()}</span></td><td>${m.motivo}</td></tr>`
-                });
-            } 
+        let filteredMovs = todosLosMovs.filter(m => {
+            if (sesionActiva && !esFiltroHistorico) {
+                return m.id_sesion_caja === sesionActiva.id && (!fCajero || m.cajero === fCajero) && (!fSuc || m.sucursal === fSuc);
+            }
+            let mFecha = m.fecha || hoy;
+            return mFecha >= fInicio && mFecha <= fFin && (!fCajero || m.cajero === fCajero) && (!fSuc || m.sucursal === fSuc);
         });
 
-        let efectivoEnCaja = ef + ing_efectivo - ret_efectivo;
+        filteredMovs.forEach(m => {
+            let montoM = parseFloat(m.monto) || 0; let mMotivo = (m.motivo || '').toLowerCase();
+            
+            if(m.tipo === 'Ingreso') { 
+                ing_efectivo += montoM; flujo_ing_otros += montoM; 
+                listaIngresosExtra.push(m);
+            } else if(m.tipo === 'Retiro') { 
+                ret_efectivo += montoM; 
+                if (mMotivo.includes('compra') || mMotivo.includes('proveedor')) flujo_out_compras += montoM; else flujo_out_otros += montoM; 
+                listaRetirosGastos.push(m);
+            }
+            
+            let isIngreso = m.tipo === 'Ingreso';
+            operacionesHTML.push({
+                id: m.id,
+                html: `<tr style="background:#fcfcfc;"><td>${m.fecha} ${m.hora}</td><td>${m.cajero || 'Admin'}</td><td>${m.sucursal || 'Matriz'}</td><td style="font-weight:bold; color:${isIngreso?'var(--s)':'var(--danger)'};">${isIngreso?'+':'-'}$$${montoM.toFixed(2)}</td><td><span class="badge-kit" style="background:${isIngreso?'var(--info)':'var(--danger)'}">${m.tipo.toUpperCase()}</span></td><td>${m.motivo}</td></tr>`
+            });
+        });
+
+        // 🔍 4. FILTRADO E INTEGRACIÓN DIRECTA DE COMPRAS EN EFECTIVO
+        let comprasEfectivoTotal = 0;
+        let filteredCompras = todasLasCompras.filter(c => {
+            if (c.anulada) return false;
+            if (sesionActiva && !esFiltroHistorico) {
+                return c.id_sesion_caja === sesionActiva.id && (!fCajero || c.cajero === fCajero) && (!fSuc || c.sucursal === fSuc);
+            }
+            let cFecha = c.fecha || hoy;
+            return cFecha >= fInicio && cFecha <= fFin && (!fCajero || c.cajero === fCajero) && (!fSuc || c.sucursal === fSuc);
+        });
+
+        filteredCompras.forEach(c => {
+            let mMetodo = String(c.metodo || '').toLowerCase();
+            let totalC = parseFloat(c.total) || 0;
+            if (mMetodo.includes('efectivo')) {
+                comprasEfectivoTotal += totalC;
+            }
+        });
+
+        // 💵 5. ECUACIÓN MATEMÁTICA DEFINITIVA DEL EFECTIVO EN CAJA
+        let fondoInicial = (sesionActiva && !esFiltroHistorico) ? (parseFloat(sesionActiva.monto_inicial) || 0) : 0;
+        let efectivoEnCaja = fondoInicial + ef + ing_efectivo - ret_efectivo - comprasEfectivoTotal;
         
         currentCorteData = {
+            fondoInicial: fondoInicial,
             ventasTotales: tVentas, gananciaNeta: tUtilidad, numVentas: numVentas,     
             efectivoVentas: ef, tarjeta: ta, transferencia: trans, credito: cr,
-            ingresos: ing_efectivo, retiros: ret_efectivo, esperado: efectivoEnCaja,
+            ingresos: ing_efectivo, retiros: ret_efectivo, comprasEfectivo: comprasEfectivoTotal,
+            esperado: efectivoEnCaja,
             cajeroCorte: fCajero || "Todos", fechaInicio: fInicio, fechaFin: fFin
         };
 
+        // Renderizado en UI
         document.getElementById('kpi_ventas').innerText = "$" + tVentas.toLocaleString('es-MX', {minimumFractionDigits: 2});
         document.getElementById('kpi_ganancia').innerText = "$" + tUtilidad.toLocaleString('es-MX', {minimumFractionDigits: 2});
         document.getElementById('kpi_no_ventas').innerText = numVentas;
         document.getElementById('kpi_ticket_prom').innerText = "$" + (numVentas > 0 ? (tVentas / numVentas) : 0).toLocaleString('es-MX', {minimumFractionDigits: 2});
         document.getElementById('kpi_margen').innerText = (tVentas > 0 ? ((tUtilidad / tVentas) * 100) : 0).toFixed(2) + "%";
         
-        document.getElementById('r_efectivo').innerText = "$"+efectivoEnCaja.toFixed(2); document.getElementById('r_tarjeta').innerText = "$"+ta.toFixed(2); document.getElementById('r_transferencia').innerText = "$"+trans.toFixed(2); document.getElementById('r_credito').innerText = "$"+cr.toFixed(2); document.getElementById('r_total').innerText = "$"+(ef + ta + trans).toFixed(2); 
-        document.getElementById('r_lista_ventas').innerHTML = operacionesHTML.map(op => op.html).join('') || "<tr><td colspan='6' style='text-align:center'>No hay operaciones en este rango</td></tr>";
+        document.getElementById('r_efectivo').innerText = "$"+efectivoEnCaja.toFixed(2); 
+        document.getElementById('r_tarjeta').innerText = "$"+ta.toFixed(2); 
+        document.getElementById('r_transferencia').innerText = "$"+trans.toFixed(2); 
+        document.getElementById('r_credito').innerText = "$"+cr.toFixed(2); 
+        document.getElementById('r_total').innerText = "$"+(ef + ta + trans).toFixed(2); 
+
+        document.getElementById('r_lista_ventas').innerHTML = operacionesHTML.sort((a,b) => b.id - a.id).map(op => op.html).join('') || "<tr><td colspan='6' style='text-align:center'>No hay operaciones en este rango</td></tr>";
 
         let htmlGastos = listaRetirosGastos.map(g => `<tr><td>${g.hora}</td><td>${g.motivo}</td><td style="text-align:right; color:red;">-$${parseFloat(g.monto).toFixed(2)}</td></tr>`).join('');
         let cg = document.getElementById('cc_lista_gastos'); if(cg) { cg.innerHTML = htmlGastos || '<tr><td colspan="3" style="text-align:center; color:#888;">No hubo retiros</td></tr>'; }
@@ -3667,7 +4100,7 @@ window.renderCorte = function() {
         let htmlIngresos = listaIngresosExtra.map(g => `<tr><td>${g.hora}</td><td>${g.motivo}</td><td style="text-align:right; color:#28a745;">+$${parseFloat(g.monto).toFixed(2)}</td></tr>`).join('');
         let ci = document.getElementById('cc_lista_ingresos'); if(ci) { ci.innerHTML = htmlIngresos || '<tr><td colspan="3" style="text-align:center; color:#888;">No hubo ingresos extra</td></tr>'; }
 
-        // 🚨 AQUI FALTABA ESTO: Restaurar la tabla de cajeros
+        // Tabla de cajeros KPI
         let htmlCajerosKpi = Object.keys(metricasCajero).map(c => {
             let m = metricasCajero[c];
             let prom = m.tickets > 0 ? (m.total / m.tickets) : 0;
@@ -3678,8 +4111,13 @@ window.renderCorte = function() {
         if(document.getElementById('kpi_tabla_cajeros')) document.getElementById('kpi_tabla_cajeros').innerHTML = htmlCajerosKpi || '<tr><td colspan="4" style="text-align:center;">Vacio</td></tr>';
 
         if(document.getElementById('flujo_in_efectivo')) {
-            document.getElementById('flujo_in_efectivo').innerText = "$" + ef.toFixed(2); document.getElementById('flujo_in_digital').innerText = "$" + (ta + trans).toFixed(2); document.getElementById('flujo_in_otros').innerText = "$" + flujo_ing_otros.toFixed(2); document.getElementById('flujo_in_total').innerText = "$" + (ef + ta + trans + flujo_ing_otros).toFixed(2);
-            document.getElementById('flujo_out_compras').innerText = "$" + flujo_out_compras.toFixed(2); document.getElementById('flujo_out_otros').innerText = "$" + flujo_out_otros.toFixed(2); document.getElementById('flujo_out_total').innerText = "$" + (flujo_out_compras + flujo_out_otros).toFixed(2);
+            document.getElementById('flujo_in_efectivo').innerText = "$" + ef.toFixed(2); 
+            document.getElementById('flujo_in_digital').innerText = "$" + (ta + trans).toFixed(2); 
+            document.getElementById('flujo_in_otros').innerText = "$" + flujo_ing_otros.toFixed(2); 
+            document.getElementById('flujo_in_total').innerText = "$" + (ef + ta + trans + flujo_ing_otros).toFixed(2);
+            document.getElementById('flujo_out_compras').innerText = "$" + (flujo_out_compras + comprasEfectivoTotal).toFixed(2); 
+            document.getElementById('flujo_out_otros').innerText = "$" + flujo_out_otros.toFixed(2); 
+            document.getElementById('flujo_out_total').innerText = "$" + (flujo_out_compras + comprasEfectivoTotal + flujo_out_otros).toFixed(2);
         }
 
         if (typeof dibujarTopProductos === 'function') window.dibujarTopProductos(topProductosHash);
@@ -3954,7 +4392,7 @@ function renderVisorActivo() {
 // ====================================================================
 // 🗑️ ANULAR VENTA DESDE EL VISOR (CONECTADA AL ACUMULADOR)
 // ====================================================================
-function anularVentaVisor() {
+window.anularVentaVisor = function() {
     let vReal = ventas[visorIndices[currentVisorPos].indexGlobal]; 
     if(vReal.anulada || !confirm("¿Anular esta venta?\nSe devolverá el stock al sistema y se ajustarán las gráficas.")) return;
     
@@ -3964,7 +4402,7 @@ function anularVentaVisor() {
         listaDetalles.forEach(d => { 
             let sucursalVenta = vReal.sucursal || sucursalActual;
             
-            // 🌟 MAGIA MAESTRO-ESPEJO: Buscamos a quién le vamos a devolver la mercancía
+            // 🌟 MAGIA MAESTRO-ESPEJO
             let pOriginal = inv[d.cod] || {}; 
             let codMaestro = d.cod_maestro || (pOriginal.grupo && inv[pOriginal.grupo] ? pOriginal.grupo : d.cod);
             let pMaestro = inv[codMaestro] || pOriginal;
@@ -3977,56 +4415,69 @@ function anularVentaVisor() {
                 stockAntesReal = parseFloat(pMaestro.stock) || parseFloat(pMaestro.existencia) || parseFloat(pMaestro.can) || 0;
             }
             
-            // 📸 FOTOGRAFÍA 2: Sumamos la pieza devuelta al JEFE
-            let stockDespuesReal = stockAntesReal + parseFloat(d.can);
+            // 📸 FOTOGRAFÍA 2: Sumamos la pieza devuelta (Obligando a 3 decimales)
+            let cantDevuelta = parseFloat(d.can);
+            let stockDespuesReal = parseFloat((stockAntesReal + cantDevuelta).toFixed(3));
 
-            // Guardamos el stock en la base de datos del Maestro
+            // Guardamos el stock localmente
             if(inv[codMaestro]) { 
                 if(!inv[codMaestro].stock) inv[codMaestro].stock = {}; 
                 inv[codMaestro].stock[sucursalVenta] = stockDespuesReal; 
-                if (typeof db !== 'undefined') db.collection("inventario").doc(codMaestro).set(inv[codMaestro]); 
+                
+                // ☁️ 🚀 SUBIDA BLINDADA A LA NUBE (Firebase suma dinámicamente)
+                if (typeof db !== 'undefined') {
+                    let campoStock = `stock.${sucursalVenta}`;
+                    db.collection("inventario").doc(String(codMaestro)).set({
+                        [campoStock]: firebase.firestore.FieldValue.increment(cantDevuelta)
+                    }, { merge: true }).catch(e => console.error("Error al devolver stock en la nube:", e)); 
+                }
             } 
             
             // 🌟 ENVIAMOS LAS FOTOS AL KARDEX
             if (typeof registrarEnKardex === 'function') {
-                registrarEnKardex(codMaestro, d.nom, "ANULACIÓN", d.can, 0, 0, stockAntesReal, stockDespuesReal); 
+                // Inyectamos la sucursal de la venta para que el registro sea exacto
+                registrarEnKardex(codMaestro, d.nom, "ANULACIÓN", cantDevuelta, 0, 0, stockAntesReal, stockDespuesReal, sucursalVenta); 
             }
         }); 
+        
+        // 🛡️ PARACAÍDAS DE MEMORIA (Inventario)
+        try { localStorage.setItem("pos_precision_v6", JSON.stringify(inv)); } catch(e){}
     }
     
-    // 🌟 2. AJUSTE FINANCIERO DEL CLIENTE (Búsqueda inteligente por Nombre o Teléfono)
+    // 🌟 2. AJUSTE FINANCIERO DEL CLIENTE BLINDADO
     let met = String(vReal.metodo || "").toLowerCase();
     let esCredito = vReal.es_credito || met.includes('cr');
-
-    // Buscamos la identidad del cliente en cualquier propiedad posible del ticket
     let idCliente = vReal.cliente_tel || vReal.cliente || vReal.cli || vReal.nom_cliente || "";
 
     if (esCredito && idCliente) {
-        // Buscamos la llave correcta en el objeto de clientes (por si la llave es el Teléfono o el Nombre)
         let claveCliente = clientes[idCliente] ? idCliente : Object.keys(clientes).find(k => k === idCliente || clientes[k].nom === idCliente || clientes[k].tel === idCliente);
 
         if (claveCliente && clientes[claveCliente]) {
             let dineroARestar = parseFloat(vReal.monto_credito) || parseFloat(vReal.total) || 0;
             let saldoActual = parseFloat(clientes[claveCliente].saldo) || 0;
-            let nuevoSaldo = Math.max(0, saldoActual - dineroARestar);
+            let nuevoSaldo = parseFloat((Math.max(0, saldoActual - dineroARestar)).toFixed(2));
 
             // Actualizamos en memoria local
             clientes[claveCliente].saldo = nuevoSaldo;
+            try { localStorage.setItem("pos_clientes_v1", JSON.stringify(clientes)); } catch(e){}
 
-            // Sincronizamos con la nube
+            // ☁️ 🚀 DEUDA BLINDADA: Firebase descuenta el dinero de forma segura sin borrar abonos recientes
             if (typeof db !== 'undefined') {
-                db.collection("clientes").doc(claveCliente).set(clientes[claveCliente]).catch(e => console.error("Error al actualizar cliente offline:", e));
+                db.collection("clientes").doc(String(claveCliente)).set({
+                    saldo: firebase.firestore.FieldValue.increment(-dineroARestar)
+                }, { merge: true }).catch(e => console.error("Error al actualizar cliente offline:", e));
             }
-            console.log(`✅ Saldo restado al cliente ${claveCliente}: ${saldoActual} -> ${nuevoSaldo}`);
+            console.log(`✅ Saldo restado al cliente ${claveCliente} de manera segura.`);
         }
     }
     
-    // 🏷️ 3. MARCAMOS COMO ANULADA Y GUARDAMOS
+    // 🏷️ 3. MARCAMOS COMO ANULADA Y GUARDAMOS EL TICKET
     vReal.anulada = true; 
     visorIndices[currentVisorPos].anulada = true;
 
+    // Solo subimos los cambios puntuales (la bandera de anulada)
     let guardarPromesa = (typeof db !== 'undefined') 
-        ? db.collection("ventas").doc(String(vReal.id)).set(vReal) 
+        ? db.collection("ventas").doc(String(vReal.id)).set({ anulada: true }, { merge: true }) 
         : Promise.resolve();
 
     guardarPromesa.then(() => {
@@ -4034,7 +4485,12 @@ function anularVentaVisor() {
             actualizarAcumuladorDiario(vReal, true);
         }
         
-        localStorage.setItem("pos_ventas_local", JSON.stringify(ventas));
+        // 🛡️ PARACAÍDAS DE MEMORIA (Ventas)
+        try { 
+            localStorage.setItem("pos_ventas_local", JSON.stringify(ventas)); 
+        } catch(e) { 
+            console.warn("Memoria local de ventas llena, pero guardado en la nube exitoso."); 
+        }
         
         alert("✅ Venta anulada, stock devuelto y saldo restado al cliente correctamente."); 
 
@@ -4045,12 +4501,12 @@ function anularVentaVisor() {
         else if(typeof renderI === 'function') renderI(); 
         if(typeof renderClientes === 'function') renderClientes(); 
     }).catch(err => {
-        console.error("Error al guardar la anulación:", err);
-        alert("⚠️ Venta anulada localmente.");
+        console.error("Error al guardar la anulación en la nube:", err);
+        alert("⚠️ Venta anulada localmente (Error de conexión).");
     });
 }
 
-function devolverArticuloVisor(indexDetalle) {
+window.devolverArticuloVisor = function(indexDetalle) {
     let vRef = visorIndices[currentVisorPos]; 
     let vReal = ventas[vRef.indexGlobal]; 
     if(vReal.anulada) return;
@@ -4065,9 +4521,10 @@ function devolverArticuloVisor(indexDetalle) {
     if(!confirm(`Devolver ${c} uds por $${m.toFixed(2)}?`)) return;
     
     // 🏷️ 1. ACTUALIZAMOS EL TICKET
-    d.can -= c; 
-    d.subtotal -= m; 
-    vReal.total -= m; 
+    d.can = parseFloat((d.can - c).toFixed(3)); 
+    d.subtotal = parseFloat((d.subtotal - m).toFixed(2)); 
+    vReal.total = parseFloat((vReal.total - m).toFixed(2)); 
+    
     if(vReal.total <= 0) { 
         vReal.anulada = true; 
         vReal.total = 0; 
@@ -4075,7 +4532,7 @@ function devolverArticuloVisor(indexDetalle) {
     
     let sucursalVenta = vReal.sucursal || sucursalActual;
     
-    // 📦 2. DEVOLUCIÓN DE STOCK AL INVENTARIO (MAESTRO-ESPEJO)
+    // 📦 2. DEVOLUCIÓN DE STOCK AL INVENTARIO (MAESTRO-ESPEJO) BLINDADA
     let pOriginal = inv[d.cod] || {}; 
     let codMaestro = d.cod_maestro || (pOriginal.grupo && inv[pOriginal.grupo] ? pOriginal.grupo : d.cod);
     let pMaestro = inv[codMaestro] || pOriginal;
@@ -4087,35 +4544,46 @@ function devolverArticuloVisor(indexDetalle) {
         stockAntesReal = parseFloat(pMaestro.stock) || parseFloat(pMaestro.existencia) || parseFloat(pMaestro.can) || 0;
     }
     
-    let stockDespuesReal = stockAntesReal + c;
+    let stockDespuesReal = parseFloat((stockAntesReal + c).toFixed(3));
 
     if(inv[codMaestro]) { 
         if(!inv[codMaestro].stock) inv[codMaestro].stock = {}; 
         inv[codMaestro].stock[sucursalVenta] = stockDespuesReal; 
-        if (typeof db !== 'undefined') db.collection("inventario").doc(codMaestro).set(inv[codMaestro]); 
+        
+        // ☁️ 🚀 SUBIDA BLINDADA (Firebase suma dinámicamente)
+        if (typeof db !== 'undefined') {
+            let campoStock = `stock.${sucursalVenta}`;
+            db.collection("inventario").doc(String(codMaestro)).set({
+                [campoStock]: firebase.firestore.FieldValue.increment(c)
+            }, { merge: true }).catch(e => console.error("Error devolviendo stock parcial:", e));
+        }
     }
     
+    // 🌟 ENVIAMOS LAS FOTOS AL KARDEX (Inyectando sucursal exacta)
     if (typeof registrarEnKardex === 'function') {
-        registrarEnKardex(codMaestro, d.nom, "ANULACIÓN PARCIAL", c, 0, 0, stockAntesReal, stockDespuesReal);
+        registrarEnKardex(codMaestro, d.nom, "ANULACIÓN PARCIAL", c, 0, 0, stockAntesReal, stockDespuesReal, sucursalVenta);
     }
 
-    // 🌟 3. AJUSTE FINANCIERO (CRÉDITO VS MOVIENTO DE CAJA)
+    // 🌟 3. AJUSTE FINANCIERO (CRÉDITO VS MOVIENTO DE CAJA) BLINDADO
     let met = String(vReal.metodo || "").toLowerCase();
     let esCredito = vReal.es_credito || met.includes('cr');
     let idCliente = vReal.cliente_tel || vReal.cliente || vReal.cli || vReal.nom_cliente || "";
 
     if (esCredito && idCliente) {
-        // Buscamos la clave del cliente en la memoria
         let claveCliente = clientes[idCliente] ? idCliente : Object.keys(clientes).find(k => k === idCliente || clientes[k].nom === idCliente || clientes[k].tel === idCliente);
 
         if (claveCliente && clientes[claveCliente]) {
             let saldoActual = parseFloat(clientes[claveCliente].saldo) || 0;
-            let nuevoSaldo = Math.max(0, saldoActual - m);
+            let nuevoSaldo = parseFloat((Math.max(0, saldoActual - m)).toFixed(2));
 
             clientes[claveCliente].saldo = nuevoSaldo;
+            try { localStorage.setItem("pos_clientes_v1", JSON.stringify(clientes)); } catch(e){}
 
+            // ☁️ 🚀 DEUDA BLINDADA
             if (typeof db !== 'undefined') {
-                db.collection("clientes").doc(claveCliente).set(clientes[claveCliente]).catch(e => console.error(e));
+                db.collection("clientes").doc(String(claveCliente)).set({
+                    saldo: firebase.firestore.FieldValue.increment(-m)
+                }, { merge: true }).catch(e => console.error(e));
             }
             console.log(`✅ Devolución parcial restada al cliente ${claveCliente}: ${saldoActual} -> ${nuevoSaldo}`);
         }
@@ -4129,15 +4597,20 @@ function devolverArticuloVisor(indexDetalle) {
             cajero: usuarioActual, 
             sucursal: sucursalVenta, 
             tipo: 'Retiro', 
-            monto: m, 
-            motivo: `DEVOLUCIÓN: ${d.nom}` 
+            monto: parseFloat(m.toFixed(2)), 
+            motivo: `DEVOLUCIÓN PARCIAL: ${d.nom}` 
         }; 
-        movimientos.push(nm); 
-        if (typeof db !== 'undefined') db.collection("movimientos").doc(String(idMov)).set(nm); 
+        if (typeof movimientos !== 'undefined') {
+            movimientos.push(nm); 
+            try { localStorage.setItem("pos_movimientos_v1", JSON.stringify(movimientos)); } catch(e){}
+        }
+        if (typeof db !== 'undefined') {
+            db.collection("movimientos").doc(String(idMov)).set(nm).catch(e => console.error(e)); 
+        }
     }
     
     // 🔄 4. GUARDADO Y REFRESCO
-    localStorage.setItem("pos_ventas_local", JSON.stringify(ventas));
+    try { localStorage.setItem("pos_ventas_local", JSON.stringify(ventas)); } catch(e){}
 
     let guardarPromesa = (typeof db !== 'undefined') 
         ? db.collection("ventas").doc(String(vReal.id)).set(vReal) 
@@ -4151,7 +4624,7 @@ function devolverArticuloVisor(indexDetalle) {
         else if(typeof renderI === 'function') renderI(); 
         if(typeof renderClientes === 'function') renderClientes(); 
     }).catch(err => {
-        console.error("Error guardando devolución:", err);
+        console.error("Error guardando devolución en la nube:", err);
         alert("⚠️ Devolución guardada en memoria local.");
     });
 }
@@ -4642,7 +5115,7 @@ function seleccionarProductoCaja(codigo, nombre, piezas, impuesto) {
 // Registrar un movimiento en el Kardex (Función Interna Maestro)
 window.registrarEnKardex = function(productoCod, productoNom, tipoMov, cantidad, precio, costo, stockAntes, stockDespues, sucursalInyectada = null) {
     
-    // 🌟 1. IDENTIFICAR LA SUCURSAL EXACTA (Usa la inyectada si existe, si no usa la global)
+    // 🌟 1. IDENTIFICAR LA SUCURSAL EXACTA
     let sucKardex = sucursalInyectada ? sucursalInyectada : String(typeof sucursalActual !== 'undefined' ? sucursalActual : 'Matriz').replace(/📍/g, '').trim();
 
     // 🌟 MAGIA MAESTRO-ESPEJO: El Escudo Definitivo
@@ -4650,56 +5123,60 @@ window.registrarEnKardex = function(productoCod, productoNom, tipoMov, cantidad,
     let esEspejo = pOriginal.grupo && inv[pOriginal.grupo];
     let codigoFinal = esEspejo ? pOriginal.grupo : productoCod;
     
-    // Si viene de una "EDICIÓN" de un código espejo, el stockAntes viene mal (en cero). 
-    // Aquí tomamos la fotografía correcta forzando la lectura del Maestro.
     if (esEspejo && (tipoMov === "EDICIÓN" || tipoMov === "AJUSTE")) {
         let pMaestro = inv[codigoFinal];
         let stockMaestro = 0;
         if (pMaestro.stock && typeof pMaestro.stock === 'object') {
-            // 👈 Ahora lee el stock de la sucursal correcta
             stockMaestro = parseFloat(pMaestro.stock[sucKardex]) || 0; 
         } else {
             stockMaestro = parseFloat(pMaestro.stock) || parseFloat(pMaestro.existencia) || parseFloat(pMaestro.can) || 0;
         }
-        // Corregimos la foto para que no queden registros fantasma
         stockAntes = stockMaestro;
         stockDespues = stockMaestro;
     }
+
+    // 🛡️ REDONDEO QUIRÚRGICO: Evitamos la "basura matemática" de JavaScript
+    let c_cantidad = parseFloat(parseFloat(cantidad).toFixed(3)) || 0;
+    let c_stockAntes = parseFloat(parseFloat(stockAntes).toFixed(3)) || 0;
+    let c_stockDespues = parseFloat(parseFloat(stockDespues).toFixed(3)) || 0;
+    
+    let c_precio = parseFloat(parseFloat(precio).toFixed(2)) || 0;
+    let c_costo = parseFloat(parseFloat(costo).toFixed(2)) || 0;
 
     let idKardex = Date.now() + Math.floor(Math.random() * 1000);
     let nuevoRegistro = {
         id: idKardex,
         timestamp: Date.now(),
-        fecha: getFechaLocal(),
+        fecha: (typeof getFechaLocal === 'function' ? getFechaLocal() : new Date().toISOString().split('T')[0]),
         hora: new Date().toLocaleTimeString(),
         
         // 🚀 GUARDAMOS EN LA BÓVEDA DEL MAESTRO
         codigo: codigoFinal, 
-        // 🍓 PERO CONSERVAMOS EL NOMBRE DEL SABOR ORIGINAL PARA SABER QUÉ PASÓ
         nombre: productoNom, 
-        
         tipo: tipoMov,
-        cantidad: parseFloat(cantidad) || 0,
         
-        // 📸 FOTOGRAFÍAS CORREGIDAS
-        stock_antes: parseFloat(stockAntes) || 0,
-        stock_despues: parseFloat(stockDespues) || 0,
+        // 📸 FOTOGRAFÍAS CORREGIDAS A 3 DECIMALES
+        cantidad: c_cantidad,
+        stock_antes: c_stockAntes,
+        stock_despues: c_stockDespues,
         
-        precio: parseFloat(precio) || 0,
-        costo: parseFloat(costo) || 0,
-        sucursal: sucKardex, // 👈 USAMOS LA SUCURSAL ELEGIDA
+        // 💸 DINERO CORREGIDO A 2 DECIMALES
+        precio: c_precio,
+        costo: c_costo,
+        
+        sucursal: sucKardex, 
         cajero: (typeof usuarioActual !== 'undefined' ? usuarioActual : "Admin")
     };
 
-    // Mandamos directo a la colección de la nube
+    // ☁️ 🚀 SUBIDA A LA NUBE DIRECTA (Sin saturar localStorage)
     if (typeof db !== 'undefined') {
-        db.collection("kardex").doc(String(idKardex)).set(nuevoRegistro).catch(e => console.error("Error Kardex:", e));
+        db.collection("kardex").doc(String(idKardex)).set(nuevoRegistro).catch(e => console.error("❌ Error guardando Kardex en Nube:", e));
     }
 }
+
 window.renderKardex = function() {
     try {
         console.log("Intentando dibujar el Kardex...");
-        
         let selectSuc = document.getElementById('kardex_sucursal');
         
         // Protegemos la variable por si listaSucursales no existe aún
@@ -4938,14 +5415,20 @@ window.ejecutarTransferencia = function() {
         
         // 📸 FOTOGRAFÍA 1: Leer el stock exacto del MAESTRO en la sucursal de origen limpia
         let stockAntesReal = parseFloat(pMaestro.stock[oriLimpio]) || 0;
+        let cantEnviar = parseFloat(x.can);
         
-        // 📸 FOTOGRAFÍA 2: Restar lo que se está enviando
-        let stockDespuesReal = stockAntesReal - parseFloat(x.can);
+        // 📸 FOTOGRAFÍA 2: Restar lo que se está enviando (Obligando a 3 decimales)
+        let stockDespuesReal = parseFloat((stockAntesReal - cantEnviar).toFixed(3));
         
         pMaestro.stock[oriLimpio] = stockDespuesReal; 
         
-        // ☁️ Guardamos al Maestro modificado en la nube
-        if(typeof db !== 'undefined') db.collection("inventario").doc(codMaestro).set(pMaestro);
+        // ☁️ 🚀 SUBIDA BLINDADA A LA NUBE (Solo restamos en el cajón de Origen)
+        if(typeof db !== 'undefined') {
+            let campoStockOrigen = `stock.${oriLimpio}`;
+            db.collection("inventario").doc(String(codMaestro)).set({
+                [campoStockOrigen]: firebase.firestore.FieldValue.increment(-cantEnviar)
+            }, { merge: true }).catch(e => console.error("❌ Error al descontar origen en la nube:", e));
+        }
         
         // 🌟 ENVIAMOS LAS FOTOS AL KARDEX (Inyectando el Origen Limpio)
         if(typeof registrarEnKardex === 'function') {
@@ -4953,7 +5436,7 @@ window.ejecutarTransferencia = function() {
                 codMaestro, 
                 x.nom, 
                 "TRANSFERENCIA (SALIDA)", 
-                -x.can, 
+                -cantEnviar, 
                 parseFloat(pMaestro.pv) || parseFloat(pOriginal.pv) || 0, 
                 parseFloat(x.cReal) || parseFloat(pMaestro.cos) || parseFloat(pOriginal.cos) || 0,
                 stockAntesReal,       // 👈 Foto 1
@@ -4977,12 +5460,20 @@ window.ejecutarTransferencia = function() {
     };
     
     transferencias.push(nuevaTransferencia); 
-    localStorage.setItem("pos_precision_v6", JSON.stringify(inv)); 
-    localStorage.setItem("pos_transferencias_v6", JSON.stringify(transferencias)); 
-    if(typeof db !== 'undefined') db.collection("transferencias").doc(String(idEnvio)).set(nuevaTransferencia);
+    
+    // 🛡️ PARACAÍDAS DE MEMORIA LOCAL
+    try { localStorage.setItem("pos_precision_v6", JSON.stringify(inv)); } catch(e) { console.warn("Memoria local de inventario llena."); }
+    try { localStorage.setItem("pos_transferencias_v6", JSON.stringify(transferencias)); } catch(e) { console.warn("Memoria local de envíos llena."); }
+    
+    if(typeof db !== 'undefined') {
+        db.collection("transferencias").doc(String(idEnvio)).set(nuevaTransferencia)
+        .catch(e => alert("Error al subir transferencia: " + e));
+    }
 
     alert(`✅ Envío creado exitosamente. Ya fue notificado a ${desLimpio}.`); 
-    carT = []; if(typeof renderI === 'function') renderI(); if(typeof cerrarModales === 'function') cerrarModales(); 
+    carT = []; 
+    if(typeof renderI === 'function') renderI(); 
+    if(typeof cerrarModales === 'function') cerrarModales(); 
     if(typeof actualizarContadorRecepciones === 'function') actualizarContadorRecepciones(); 
 };
 
@@ -5066,16 +5557,58 @@ function renderListaRecepciones() {
         let isFocused = (i === focusRecepcionIndex);
         let bgRow = isFocused ? 'background:#e0f0ff; border-left: 4px solid var(--orange);' : '';
         
-        return `<tr style="cursor:pointer; ${bgRow}" onclick="iniciarRecepcion(${t.id})">
+       return `<tr style="cursor:pointer; ${bgRow}" onclick="iniciarRecepcion(${t.id})">
             <td>${isFocused ? '👉 ' : ''}${t.fecha.split(',')[0]}<br><small style="color:#aaa">ID: ${t.id}</small></td>
             <td><b>${t.origen}</b></td>
             <td style="color:var(--s); font-weight:bold;">$${t.valor}</td>
             <td><span style="background:var(--warning); color:#000; padding:3px 6px; border-radius:4px; font-size:10px; font-weight:bold">PENDIENTE</span></td>
-            <td><button tabindex="-1" style="background:var(--orange); color:white; border:none; padding:8px 15px; border-radius:5px; cursor:pointer; font-weight:bold;" onclick="event.stopPropagation(); iniciarRecepcion(${t.id})">Recibir (Enter)</button></td>
+            
+            <!-- 🛠️ CELDA DE BOTONES CORREGIDA -->
+            <td>
+                <div style="display: flex; gap: 5px; align-items: stretch; justify-content: flex-start;">
+                    <button tabindex="-1" style="background:var(--orange); color:white; border:none; padding:8px 15px; border-radius:5px; cursor:pointer; font-weight:bold;" onclick="event.stopPropagation(); iniciarRecepcion(${t.id})">
+                        Recibir (Enter)
+                    </button>
+                    
+                    <button onclick="event.stopPropagation(); borrarRecepcion('${t.id}')" style="background: var(--danger, #dc3545); color: white; border: none; padding: 8px 12px; border-radius: 5px; cursor: pointer; display: flex; align-items: center; justify-content: center;" title="Borrar recepción">
+                        🗑️
+                    </button>
+                </div>
+            </td>
         </tr>`;
     }).join('');
 }
+window.borrarRecepcion = function(idRecepcion) {
+    // 1. Pedimos confirmación para evitar clics accidentales
+    if (!confirm("⚠️ ¿Estás seguro de que deseas eliminar esta recepción? Esta acción no se puede deshacer.")) return;
 
+    // 2. Eliminamos de la memoria local usando TU variable real
+    if (typeof pendientesTrans !== 'undefined') {
+        pendientesTrans = pendientesTrans.filter(t => String(t.id) !== String(idRecepcion));
+        
+        // Asumiendo que tu llave en localStorage se llama pos_transferencias_v6. 
+        // Si no se borra al recargar la página, revisa qué llave usas al iniciar tu sistema.
+        localStorage.setItem("pos_transferencias_v6", JSON.stringify(pendientesTrans));
+    }
+
+    // 3. Eliminamos de la base de datos en la nube (Firebase)
+    if (typeof db !== 'undefined') {
+        db.collection("transferencias").doc(String(idRecepcion)).delete()
+        .then(() => {
+            console.log("✅ Registro eliminado de la nube.");
+        })
+        .catch((error) => {
+            console.error("❌ Error al eliminar de Firebase:", error);
+        });
+    }
+
+    // 4. Notificamos y usamos TU función real para redibujar la tabla
+    alert("🗑️ Recepción eliminada correctamente.");
+    
+    if (typeof renderListaRecepciones === 'function') {
+        renderListaRecepciones(); 
+    }
+};
 // Modificamos la tabla de recibo para que puedas bajar con las flechas
 function renderR() { 
     document.getElementById('r_proc_lista_tab').innerHTML = carR.map((x, i) => {
@@ -5109,55 +5642,95 @@ function navegarCantidadesRecepcion(e, i) {
     }
 }
 // Paso Final: Guardar recepción y sumar el stock
-function confirmarRecepcion() { 
+window.confirmarRecepcion = function() { 
     let tIndex = transferencias.findIndex(x => x.id === idTransferenciaActual); 
     if(tIndex === -1) return; 
+    
+    let trans = transferencias[tIndex];
+    let oriLimpio = trans.origen;
+
     if(!confirm("📥 ¿Confirmar el ingreso físico a tu inventario?")) return; 
     
+    let detallesFaltantes = []; // 📝 NUEVO: Libreta para anotar qué faltó exactamente
+
     carR.forEach(x => { 
-        if(x.can_rec > 0) { 
-            let pO = inv[x.cod] || {};
-            if(!pO.stock) pO.stock = {}; 
-            
-            // 📸 FOTOGRAFÍA 1: Leer el stock exacto en la sucursal destino ANTES de recibir
+        let pO = inv[x.cod] || {};
+        if(!pO.stock) pO.stock = {}; 
+        
+        let cantEnviada = parseFloat(x.can) || 0;
+        let cantRecibidaTotal = parseFloat(x.can_rec) || 0;
+
+        // 🟢 1. MANEJO DEL STOCK QUE SÍ LLEGÓ
+        if(cantRecibidaTotal > 0) { 
             let stockAntesReal = parseFloat(pO.stock[sucursalActual]) || 0;
+            let stockDespuesReal = parseFloat((stockAntesReal + cantRecibidaTotal).toFixed(3));
             
-            // 📸 FOTOGRAFÍA 2: Sumar lo que realmente llegó (can_rec)
-            let stockDespuesReal = stockAntesReal + parseFloat(x.can_rec);
-            
-            // Actualizamos la memoria
             pO.stock[sucursalActual] = stockDespuesReal; 
             
-            if(typeof db !== 'undefined') db.collection("inventario").doc(x.cod).set(pO);
+            if(typeof db !== 'undefined') {
+                let campoStockDestino = `stock.${sucursalActual}`;
+                db.collection("inventario").doc(String(x.cod)).set({
+                    [campoStockDestino]: firebase.firestore.FieldValue.increment(cantRecibidaTotal)
+                }, { merge: true }).catch(e => console.error("Error sumando en Destino:", e));
+            }
             
-            // 🌟 ENVIAMOS LAS FOTOS AL KARDEX
             if(typeof registrarEnKardex === 'function') {
                 registrarEnKardex(
-                    x.cod, 
-                    x.nom, 
-                    "TRANSFERENCIA (ENTRADA)", 
-                    x.can_rec, 
-                    pO.pv || 0, 
-                    x.cReal || pO.cos || 0,
-                    stockAntesReal,       // 👈 Foto 1
-                    stockDespuesReal      // 👈 Foto 2
+                    x.cod, x.nom, "TRANSFERENCIA (ENTRADA)", cantRecibidaTotal, 
+                    pO.pv || 0, x.cReal || pO.cos || 0,
+                    stockAntesReal, stockDespuesReal
                 );
             }
         } 
+
+        // 🚨 2. MANEJO DEL FALTANTE
+        let faltante = parseFloat((cantEnviada - cantRecibidaTotal).toFixed(3));
+        
+        if (faltante > 0) {
+            detallesFaltantes.push(`- ${faltante} de ${x.nom}`); // 📝 Anotamos el producto faltante
+
+            let stockAntesOrigen = parseFloat(pO.stock[oriLimpio]) || 0;
+            let stockDespuesOrigen = parseFloat((stockAntesOrigen + faltante).toFixed(3));
+            
+            pO.stock[oriLimpio] = stockDespuesOrigen;
+
+            if(typeof db !== 'undefined') {
+                let campoStockOrigen = `stock.${oriLimpio}`;
+                db.collection("inventario").doc(String(x.cod)).set({
+                    [campoStockOrigen]: firebase.firestore.FieldValue.increment(faltante)
+                }, { merge: true }).catch(e => console.error("Error devolviendo a Origen:", e));
+            }
+
+            if(typeof registrarEnKardex === 'function') {
+                registrarEnKardex(
+                    x.cod, x.nom, "DEVOLUCIÓN DE ENVÍO (FALTANTE)", faltante, 
+                    pO.pv || 0, x.cReal || pO.cos || 0,
+                    stockAntesOrigen, stockDespuesOrigen,
+                    oriLimpio
+                );
+            }
+        }
     }); 
     
-    transferencias[tIndex].estado = 'completada'; 
-    transferencias[tIndex].obs = document.getElementById('r_proc_obs').value; 
-    transferencias[tIndex].items_recibidos = [...carR]; 
+    trans.estado = 'completada'; 
+    trans.obs = document.getElementById('r_proc_obs').value; 
+    trans.items_recibidos = [...carR]; 
     
-    localStorage.setItem("pos_precision_v6", JSON.stringify(inv)); 
-    localStorage.setItem("pos_transferencias_v6", JSON.stringify(transferencias)); 
-    
-    if(typeof db !== 'undefined') db.collection("transferencias").doc(String(idTransferenciaActual)).set(transferencias[tIndex]);
+    // 📩 NUEVO: Preparamos el mensaje para la sucursal de origen si hubo faltantes
+    if (detallesFaltantes.length > 0) {
+        trans.hay_mensaje_origen = true;
+        trans.origen_enterado = false;
+        trans.mensaje_origen = `⚠️ ATENCIÓN SUCURSAL ${oriLimpio}:\n\nLa sucursal ${sucursalActual} recibió tu envío (Folio: ${trans.id}), pero reportó que FALTÓ lo siguiente:\n${detallesFaltantes.join('\n')}\n\n✅ Este faltante ya fue regresado a tu inventario automáticamente.`;
+    }
 
-    alert("✅ Recepción completada. El stock se sumó correctamente a tu inventario."); 
+    try { localStorage.setItem("pos_precision_v6", JSON.stringify(inv)); } catch(e){}
+    try { localStorage.setItem("pos_transferencias_v6", JSON.stringify(transferencias)); } catch(e){}
+    
+    if(typeof db !== 'undefined') db.collection("transferencias").doc(String(idTransferenciaActual)).set(trans);
+
+    alert("✅ Recepción completada. El stock recibido se sumó a tu inventario y los faltantes regresaron al origen."); 
     renderI(); cerrarModales(); actualizarContadorRecepciones(); 
-}
+};
 
 // ====================================================================
 // === 🛑 MÓDULO DE CIERRE DE CAJA (CORTE Z / X) ======================
@@ -6057,25 +6630,28 @@ async function ejecutarAnulacionCompra() {
         // 🌟 SUCURSAL REAL DE LA COMPRA: Usamos la sucursal marcada en el ticket
         let sucursalOrigen = compraReal.sucursal || sucursalActual;
 
-        // 🌟 1. AJUSTE FINANCIERO DEL PROVEEDOR (MULTISUCURSAL)
+        // 🌟 1. AJUSTE FINANCIERO DEL PROVEEDOR BLINDADO
         let nomProv = compraReal.proveedor || compraReal.prov || "";
         let esCredito = compraReal.es_credito || (compraReal.metodo && String(compraReal.metodo).toLowerCase().includes('cr'));
 
         if (nomProv && proveedores[nomProv] && esCredito) {
             let dineroARestar = parseFloat(compraReal.monto_credito) || parseFloat(compraReal.total) || 0;
             let saldoActual = parseFloat(proveedores[nomProv].saldo) || 0;
-            let nuevoSaldo = Math.max(0, saldoActual - dineroARestar);
+            let nuevoSaldo = parseFloat((Math.max(0, saldoActual - dineroARestar)).toFixed(2));
             
             // Actualizamos en memoria local
             proveedores[nomProv].saldo = nuevoSaldo;
+            try { localStorage.setItem("pos_proveedores_v1", JSON.stringify(proveedores)); } catch(e){}
             
-            // Guardamos en la base de datos
+            // ☁️ 🚀 DEUDA BLINDADA: Firebase descuenta el dinero de forma segura
             if (typeof db !== 'undefined') {
-                db.collection("proveedores").doc(nomProv).set(proveedores[nomProv]).catch(e => console.error(e));
+                db.collection("proveedores").doc(nomProv).set({
+                    saldo: firebase.firestore.FieldValue.increment(-dineroARestar)
+                }, { merge: true }).catch(e => console.error("Error financiero en la nube:", e));
             }
         }
 
-        // 📦 2. DEVOLUCIÓN DE STOCK Y KARDEX (Respetando la sucursal de origen)
+        // 📦 2. DEVOLUCIÓN DE STOCK Y KARDEX BLINDADA
         let listaArticulos = compraReal.items || compraReal.detalles || [];
         listaArticulos.forEach(item => {
             try {
@@ -6091,30 +6667,45 @@ async function ejecutarAnulacionCompra() {
                     }
 
                     let stockAntesReal = parseFloat(pMaestro.stock[sucursalOrigen]) || 0;
-                    let stockDespuesReal = stockAntesReal - parseFloat(item.can);
+                    let cantDevuelta = parseFloat(item.can);
+                    let stockDespuesReal = parseFloat((stockAntesReal - cantDevuelta).toFixed(3));
                     
-                    // Restamos stock en la SUCURSAL CORRECTA de la compra
+                    // Restamos stock localmente
                     pMaestro.stock[sucursalOrigen] = stockDespuesReal;
                     
+                    // ☁️ 🚀 SUBIDA BLINDADA (Firebase resta dinámicamente solo en esta sucursal)
                     if (typeof db !== 'undefined') {
-                        db.collection("inventario").doc(String(codMaestro)).set(pMaestro);
+                        let campoStock = `stock.${sucursalOrigen}`;
+                        db.collection("inventario").doc(String(codMaestro)).set({
+                            [campoStock]: firebase.firestore.FieldValue.increment(-cantDevuelta)
+                        }, { merge: true });
                     }
                     
                     if (typeof registrarEnKardex === 'function') {
                         let nomAnotar = item.nom || pOriginal.nom || pMaestro.nom || "Artículo Desconocido";
-                        registrarEnKardex(codMaestro, nomAnotar, "ANULACIÓN COMPRA", -item.can, 0, item.cos, stockAntesReal, stockDespuesReal);
+                        // Inyectamos la sucursalOrigen para que quede asentado en el lugar correcto
+                        registrarEnKardex(codMaestro, nomAnotar, "ANULACIÓN COMPRA", -cantDevuelta, 0, item.cos, stockAntesReal, stockDespuesReal, sucursalOrigen);
                     }
                 }
             } catch (errItem) {
                 console.error(`⚠️ Error al devolver item ${item.cod}:`, errItem);
             }
         });
+        
+        // 🛡️ PARACAÍDAS DE MEMORIA PARA EL INVENTARIO
+        try { localStorage.setItem("pos_precision_v6", JSON.stringify(inv)); } catch(e){}
 
         // 🏷️ 3. SELLAMOS LA COMPRA COMO ANULADA
         compraReal.anulada = true;
-        localStorage.setItem("pos_compras_local", JSON.stringify(compras));
+        try { 
+            localStorage.setItem("pos_compras_local", JSON.stringify(compras)); 
+        } catch(e) { 
+            console.warn("Memoria local de compras llena, pero se guardará en la nube exitosamente."); 
+        }
+        
         if (typeof db !== 'undefined') {
-            db.collection("compras").doc(String(compraReal.id)).set(compraReal);
+            // Solo subimos la bandera al documento, no sobreescribimos toda la compra
+            db.collection("compras").doc(String(compraReal.id)).set({ anulada: true }, { merge: true });
         }
 
         if (visorComprasIndices && visorComprasIndices[currentVisorCompraPos]) {
@@ -6123,7 +6714,7 @@ async function ejecutarAnulacionCompra() {
 
         alert("✅ Compra anulada. Se restó el stock y el saldo del proveedor en su sucursal correspondiente.");
         
-        // 🔄 4. REFRESCAMOS PANTALLAS (Con filtro 'Todas' activo para visualizar el cambio)
+        // 🔄 4. REFRESCAMOS PANTALLAS
         if (typeof renderVisorCompraActiva === 'function') renderVisorCompraActiva(); 
         if (typeof renderI === 'function') renderI();
         if (typeof renderProveedores === 'function') renderProveedores();
@@ -6579,31 +7170,39 @@ function aprobarYAjustarInventario() {
 
         sesionEnRevisionActiva.conteo.forEach((item) => {
             if (window.memoriaFaltantes.has(String(item.cod))) {
-                let prod = inv[item.cod];
-                if (prod) {
-                    let stockActualEnVivo = prod.stock ? (prod.stock[sucursalActual] || 0) : 0;
-                    let stockCongelado = item.stock_congelado !== undefined ? item.stock_congelado : stockActualEnVivo;
+                
+                // 🌟 MAGIA MAESTRO-ESPEJO: Si auditan un espejo, el ajuste va al Maestro
+                let pOriginal = inv[item.cod] || {};
+                let codMaestro = (pOriginal.grupo && inv[pOriginal.grupo]) ? pOriginal.grupo : item.cod;
+                let prod = inv[codMaestro] || pOriginal;
+
+                if (prod && prod.nom) {
+                    // 🛡️ REDONDEO A 3 DECIMALES
+                    let stockActualEnVivo = prod.stock ? (parseFloat(prod.stock[sucursalActual]) || 0) : 0;
+                    let stockCongelado = item.stock_congelado !== undefined ? parseFloat(item.stock_congelado) : stockActualEnVivo;
                     let conteoDelCajero = parseFloat(item.can_fisica) || 0;
                     
-                    let ajusteMatematico = conteoDelCajero - stockCongelado;
-                    let stockFinalCalculado = stockActualEnVivo + ajusteMatematico;
+                    let ajusteMatematico = parseFloat((conteoDelCajero - stockCongelado).toFixed(3));
+                    let stockFinalCalculado = parseFloat((stockActualEnVivo + ajusteMatematico).toFixed(3));
 
                     if (!prod.stock) prod.stock = {};
                     prod.stock[sucursalActual] = stockFinalCalculado;
-                    
-                    // 🌟 ESCUDO 1: Renovar la hora para forzar a la Nube a aceptar el cambio
                     prod.updatedAt = Date.now();
 
-                    // 🌟 ESCUDO 2: Convertir el ID a texto (String) para que Firebase no colapse
+                    // ☁️ 🚀 BLINDAJE FIREBASE: Solo mandamos el ajuste matemático sin aplastar ventas
                     if (typeof db !== 'undefined') {
-                        db.collection("inventario").doc(String(item.cod)).set(prod)
-                        .catch(e => console.error("Error al subir a la nube el código " + item.cod, e));
+                        let campoStock = `stock.${sucursalActual}`;
+                        db.collection("inventario").doc(String(codMaestro)).set({
+                            [campoStock]: firebase.firestore.FieldValue.increment(ajusteMatematico),
+                            updatedAt: prod.updatedAt
+                        }, { merge: true }).catch(e => console.error("Error al subir a la nube el código " + codMaestro, e));
                     }
 
                     if (typeof registrarEnKardex === 'function') {
+                        let nomAnotar = item.nom || pOriginal.nom || prod.nom || "Desconocido";
                         registrarEnKardex(
-                            item.cod, 
-                            prod.nom || "Desconocido", 
+                            codMaestro, 
+                            nomAnotar, 
                             "AUDITORÍA INVENTARIO", 
                             ajusteMatematico, 
                             prod.pv || 0, 
@@ -6614,7 +7213,7 @@ function aprobarYAjustarInventario() {
                     }
 
                     itemsAplicados.push({
-                        cod: item.cod,
+                        cod: codMaestro, // Guardamos referencia al código real afectado
                         nom: prod.nom || "Desconocido",
                         stock_anterior: stockActualEnVivo,
                         stock_nuevo: stockFinalCalculado,
@@ -6646,7 +7245,9 @@ function aprobarYAjustarInventario() {
             db.collection("historial_auditorias").doc(idAuditoria).set(registroHistorico);
         }
 
-        let pendientes = JSON.parse(localStorage.getItem('pos_sesiones_inventario') || "[]");
+        let pendientes = [];
+        try { pendientes = JSON.parse(localStorage.getItem('pos_sesiones_inventario') || "[]"); } catch(e){}
+        
         let idxSesion = pendientes.findIndex(b => b.id === sesionEnRevisionActiva.id);
         
         if (idxSesion !== -1) {
@@ -6658,11 +7259,12 @@ function aprobarYAjustarInventario() {
                 pendientes[idxSesion].conteo = conteoRestante;
                 sesionEnRevisionActiva.conteo = conteoRestante;
             }
-            localStorage.setItem('pos_sesiones_inventario', JSON.stringify(pendientes));
+            // 🛡️ PARACAÍDAS PARA AUDITORÍAS
+            try { localStorage.setItem('pos_sesiones_inventario', JSON.stringify(pendientes)); } catch(e){ console.warn("Memoria local de auditorías llena."); }
         }
 
-        // 🌟 PARCHE DE SINCRONIZACIÓN: Guardamos la memoria antes de redibujar
-        localStorage.setItem("pos_precision_v6", JSON.stringify(inv));
+        // 🌟 PARCHE DE SINCRONIZACIÓN Y PARACAÍDAS
+        try { localStorage.setItem("pos_precision_v6", JSON.stringify(inv)); } catch(e){ console.warn("Memoria local de inventario llena."); }
 
         alert(`✅ Éxito. Se actualizaron ${itemsAplicados.length} artículos.\nFaltan ${conteoRestante.length} por revisar.`);
         
@@ -7355,4 +7957,279 @@ window.cambiarFiltroTop = function(nuevoFiltro) {
     
     // Redibujar la tabla con el orden solicitado al momento
     window.dibujarTopProductos();
+};
+// Variable global para controlar la sesión activa
+window.sesionCajaActual = null;
+
+// Cargar la sesión activa al abrir el punto de venta
+function cargarSesionCajaActiva() {
+    try {
+        let sesionGuardada = localStorage.getItem("pos_sesion_activa");
+        if (sesionGuardada) {
+            window.sesionCajaActual = JSON.parse(sesionGuardada);
+        }
+    } catch (e) {
+        console.error("Error al cargar sesión local:", e);
+    }
+}
+cargarSesionCajaActiva();
+
+// Función para Abrir Turno / Caja
+window.abrirMontoInicialCaja = function() {
+    if (window.sesionCajaActual && window.sesionCajaActual.estado === 'abierta') {
+        return alert(`⚠️ Ya existe un turno abierto para la sucursal ${sucursalActual} por el cajero ${window.sesionCajaActual.cajero}`);
+    }
+
+    let fondoInput = prompt("💵 Ingresa el Fondo Inicial de Caja (Efectivo para cambio):", "1000");
+    if (fondoInput === null) return; // Canceló el usuario
+
+    let fondo = parseFloat(fondoInput) || 0;
+    let idSesion = Date.now();
+
+    window.sesionCajaActual = {
+        id: idSesion,
+        cajero: usuarioActual || "Cajero",
+        sucursal: sucursalActual || "Matriz",
+        estado: 'abierta',
+        fecha_apertura: (typeof getFechaLocal === 'function' ? getFechaLocal() : new Date().toISOString().split('T')[0]) + " " + new Date().toLocaleTimeString(),
+        monto_inicial: fondo
+    };
+
+    // Guardado local y en nube
+    try { localStorage.setItem("pos_sesion_activa", JSON.stringify(window.sesionCajaActual)); } catch(e){}
+    if (typeof db !== 'undefined') {
+        db.collection("cajas_sesiones").doc(String(idSesion)).set(window.sesionCajaActual)
+          .catch(e => console.error("Error guardando sesión en nube:", e));
+    }
+
+    alert(`✅ Caja abierta con éxito. Fondo Inicial: $${fondo.toFixed(2)}`);
+    if (typeof renderCorte === 'function') renderCorte();
+};
+
+
+
+// Carga la sesión desde la memoria local
+function cargarSesionCajaActiva() {
+    try {
+        let sesionGuardada = localStorage.getItem("pos_sesion_activa");
+        if (sesionGuardada) {
+            window.sesionCajaActual = JSON.parse(sesionGuardada);
+        }
+    } catch (e) {
+        console.error("Error al cargar sesión local:", e);
+    }
+}
+cargarSesionCajaActiva();
+
+// Actualiza los colores y texto de los botones según el estado
+// 1. Cargador blindado
+window.cargarSesionCajaActiva = function() {
+    try {
+        let sesionGuardada = localStorage.getItem("pos_sesion_activa");
+        if (sesionGuardada) {
+            window.sesionCajaActual = JSON.parse(sesionGuardada);
+        }
+    } catch (e) {
+        console.error("Error al cargar sesión local:", e);
+    }
+};
+
+// 2. Ejecutar al iniciar el código
+cargarSesionCajaActiva();
+
+// 3. Interfaz visual a prueba de recargas (F5)
+window.actualizarIndicadorTurnoUI = function() {
+    // 🛡️ PARACAÍDAS: Si la variable en memoria está vacía, forzamos lectura del disco duro
+    if (!window.sesionCajaActual) {
+        cargarSesionCajaActiva();
+    }
+
+    let lblEstado = document.getElementById('lbl_estado_turno');
+    let lblInfo = document.getElementById('lbl_info_turno');
+    let btnAbrir = document.getElementById('btn_abrir_turno');
+    let btnCerrar = document.getElementById('btn_cerrar_turno');
+
+    if (!lblEstado) return;
+
+    if (window.sesionCajaActual && window.sesionCajaActual.estado === 'abierta') {
+        lblEstado.innerText = "ABIERTO 🟢";
+        lblEstado.style.color = "#28a745";
+        lblInfo.innerText = `Cajero: ${window.sesionCajaActual.cajero} | Apertura: ${window.sesionCajaActual.fecha_apertura} | Fondo Inicial: $${parseFloat(window.sesionCajaActual.monto_inicial || 0).toFixed(2)}`;
+        
+        if (btnAbrir) btnAbrir.style.display = 'none';
+        if (btnCerrar) btnCerrar.style.display = 'inline-flex';
+    } else {
+        lblEstado.innerText = "CERRADO 🔴";
+        lblEstado.style.color = "#dc3545";
+        lblInfo.innerText = "No hay una caja abierta en esta sucursal. Inicia un turno para comenzar.";
+        
+        if (btnAbrir) btnAbrir.style.display = 'inline-flex';
+        if (btnCerrar) btnCerrar.style.display = 'none';
+    }
+};
+// Se ejecuta al cargar el script para sincronizar la interfaz de inmediato
+if (document.readyState === 'complete' || document.readyState === 'interactive') {
+    setTimeout(actualizarIndicadorTurnoUI, 300);
+} else {
+    document.addEventListener("DOMContentLoaded", () => {
+        setTimeout(actualizarIndicadorTurnoUI, 300);
+    });
+}
+
+// 🔓 INICIAR TURNO
+window.abrirMontoInicialCaja = function() {
+    if (window.sesionCajaActual && window.sesionCajaActual.estado === 'abierta') {
+        return alert(`⚠️ Ya existe un turno abierto para la sucursal ${sucursalActual} por el cajero ${window.sesionCajaActual.cajero}`);
+    }
+
+    let fondoInput = prompt("💵 Ingresa el Fondo Inicial de Caja (Efectivo para dar cambio):", "1000");
+    if (fondoInput === null) return; 
+
+    let fondo = parseFloat(fondoInput) || 0;
+    let idSesion = Date.now();
+
+    window.sesionCajaActual = {
+        id: idSesion,
+        cajero: usuarioActual || "Cajero",
+        sucursal: String(sucursalActual || "Matriz").replace(/📍/g, '').trim(),
+        estado: 'abierta',
+        fecha_apertura: (typeof getFechaLocal === 'function' ? getFechaLocal() : new Date().toISOString().split('T')[0]) + " " + new Date().toLocaleTimeString(),
+        monto_inicial: fondo
+    };
+
+    try { localStorage.setItem("pos_sesion_activa", JSON.stringify(window.sesionCajaActual)); } catch(e){}
+    
+    if (typeof db !== 'undefined') {
+        db.collection("cajas_sesiones").doc(String(idSesion)).set(window.sesionCajaActual)
+          .catch(e => console.error("Error guardando sesión en nube:", e));
+    }
+
+    alert(`✅ Turno iniciado con éxito. Fondo Inicial: $${fondo.toFixed(2)}`);
+    actualizarIndicadorTurnoUI();
+    if (typeof renderCorte === 'function') renderCorte();
+};
+
+// 🔒 FINALIZAR TURNO (VINCULADO AL CORTE Y CON MATEMÁTICA EXACTA ESTRICTA)
+window.cerrarTurnoActual = function() {
+    if (!window.sesionCajaActual || window.sesionCajaActual.estado !== 'abierta') {
+        return alert("⚠️ No hay ninguna sesión de caja abierta actualmente.");
+    }
+
+    // 🔄 1. LLAMAMOS AL CORTE DE CAJA PRIMERO
+    if (typeof renderCorte === 'function') {
+        let hoy = typeof getFechaLocal === 'function' ? getFechaLocal() : new Date().toISOString().split('T')[0];
+        let inputInicio = document.getElementById('corte_fecha_inicio');
+        let inputFin = document.getElementById('corte_fecha_fin');
+        if (inputInicio) inputInicio.value = hoy;
+        if (inputFin) inputFin.value = hoy;
+        renderCorte();
+    }
+
+    // 🧮 2. MATEMÁTICA EXACTA DEL TURNO (A prueba de otras sucursales)
+    let idSesion = window.sesionCajaActual.id;
+    let sucTurno = window.sesionCajaActual.sucursal || String(typeof sucursalActual !== 'undefined' ? sucursalActual : "Matriz").replace(/📍/g, '').trim();
+    let cajeroTurno = window.sesionCajaActual.cajero;
+    let fechaHoy = typeof getFechaLocal === 'function' ? getFechaLocal() : new Date().toISOString().split('T')[0];
+
+    let fondo = parseFloat(window.sesionCajaActual.monto_inicial) || 0;
+    
+    // A) Sumar Ventas cobradas en Efectivo durante el turno
+    let ventasEfectivo = 0;
+    if(typeof ventas !== 'undefined') {
+        ventasEfectivo = ventas.filter(v => {
+            if (v.anulada || !v.metodo.includes("Efectivo")) return false;
+            if (v.id_sesion_caja === idSesion) return true;
+            // 🔒 Candado de respaldo:
+            let sucMov = v.sucursal || "Matriz";
+            return (v.fecha === fechaHoy && sucMov === sucTurno && v.cajero === cajeroTurno);
+        }).reduce((acc, v) => acc + (parseFloat(v.total) || 0), 0);
+    }
+    
+    // B) Restar Retiros y Gastos sacados de caja
+    let retirosGastos = 0;
+    if(typeof movimientos !== 'undefined') {
+        retirosGastos = movimientos.filter(m => {
+            if (m.anulado || (m.tipo !== "Retiro" && m.tipo !== "Gasto")) return false;
+            if (m.id_sesion_caja === idSesion) return true;
+            // 🔒 Candado de respaldo:
+            let sucMov = m.sucursal || "Matriz";
+            return (m.fecha === fechaHoy && sucMov === sucTurno && m.cajero === cajeroTurno);
+        }).reduce((acc, m) => acc + (parseFloat(m.monto) || 0), 0);
+    }
+
+    // C) 🚨 Restar COMPRAS pagadas en efectivo de ESTA caja
+    let comprasEfectivo = 0;
+    if (typeof compras !== 'undefined') {
+        comprasEfectivo = compras.filter(c => {
+            if (c.anulada || c.metodo !== "Efectivo") return false;
+            // 1. Prioridad: Si tiene ID de sesión, es de este turno 100% seguro.
+            if (c.id_sesion_caja === idSesion) return true;
+            // 2. 🔒 Candado estricto: Si es una compra antigua sin ID, DEBE ser de esta sucursal y este cajero.
+            let sucCompra = c.sucursal || "Matriz";
+            return (c.fecha === fechaHoy && sucCompra === sucTurno && c.cajero === cajeroTurno);
+        }).reduce((acc, c) => acc + (parseFloat(c.total) || 0), 0);
+    }
+
+    // Total Esperado Físicamente en el Cajón
+    let efEsperado = fondo + ventasEfectivo - retirosGastos - comprasEfectivo;
+
+    // 💵 3. ARQUEO FÍSICO CON DESGLOSE
+    let detalleMatematico = `Fondo Inicial: $${fondo.toFixed(2)}\n(+) Ventas Efectivo: $${ventasEfectivo.toFixed(2)}\n(-) Gastos/Retiros: $${retirosGastos.toFixed(2)}\n(-) Compras: $${comprasEfectivo.toFixed(2)}\n=======================\nESPERADO EN CAJA: $${efEsperado.toFixed(2)}`;
+
+    let conteoInput = prompt(`🔒 CIERRE DE CAJA / ARQUEO\n\n${detalleMatematico}\n\n👉 Ingrese el dinero real en EFECTIVO que contó físicamente en el cajón:`, efEsperado.toFixed(2));
+    
+    if (conteoInput === null) return; // Si le da cancelar, se aborta el cierre
+
+    let conteoFisico = parseFloat(conteoInput) || 0;
+    let diferencia = conteoFisico - efEsperado;
+
+    let msgDiferencia = diferencia === 0 ? " Exacto (Sin diferencias)" : (diferencia > 0 ? ` Sobrante de +$${diferencia.toFixed(2)}` : ` Faltante de -$${Math.abs(diferencia).toFixed(2)}`);
+
+    // ⚠️ 4. CONFIRMACIÓN FINAL
+    if (!confirm(`¿Confirmas cerrar el turno con los siguientes datos?\n\n- Efectivo Contado: $${conteoFisico.toFixed(2)}\n- Balance:${msgDiferencia}`)) return;
+
+    // 💾 5. GUARDADO DE DATOS
+    window.sesionCajaActual.estado = 'cerrada';
+    window.sesionCajaActual.fecha_cierre = (typeof getFechaLocal === 'function' ? getFechaLocal() : new Date().toISOString().split('T')[0]) + " " + new Date().toLocaleTimeString();
+    window.sesionCajaActual.efectivo_esperado = parseFloat(efEsperado.toFixed(2));
+    window.sesionCajaActual.efectivo_declarado = parseFloat(conteoFisico.toFixed(2));
+    window.sesionCajaActual.diferencia = parseFloat(diferencia.toFixed(2));
+
+    let idSesionGuardada = window.sesionCajaActual.id;
+
+    if (typeof db !== 'undefined') {
+        try {
+            db.collection("cajas_sesiones").doc(String(idSesionGuardada)).set(window.sesionCajaActual, { merge: true })
+              .catch(e => console.warn("Aviso nube:", e));
+        } catch(e) {}
+    }
+
+    // 🧹 6. LIMPIEZA Y CIERRE VISUAL
+    window.sesionCajaActual = null;
+    try { localStorage.removeItem("pos_sesion_activa"); } catch(e){}
+
+    alert(`✅ Turno cerrado correctamente.${msgDiferencia}`);
+    
+    if (typeof actualizarIndicadorTurnoUI === 'function') actualizarIndicadorTurnoUI();
+    if (typeof renderCorte === 'function') renderCorte();
+};
+// 🌟 VERIFICADOR AUTOMÁTICO DE TURNO AL ENTRAR AL SISTEMA
+window.verificarOAbrirTurnoAlLogin = function() {
+    // Si no hay sesión o la sesión previa ya está abierta, no hacemos nada
+    if (window.sesionCajaActual && window.sesionCajaActual.estado === 'abierta') {
+        if (typeof actualizarIndicadorTurnoUI === 'function') actualizarIndicadorTurnoUI();
+        return;
+    }
+
+    // Si la caja está cerrada, lanzamos el prompt de apertura
+    setTimeout(() => {
+        let confirmApertura = confirm(`🏪 ¡Bienvenido ${usuarioActual || ''}!\n\nLa caja registradora de la sucursal [ ${sucursalActual || 'Matriz'} ] se encuentra CERRADA.\n\n¿Deseas iniciar turno e ingresar el Fondo Inicial ahora mismo?`);
+        
+        if (confirmApertura) {
+            abrirMontoInicialCaja();
+        } else {
+            alert("⚠️ Recuerda que para poder registrar ventas o cortes en este turno deberás iniciar la caja desde el panel superior en 'Corte de Caja'.");
+            if (typeof actualizarIndicadorTurnoUI === 'function') actualizarIndicadorTurnoUI();
+        }
+    }, 500); // Pequeño delay para dejar cargar la pantalla
 };
