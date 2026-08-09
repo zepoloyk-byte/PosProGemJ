@@ -1282,30 +1282,69 @@ window.descontarStock = function(cod, cantidad) {
         if (!p) return;
 
         let sucReal = String(typeof sucursalActual !== 'undefined' ? sucursalActual : "Matriz").replace(/📍/g, '').trim();
+        
+        // 🛡️ 1. PRESERVAMOS PROPIEDADES CRÍTICAS (Evitamos que pierda GRANEL)
+        let tipoOriginal = p.tipo || "GRANEL";
         if (!p.stock) p.stock = {};
 
-        // 1. Actualización en memoria local
-        let stockPrevio = parseFloat(p.stock[sucReal]) || 0;
-        let stockNuevo = parseFloat((stockPrevio - cantNum).toFixed(3));
-        p.stock[sucReal] = stockNuevo;
+        // 2. Actualización en memoria local
+        let stockPrevio = 0;
+        if (typeof p.stock === 'object') {
+            stockPrevio = parseFloat(p.stock[sucReal]) || 0;
+            p.stock[sucReal] = parseFloat((stockPrevio - cantNum).toFixed(3));
+        } else {
+            stockPrevio = parseFloat(p.stock) || 0;
+            p.stock = parseFloat((stockPrevio - cantNum).toFixed(3));
+        }
 
-        // 2. Actualización en la Nube
+        // Mantenemos la propiedad tipo intacta
+        p.tipo = tipoOriginal;
+
+        // Actualizar en variables globales locales
+        if (typeof inv !== 'undefined' && inv[cod]) inv[cod].tipo = tipoOriginal;
+        if (typeof productos !== 'undefined' && productos[cod]) productos[cod] = p;
+
+        // Guardar respaldo local en LocalStorage
+        try {
+            if (typeof inv !== 'undefined') localStorage.setItem("pos_inventario_v1", JSON.stringify(inv));
+            if (typeof productos !== 'undefined') localStorage.setItem("pos_productos_v1", JSON.stringify(productos));
+        } catch(e) {}
+
+        // 3. Actualización en la Nube (Sincronizamos 'productos' e 'inventario' sin borrar propiedades)
         if (typeof db !== 'undefined' && db) {
-            let campoStock = `stock.${sucReal}`;
-
-            // Si tienes Firebase oficial
+            
+            // Método A: Si usas Firebase Oficial con FieldValue
             if (typeof firebase !== 'undefined' && firebase.firestore && firebase.firestore.FieldValue) {
-                db.collection("inventario").doc(cod).set({
-                    [campoStock]: firebase.firestore.FieldValue.increment(-cantNum)
-                }, { merge: true }).catch(e => console.error("Error nube:", e));
+                let campoStock = `stock.${sucReal}`;
+                let payload = {
+                    [campoStock]: firebase.firestore.FieldValue.increment(-cantNum),
+                    tipo: tipoOriginal // 🔥 Mantenemos el tipo siempre
+                };
+
+                db.collection("productos").doc(String(cod)).set(payload, { merge: true }).catch(e => {});
+                db.collection("inventario").doc(String(cod)).set(payload, { merge: true }).catch(e => {});
             } 
-            // Si usas PocketBase (Alternativa)
+            // Método B: Si usas DB local / PocketBase / Alternativa
             else {
-                let updateData = {};
-                updateData[campoStock] = stockNuevo; 
+                let datosActualizados = {
+                    stock: p.stock,
+                    tipo: tipoOriginal,
+                    nombre: p.nombre || p.nom || "Producto"
+                };
+
                 if (typeof db.collection === 'function') {
-                    db.collection("inventario").doc(cod).set(updateData, { merge: true })
-                      .catch(e => console.error("Error nube alternativa:", e));
+                    // Usamos UPDATE si existe para no destruir campos
+                    if (typeof db.collection("productos").doc(String(cod)).update === 'function') {
+                        db.collection("productos").doc(String(cod)).update(datosActualizados).catch(() => {
+                            db.collection("productos").doc(String(cod)).set(p, { merge: true });
+                        });
+                        db.collection("inventario").doc(String(cod)).update(datosActualizados).catch(() => {
+                            db.collection("inventario").doc(String(cod)).set(p, { merge: true });
+                        });
+                    } else {
+                        db.collection("productos").doc(String(cod)).set(p, { merge: true }).catch(e => {});
+                        db.collection("inventario").doc(String(cod)).set(p, { merge: true }).catch(e => {});
+                    }
                 }
             }
         }
@@ -2046,10 +2085,34 @@ async function actualizarAcumuladorDiario(venta, esAnulacion = false) {
 // ====================================================================
 // 🛒 CONFIRMAR VENTA (CONECTADA AL ACUMULADOR)
 // ====================================================================
-window.confirmarVenta = function(cambioFinal = 0) {
+// 💳 VENTA CONECTADA A TERMINAL FÍSICA Y CRÉDITOS
+window.confirmarVenta = async function(cambioFinal = 0) { // 👈 ¡Ojo! Agregamos 'async' aquí
     try {
         let tot = parseFloat(document.getElementById('v_total').innerText); 
         if(tot <= 0 || isNaN(tot)) return;
+
+        // ====================================================================
+        // 🚀 INTERCEPCIÓN DE MERCADO PAGO (SMART POS)
+        // ====================================================================
+        // Buscamos si hay algún pago con tarjeta en este ticket y sumamos cuánto es
+        let montoTarjeta = pagosCobro
+            .filter(p => {
+                let m = p.metodo.toLowerCase();
+                return m.includes('tarjeta') || m.includes('débito') || m.includes('crédito') || m.includes('debito') || m.includes('credito');
+            })
+            .reduce((sum, p) => sum + (parseFloat(p.montoAplicado) || parseFloat(p.monto) || 0), 0);
+
+        // Si hay dinero por cobrar en tarjeta, despertamos a la maquinita
+        if (montoTarjeta > 0) {
+            let cobroTerminalExitoso = await enviarCobroTerminal(montoTarjeta);
+            
+            // Si la terminal da error, está apagada o el cobro falla, abortamos para que el cajero no entregue la mercancía
+            if (!cobroTerminalExitoso) {
+                console.warn("Venta pausada: El cobro en terminal no se completó.");
+                return; // Detenemos la venta aquí mismo
+            }
+        }
+        // ====================================================================
         
         let hoy = (typeof getFechaLocal === 'function' ? getFechaLocal() : new Date().toISOString().split('T')[0]); 
         let idV = Date.now() + Math.floor(Math.random()*1000); 
@@ -2173,7 +2236,6 @@ window.confirmarVenta = function(cambioFinal = 0) {
         // =========================================================
         // 🌟 MAGIA: INYECTAR FILA DE DESCUENTO SI EL TOTAL NO CUADRA
         // =========================================================
-        // Calculamos la diferencia usando la variable 'tot' que tiene el total real de la venta
         let diferenciaPromo = sumaArticulosSinDescuento - tot;
         
         if (tot > 0 && diferenciaPromo > 0.01) {
@@ -2202,7 +2264,7 @@ window.confirmarVenta = function(cambioFinal = 0) {
         // ====================================================================
         let nuevaV = { 
             id: idV, 
-            id_sesion_caja: (window.sesionCajaActual ? window.sesionCajaActual.id : null), // 👈 VÍNCULO MÁGICO CON EL TURNO
+            id_sesion_caja: (window.sesionCajaActual ? window.sesionCajaActual.id : null),
             fecha: hoy, 
             hora: new Date().toLocaleTimeString(), 
             cajero: usuarioActual, 
@@ -3372,70 +3434,83 @@ function guardarCliente() {
     }
 }
 function abrirModalAbono(tel) { telAbonoActual = tel; document.getElementById('abono_nom').innerText = clientes[tel].nom; document.getElementById('abono_deuda').innerText = (clientes[tel].saldo||0).toFixed(2); document.getElementById('abono_monto').value = ''; document.getElementById('modalAbono').style.display = 'block'; setTimeout(()=>document.getElementById('abono_monto').focus(), 100); }
-window.confirmarAbono = function() { 
-    let monto = parseFloat(document.getElementById('abono_monto').value) || 0; 
-    if(monto <= 0) return; 
+window.confirmarAbono = function() {
+    // 1. Usamos tu variable original exacta
+    let telCli = telAbonoActual; 
     
-    // Obligamos a usar 2 decimales para el dinero
-    monto = parseFloat(monto.toFixed(2));
+    if(!telCli || !clientes[telCli]) return alert("❌ Cliente no encontrado. Cierra la ventana e intenta de nuevo.");
     
-    let c = clientes[telAbonoActual]; 
-    if(!c) return; 
+    let c = clientes[telCli];
+    let monto = parseFloat(document.getElementById('abono_monto').value) || 0;
+    let metodo = document.getElementById('abono_metodo_pago').value;
     
-    let saldoActual = parseFloat(c.saldo) || 0;
+    if (monto <= 0) return alert("❌ Ingresa un monto válido mayor a 0.");
     
-    if(monto > saldoActual) {
-        if(!confirm("⚠️ El abono es mayor a la deuda. ¿Deseas dejarle saldo a favor?")) return; 
-    }
-    
-    let metodoPago = document.getElementById('abono_metodo_pago').value; 
-    
-    // 1. Actualizamos el saldo localmente
-    c.saldo = parseFloat((saldoActual - monto).toFixed(2)); 
-    
-    let idAbono = Date.now(); 
-    
-    // 2. Preparamos el registro para la libreta
-    let nuevoHistorial = {
-        id_venta: idAbono, 
-        fecha: (typeof getFechaLocal === 'function' ? getFechaLocal() : new Date().toISOString().split('T')[0]), 
-        hora: new Date().toLocaleTimeString(),
-        tipo: 'Abono', 
-        monto: monto, 
-        detalle: `Pago con: ${metodoPago}`
-    };
+    // 2. Tomamos el saldo global real
+    let saldoAnterior = parseFloat(c.saldo) || 0;
 
+    // 3. DESCONTAMOS LA DEUDA
+    c.saldo = parseFloat(Math.max(0, saldoAnterior - monto).toFixed(2));
+    
+    let hoy = typeof getFechaLocal === 'function' ? getFechaLocal() : new Date().toISOString().split('T')[0];
+    let hora = new Date().toLocaleTimeString();
+
+    // 4. REGISTRAR EN EL ESTADO DE CUENTA
     if (!c.historial) c.historial = [];
-    c.historial.push(nuevoHistorial);
-    
-    // 🛡️ PARACAÍDAS DE MEMORIA
-    try { localStorage.setItem("pos_clientes_v1", JSON.stringify(clientes)); } catch(e){}
-    
-    // ☁️ 🚀 BLINDAJE FIREBASE: Resta segura y Escritura segura
+    c.historial.push({
+        id_venta: Date.now(), 
+        fecha: hoy, 
+        hora: hora,
+        tipo: 'Abono', 
+        monto: -monto, 
+        detalle: `Pago en ${metodo}`
+    });
+
+    // 5. GUARDAR EN MEMORIA Y EN LA NUBE
+    clientes[telCli] = c;
+    try { localStorage.setItem("pos_clientes_v7", JSON.stringify(clientes)); } catch(e){}
     if (typeof db !== 'undefined') {
-        db.collection("clientes").doc(String(telAbonoActual)).set({
-            saldo: firebase.firestore.FieldValue.increment(-monto),
-            historial: firebase.firestore.FieldValue.arrayUnion(nuevoHistorial)
-        }, { merge: true }).catch(e => console.error("Error al abonar en la nube:", e)); 
-        
-        // Registramos el ticket del abono
-        db.collection("ventas").doc(String(idAbono)).set({ 
-            id: idAbono, 
-            fecha: (typeof getFechaLocal === 'function' ? getFechaLocal() : new Date().toISOString().split('T')[0]), 
-            hora: new Date().toLocaleTimeString(), 
-            cajero: usuarioActual, 
-            sucursal: sucursalActual, 
-            total: monto, 
-            metodo: 'Abono ' + metodoPago, 
-            items: `Abono de ${c.nom}`, 
-            anulada: false 
-        }); 
+        try { db.collection("clientes").doc(String(telCli)).set(c); } catch(e) {}
     }
+
+    // 6. REGISTRAR EL INGRESO EN LA CAJA
+    if (metodo === "Efectivo") {
+        let idMov = Date.now();
+        let miNombre = typeof usuarioActual !== 'undefined' ? usuarioActual : 'Cajero';
+        let idSesionTurno = (window.sesionCajaActual ? window.sesionCajaActual.id : null);
+        let sucMov = typeof sucursalActual !== 'undefined' ? sucursalActual : 'Matriz';
+
+        let nuevoMov = { 
+            id: idMov, 
+            id_sesion_caja: idSesionTurno, 
+            fecha: hoy, 
+            hora: hora, 
+            cajero: miNombre, 
+            sucursal: sucMov, 
+            tipo: "Ingreso", 
+            monto: monto, 
+            motivo: `Abono de deuda: ${c.nom}` 
+        };
+        
+        if(typeof movimientos === 'undefined') window.movimientos = [];
+        movimientos.push(nuevoMov); 
+        
+        try { localStorage.setItem("pos_movimientos_v1", JSON.stringify(movimientos)); } catch(e){}
+        if (typeof db !== 'undefined') {
+            try { db.collection("movimientos").doc(String(idMov)).set(nuevoMov); } catch(e) {}
+        }
+    }
+
+    // Cerramos la ventana
+    document.getElementById('modalAbono').style.display = 'none';
     
-    alert("✅ Abono registrado de forma segura."); 
-    if(typeof cerrarModales === 'function') cerrarModales(); 
-    if(typeof renderClientes === 'function') renderClientes(); // Refrescamos la tabla de clientes
-}
+    // 7. 🌟 FORZAMOS A LA PANTALLA A DIBUJAR LA TABLA ACTUALIZADA 🌟
+    if (typeof renderClientes === 'function') renderClientes();
+    if (typeof filtrarClientes === 'function') filtrarClientes(); 
+    if (typeof renderCorte === 'function') renderCorte();
+    
+    alert(`✅ Abono de $${monto} registrado.\nNuevo saldo de ${c.nom}: $${c.saldo}`);
+};
 function abrirModalAuthCli(tel) { cliAEliminar = tel; document.getElementById('auth_cli_nom').innerText = clientes[tel].nom; document.getElementById('auth_admin_pin_cli').value = ''; document.getElementById('modalAuthAdminCli').style.display = 'block'; setTimeout(() => document.getElementById('auth_admin_pin_cli').focus(), 100); }
 function confirmarEliminacionCli() {
     let pin = document.getElementById('auth_admin_pin_cli').value;
@@ -3501,79 +3576,99 @@ function abrirHistorialProv(nombre) {
 }
 function abrirModalAbonoProv(nombre) { provAbonoActual = nombre; document.getElementById('abono_prov_nom').innerText = nombre; document.getElementById('abono_prov_deuda').innerText = (proveedores[nombre].saldo||0).toFixed(2); document.getElementById('abono_prov_monto').value = ''; document.getElementById('modalAbonoProv').style.display = 'block'; setTimeout(()=>document.getElementById('abono_prov_monto').focus(), 100); }
 window.confirmarAbonoProv = function() {
-    let nom = document.getElementById('abono_prov_nom').innerText; 
-    let monto = parseFloat(document.getElementById('abono_prov_monto').value); 
-    let metodo = document.getElementById('abono_prov_metodo').value;
-    
-    if (isNaN(monto) || monto <= 0) return alert("❌ Monto inválido."); 
-    if (!proveedores[nom]) return alert("❌ Proveedor no encontrado."); 
+    // 1. Usamos tu variable original (igual que con los clientes) o buscamos por nombre
+    let idProv = typeof provAbonoActual !== 'undefined' ? provAbonoActual : null;
 
-    // Forzamos 2 decimales para evitar bugs financieros
-    monto = parseFloat(monto.toFixed(2));
-    let saldoActual = parseFloat(proveedores[nom].saldo) || 0;
-
-    if (monto > saldoActual) {
-        if (!confirm("⚠️ El abono es mayor a la deuda registrada. ¿Deseas continuar?")) return;
+    if (!idProv || !proveedores[idProv]) {
+        let provHtml = document.getElementById('abono_prov_nom').innerText || "";
+        let provBuscado = provHtml.trim().toLowerCase();
+        
+        idProv = Object.keys(proveedores).find(key => {
+            let p = proveedores[key];
+            let nombreP = p.nom || p.nombre || p.proveedor || "";
+            return nombreP.trim().toLowerCase() === provBuscado;
+        });
     }
-    
-    // 1. Actualizamos el saldo localmente
-    proveedores[nom].saldo = parseFloat((saldoActual - monto).toFixed(2));
-    
-    let nuevoHistorial = { 
-        fecha: (typeof getFechaLocal === 'function' ? getFechaLocal() : new Date().toISOString().split('T')[0]), 
-        hora: new Date().toLocaleTimeString(), 
-        tipo: 'Abono', 
-        monto: monto, 
-        detalle: `Pago: ${metodo}` 
-    };
 
-    if (!proveedores[nom].historial) proveedores[nom].historial = [];
-    proveedores[nom].historial.push(nuevoHistorial);
+    if (!idProv || !proveedores[idProv]) {
+        return alert("❌ Proveedor no encontrado. Cierra la ventana e intenta de nuevo.");
+    }
+
+    let p = proveedores[idProv];
+    let monto = parseFloat(document.getElementById('abono_prov_monto').value) || 0;
+    let metodo = document.getElementById('abono_prov_metodo').value;
+
+    if (monto <= 0) return alert("❌ Ingresa un monto válido mayor a 0.");
+
+    // 2. DETECTOR DE VARIABLES (Busca cómo se llama la deuda y el nombre en tu sistema)
+    let nombreReal = p.nom || p.nombre || p.proveedor || "Proveedor";
+    let deudaAnterior = parseFloat(p.deuda !== undefined ? p.deuda : p.saldo) || 0;
+
+    // 3. DESCONTAMOS LA DEUDA
+    let nuevaDeuda = parseFloat(Math.max(0, deudaAnterior - monto).toFixed(2));
     
-    // 2. Movimiento de caja si es en Efectivo (Salida de dinero física)
-    if (metodo === 'Efectivo') {
-        let idMov = Date.now(); 
-        let nm = { 
+    // Lo guardamos en la variable correcta
+    if (p.deuda !== undefined) p.deuda = nuevaDeuda;
+    else p.saldo = nuevaDeuda;
+
+    let hoy = typeof getFechaLocal === 'function' ? getFechaLocal() : new Date().toISOString().split('T')[0];
+    let hora = new Date().toLocaleTimeString();
+
+    // 4. REGISTRAR EN EL HISTORIAL
+    if (!p.historial) p.historial = [];
+    p.historial.push({
+        id_movimiento: Date.now(),
+        fecha: hoy,
+        hora: hora,
+        tipo: 'Abono / Pago',
+        monto: monto, 
+        detalle: `Pago en ${metodo}`
+    });
+
+    // 5. GUARDAR EN MEMORIA Y EN LA NUBE
+    proveedores[idProv] = p;
+    try { localStorage.setItem("pos_proveedores_v1", JSON.stringify(proveedores)); } catch(e){}
+    
+    if (typeof db !== 'undefined') {
+        try { db.collection("proveedores").doc(String(idProv)).set(p); } catch(e) {}
+    }
+
+    // 6. REGISTRAR LA SALIDA DE DINERO EN CAJA (Gasto)
+    if (metodo === "Efectivo") {
+        let idMov = Date.now();
+        let miNombre = typeof usuarioActual !== 'undefined' ? usuarioActual : 'Cajero';
+        let idSesionTurno = (window.sesionCajaActual ? window.sesionCajaActual.id : null);
+        let sucMov = typeof sucursalActual !== 'undefined' ? sucursalActual : 'Matriz';
+
+        let nuevoMov = { 
             id: idMov, 
-            fecha: (typeof getFechaLocal === 'function' ? getFechaLocal() : new Date().toISOString().split('T')[0]), 
-            hora: new Date().toLocaleTimeString(), 
-            tipo: 'Retiro', 
+            id_sesion_caja: idSesionTurno, 
+            fecha: hoy, 
+            hora: hora, 
+            cajero: miNombre, 
+            sucursal: sucMov, 
+            tipo: "Retiro",
             monto: monto, 
-            motivo: `Pago a proveedor: ${nom}`, 
-            cajero: usuarioActual, 
-            sucursal: sucursalActual 
+            motivo: `Pago a proveedor: ${nombreReal}` 
         };
         
-        if (typeof movimientos !== 'undefined') {
-            movimientos.push(nm);
-            // 🛡️ Paracaídas para los retiros de caja locales
-            try { localStorage.setItem("pos_movimientos_v1", JSON.stringify(movimientos)); } catch(e){}
-        }
+        if (typeof movimientos === 'undefined') window.movimientos = [];
+        movimientos.push(nuevoMov); 
+        
+        try { localStorage.setItem("pos_movimientos_v1", JSON.stringify(movimientos)); } catch(e){}
         if (typeof db !== 'undefined') {
-            db.collection("movimientos").doc(String(idMov)).set(nm).catch(e => console.error(e));
+            try { db.collection("movimientos").doc(String(idMov)).set(nuevoMov); } catch(e) {}
         }
     }
+
+    // 7. CERRAR Y ACTUALIZAR PANTALLA
+    document.getElementById('modalAbonoProv').style.display = 'none';
     
-    // 🛡️ 3. Paracaídas de memoria para la agenda de proveedores
-    try { localStorage.setItem("pos_proveedores_v1", JSON.stringify(proveedores)); } catch(e){} 
+    if (typeof renderProveedores === 'function') renderProveedores();
+    if (typeof renderCorte === 'function') renderCorte();
     
-    // ☁️ 🚀 4. BLINDAJE FIREBASE: Resta segura de deuda y guardado en libreta sin choques
-    if (typeof db !== 'undefined') {
-        db.collection("proveedores").doc(nom).set({
-            saldo: firebase.firestore.FieldValue.increment(-monto),
-            historial: firebase.firestore.FieldValue.arrayUnion(nuevoHistorial)
-        }, { merge: true }).catch(e => console.error("Error al abonar a proveedor en la nube:", e));
-    }
-    
-    if (typeof cerrarModales === 'function') cerrarModales(); 
-    if (typeof renderProveedores === 'function') renderProveedores(); 
-    
-    // Refrescamos el corte si estamos en esa pestaña
-    let tabCorte = document.getElementById('r-tab');
-    if (tabCorte && tabCorte.style.display === 'block' && typeof renderCorte === 'function') renderCorte(); 
-    
-    alert("✅ Abono a proveedor registrado de forma segura.");
-}
+    alert(`✅ Pago de $${monto} aplicado correctamente.\nNueva deuda de ${nombreReal}: $${nuevaDeuda}`);
+};
 function abrirModalAuthProv(nombre) { window.provActualEliminar = nombre; document.getElementById('auth_prov_nom').innerText = nombre; document.getElementById('auth_admin_pin').value = ''; document.getElementById('modalAuthAdminProv').style.display = 'block'; setTimeout(() => document.getElementById('auth_admin_pin').focus(), 100); }
 function confirmarEliminacionProv() {
     let prov = window.provActualEliminar; if (!prov || !proveedores[prov]) return;
@@ -3645,7 +3740,7 @@ function abrirModalMovimiento() {
 }
 
 // 💾 3. GUARDADO CONTABLE DOBLE VÍA
-function guardarMovimiento() {
+window.guardarMovimiento = function() {
     let tipo = document.getElementById('mov_tipo').value; 
     let monto = parseFloat(document.getElementById('mov_monto').value) || 0; 
     let motivo = document.getElementById('mov_motivo').value.trim() || 'Manual';
@@ -3654,6 +3749,7 @@ function guardarMovimiento() {
     let miNombre = typeof usuarioActual !== 'undefined' ? usuarioActual : 'Admin';
     let hoy = typeof getFechaLocal === 'function' ? getFechaLocal() : new Date().toISOString().split('T')[0];
     let hora = new Date().toLocaleTimeString();
+    let sucMov = typeof sucursalActual !== 'undefined' ? sucursalActual : 'Matriz';
     
     let idSesionTurno = (window.sesionCajaActual ? window.sesionCajaActual.id : null);
 
@@ -3662,36 +3758,56 @@ function guardarMovimiento() {
         if (!cajeroDestino) return alert("❌ Selecciona quién recibirá el dinero.");
 
         let idBase = Date.now();
-        let descripcionUnica = `🔄 TRASPASO: de ${miNombre} a ${cajeroDestino} (${motivo.toUpperCase()})`;
+        let descripcionUnica = `🔄 TRASPASO ENVIADO: a ${cajeroDestino} (${motivo.toUpperCase()})`;
 
-        // 🚨 CORRECCIÓN AQUÍ: El Retiro es tuyo, el Ingreso NO lleva tu ID de turno
-        let mRetiro = { id: idBase, id_sesion_caja: idSesionTurno, fecha: hoy, hora: hora, cajero: miNombre, sucursal: sucursalActual, tipo: 'Retiro', monto: monto, motivo: descripcionUnica };
-        let mIngreso = { id: idBase + 1, id_sesion_caja: null, fecha: hoy, hora: hora, cajero: cajeroDestino, sucursal: sucursalActual, tipo: 'Ingreso', monto: monto, motivo: descripcionUnica };
-
-        movimientos.push(mRetiro, mIngreso);
+        // 1. REGISTRAMOS LA SALIDA DE DINERO EN TU CAJA (Retiro)
+        let mRetiro = { id: idBase, id_sesion_caja: idSesionTurno, fecha: hoy, hora: hora, cajero: miNombre, sucursal: sucMov, tipo: 'Retiro', monto: monto, motivo: descripcionUnica };
+        
+        if (typeof movimientos === 'undefined') window.movimientos = [];
+        movimientos.push(mRetiro);
+        
         if (typeof db !== 'undefined') {
+            // Guardamos tu retiro en la nube
             db.collection("movimientos").doc(String(mRetiro.id)).set(mRetiro).catch(e=>console.log(e));
-            db.collection("movimientos").doc(String(mIngreso.id)).set(mIngreso).catch(e=>console.log(e));
+            
+            // 🚀 2. DISPARAMOS EL RADAR: Creamos la notificación en la nube
+            let transferenciaDoc = {
+                emisor: miNombre,
+                receptor: cajeroDestino,
+                monto: monto,
+                fecha: hoy,
+                hora: hora,
+                estado: "pendiente" // Esto es lo que activa la pantalla del otro cajero
+            };
+            db.collection("transferencias").doc(String(idBase)).set(transferenciaDoc).catch(e=>console.log(e));
         }
+        
         cerrarModales(); 
-        alert(`✅ Traspaso completado: Se movieron $${monto.toFixed(2)} a la caja de ${cajeroDestino}.`);
+        alert(`✅ Traspaso enviado.\nSe descontaron $${monto.toFixed(2)} de tu caja. Esperando a que ${cajeroDestino} acepte el dinero.`);
     
     } else {
         let idMov = Date.now(); 
-        let nuevoMov = { id: idMov, id_sesion_caja: idSesionTurno, fecha: hoy, hora: hora, cajero: miNombre, sucursal: sucursalActual, tipo: tipo, monto: monto, motivo: motivo };
+        let nuevoMov = { id: idMov, id_sesion_caja: idSesionTurno, fecha: hoy, hora: hora, cajero: miNombre, sucursal: sucMov, tipo: tipo, monto: monto, motivo: motivo };
+        
+        if (typeof movimientos === 'undefined') window.movimientos = [];
         movimientos.push(nuevoMov); 
+        
         if (typeof db !== 'undefined') db.collection("movimientos").doc(String(idMov)).set(nuevoMov).catch(e=>console.log(e));
-        cerrarModales(); alert(`✅ ${tipo} registrado.`); 
+        cerrarModales(); 
+        alert(`✅ ${tipo} registrado.`); 
     }
 
+    // PROTECCIÓN DE MEMORIA LOCAL
     try {
         localStorage.setItem("pos_movimientos_v1", JSON.stringify(movimientos));
     } catch (e) {
         movimientos = movimientos.slice(-200); 
         localStorage.setItem("pos_movimientos_v1", JSON.stringify(movimientos));
     }
-    if(typeof tabActual !== 'undefined' && tabActual === 'r-tab' && typeof renderCorte === 'function') renderCorte();
-}
+    
+    // ACTUALIZAR PANTALLA SI ESTAMOS EN EL DASHBOARD
+    if(typeof renderCorte === 'function') renderCorte();
+};
 function registrarGasto() { let monto = parseFloat(prompt("💸 ¿Cuánto vas a retirar?")); if (isNaN(monto) || monto <= 0) return; let motivo = prompt("¿Motivo?"); if (!motivo) return; procesarRetiroCaja(monto, `GASTO: ${motivo.toUpperCase()}`); }
 window.registrarPrecorte = function() { 
     let ef = (typeof calcularEfectivoEnCaja === 'function') ? calcularEfectivoEnCaja() : (currentCorteData ? currentCorteData.esperado : 0); 
@@ -4377,18 +4493,16 @@ window.anularVentaVisor = function() {
     let vReal = ventas[visorIndices[currentVisorPos].indexGlobal]; 
     if(vReal.anulada || !confirm("¿Anular esta venta?\nSe devolverá el stock al sistema y se ajustarán las gráficas.")) return;
     
-    // 📦 1. DEVOLUCIÓN DE STOCK Y KARDEX
+    // 1. DEVOLUCIÓN DE STOCK Y KARDEX
     if(vReal.detalles || vReal.items) { 
         let listaDetalles = vReal.detalles || vReal.items || [];
         listaDetalles.forEach(d => { 
             let sucursalVenta = vReal.sucursal || (typeof sucursalActual !== 'undefined' ? sucursalActual : 'Matriz');
             
-            // 🌟 MAGIA MAESTRO-ESPEJO
             let pOriginal = inv[d.cod] || {}; 
             let codMaestro = d.cod_maestro || (pOriginal.grupo && inv[pOriginal.grupo] ? pOriginal.grupo : d.cod);
             let pMaestro = inv[codMaestro] || pOriginal;
             
-            // 📸 FOTOGRAFÍA 1: Leemos el stock del JEFE
             let stockAntesReal = 0;
             if (pMaestro.stock && typeof pMaestro.stock === 'object') {
                 stockAntesReal = parseFloat(pMaestro.stock[sucursalVenta]) || 0;
@@ -4396,44 +4510,28 @@ window.anularVentaVisor = function() {
                 stockAntesReal = parseFloat(pMaestro.stock) || parseFloat(pMaestro.existencia) || parseFloat(pMaestro.can) || 0;
             }
             
-            // 📸 FOTOGRAFÍA 2: Sumamos la pieza devuelta
             let cantDevuelta = parseFloat(d.can) || 0;
             let stockDespuesReal = parseFloat((stockAntesReal + cantDevuelta).toFixed(3));
 
-            // Guardamos el stock localmente
             if(inv[codMaestro]) { 
                 if(!inv[codMaestro].stock) inv[codMaestro].stock = {}; 
                 inv[codMaestro].stock[sucursalVenta] = stockDespuesReal; 
                 
-                // ☁️ 🚀 SUBIDA BLINDADA A LA NUBE (Compatible PocketBase / Firebase)
-                if (typeof db !== 'undefined' && db) {
-                    let campoStock = `stock.${sucursalVenta}`;
-                    
-                    if (typeof firebase !== 'undefined' && firebase.firestore) {
-                        db.collection("inventario").doc(String(codMaestro)).set({
-                            [campoStock]: firebase.firestore.FieldValue.increment(cantDevuelta)
-                        }, { merge: true }).catch(e => console.error("Error nube:", e)); 
-                    } else {
-                        let updateData = {};
-                        updateData[campoStock] = stockDespuesReal;
-                        if (typeof db.collection === 'function') {
-                            db.collection("inventario").doc(String(codMaestro)).set(updateData, { merge: true }).catch(e => console.error("Error nube:", e));
-                        }
-                    }
+                // Subida limpia a la nube
+                if (typeof db !== 'undefined') {
+                    try { db.collection("inventario").doc(String(codMaestro)).set(inv[codMaestro]); } catch(e) {}
                 }
             } 
             
-            // 🌟 ENVIAMOS LAS FOTOS AL KARDEX
             if (typeof registrarEnKardex === 'function') {
                 registrarEnKardex(codMaestro, d.nom, "ANULACIÓN", cantDevuelta, 0, 0, stockAntesReal, stockDespuesReal, sucursalVenta); 
             }
         }); 
         
-        // 🛡️ PARACAÍDAS DE MEMORIA (Inventario)
         try { localStorage.setItem("pos_precision_v6", JSON.stringify(inv)); } catch(e){}
     }
     
-    // 🌟 2. AJUSTE FINANCIERO DEL CLIENTE BLINDADO
+    // 2. AJUSTE FINANCIERO DEL CLIENTE (Limpio y con historial)
     let met = String(vReal.metodo || "").toLowerCase();
     let esCredito = vReal.es_credito || met.includes('cr');
     let idCliente = vReal.cliente_tel || vReal.cliente || vReal.cli || vReal.nom_cliente || "";
@@ -4446,56 +4544,51 @@ window.anularVentaVisor = function() {
             let saldoActual = parseFloat(clientes[claveCliente].saldo) || 0;
             let nuevoSaldo = parseFloat((Math.max(0, saldoActual - dineroARestar)).toFixed(2));
 
-            // Actualizamos en memoria local
             clientes[claveCliente].saldo = nuevoSaldo;
+            
+            // REGISTRO DE ANULACIÓN EN EL ESTADO DE CUENTA
+            if (!clientes[claveCliente].historial) clientes[claveCliente].historial = [];
+            clientes[claveCliente].historial.push({
+                id_venta: vReal.id,
+                fecha: typeof getFechaLocal === 'function' ? getFechaLocal() : new Date().toISOString().split('T')[0],
+                hora: new Date().toLocaleTimeString(),
+                tipo: 'Anulación',
+                monto: -dineroARestar, 
+                detalle: `Anulación Ticket #${vReal.id}`
+            });
+
             try { localStorage.setItem("pos_clientes_v1", JSON.stringify(clientes)); } catch(e){}
 
-            // ☁️ 🚀 DEUDA BLINDADA A LA NUBE
-            if (typeof db !== 'undefined' && db) {
-                if (typeof firebase !== 'undefined' && firebase.firestore) {
-                    db.collection("clientes").doc(String(claveCliente)).set({
-                        saldo: firebase.firestore.FieldValue.increment(-dineroARestar)
-                    }, { merge: true }).catch(e => console.error(e));
-                } else {
-                    if (typeof db.collection === 'function') {
-                        db.collection("clientes").doc(String(claveCliente)).set({ saldo: nuevoSaldo }, { merge: true }).catch(e => console.error(e));
-                    }
-                }
+            // Subida limpia a la nube
+            if (typeof db !== 'undefined') {
+                try { db.collection("clientes").doc(String(claveCliente)).set(clientes[claveCliente]); } catch(e) {}
             }
         }
     }
     
-    // 🏷️ 3. MARCAMOS COMO ANULADA Y GUARDAMOS EL TICKET
+    // 3. MARCAMOS COMO ANULADA Y GUARDAMOS EL TICKET
     vReal.anulada = true; 
     if (visorIndices && visorIndices[currentVisorPos]) {
         visorIndices[currentVisorPos].anulada = true;
     }
 
-    // Solo subimos los cambios puntuales (la bandera de anulada)
-    let guardarPromesa = (typeof db !== 'undefined' && typeof db.collection === 'function') 
-        ? db.collection("ventas").doc(String(vReal.id)).set({ anulada: true }, { merge: true }) 
-        : Promise.resolve();
+    if (typeof db !== 'undefined') {
+        try { db.collection("ventas").doc(String(vReal.id)).set(vReal); } catch(e) {}
+    }
 
-    guardarPromesa.then(() => {
-        if (typeof actualizarAcumuladorDiario === 'function') {
-            actualizarAcumuladorDiario(vReal, true);
-        }
-        
-        // 🛡️ PARACAÍDAS DE MEMORIA (Ventas)
-        try { localStorage.setItem("pos_ventas_v6", JSON.stringify(ventas)); } catch(e) {}
-        
-        alert("✅ Venta anulada, stock devuelto y saldo restado al cliente correctamente."); 
+    if (typeof actualizarAcumuladorDiario === 'function') {
+        actualizarAcumuladorDiario(vReal, true);
+    }
+    
+    try { localStorage.setItem("pos_ventas_v6", JSON.stringify(ventas)); } catch(e) {}
+    
+    alert("✅ Venta anulada, stock devuelto y saldo restado al cliente correctamente."); 
 
-        // 🔄 4. REFRESCAMOS TODAS LAS PANTALLAS
-        if(typeof renderVisorActivo === 'function') renderVisorActivo(); 
-        if(typeof renderCorte === 'function') renderCorte(); 
-        if(typeof renderTablaInventario === 'function') renderTablaInventario(); 
-        else if(typeof renderI === 'function') renderI(); 
-        if(typeof renderClientes === 'function') renderClientes(); 
-    }).catch(err => {
-        console.error("Error al guardar la anulación en la nube:", err);
-        alert("⚠️ Venta anulada localmente (Error de conexión).");
-    });
+    if(typeof renderVisorActivo === 'function') renderVisorActivo(); 
+    if(typeof renderCorte === 'function') renderCorte(); 
+    if(typeof renderTablaInventario === 'function') renderTablaInventario(); 
+    else if(typeof renderI === 'function') renderI(); 
+    if(typeof renderClientes === 'function') renderClientes(); 
 };
 
 window.devolverArticuloVisor = function(indexDetalle) {
@@ -8031,33 +8124,47 @@ cargarSesionCajaActiva();
 
 // 3. Interfaz visual a prueba de recargas (F5)
 window.actualizarIndicadorTurnoUI = function() {
-    // 🛡️ PARACAÍDAS: Si la variable en memoria está vacía, forzamos lectura del disco duro
-    if (!window.sesionCajaActual) {
-        cargarSesionCajaActiva();
-    }
+    let estaAbierta = window.sesionCajaActual && window.sesionCajaActual.estado === 'abierta';
+    
+    // Listas con los IDs de AMBOS paneles (Dashboard e Inventario)
+    let idsEstado = ['lbl_estado_turno', 'lbl_estado_turno_inv'];
+    let idsInfo = ['lbl_info_turno', 'lbl_info_turno_inv'];
+    let idsAbrir = ['btn_abrir_turno', 'btn_abrir_turno_inv'];
+    let idsCerrar = ['btn_cerrar_turno', 'btn_cerrar_turno_inv'];
 
-    let lblEstado = document.getElementById('lbl_estado_turno');
-    let lblInfo = document.getElementById('lbl_info_turno');
-    let btnAbrir = document.getElementById('btn_abrir_turno');
-    let btnCerrar = document.getElementById('btn_cerrar_turno');
+    // 1. Actualizar el texto y color (ABIERTO/CERRADO)
+    idsEstado.forEach(id => {
+        let el = document.getElementById(id);
+        if (el) {
+            el.innerText = estaAbierta ? "ABIERTO 🟢" : "CERRADO 🔴";
+            el.style.color = estaAbierta ? "#28a745" : "#dc3545";
+        }
+    });
 
-    if (!lblEstado) return;
+    // 2. Actualizar los datos del cajero y la hora
+    idsInfo.forEach(id => {
+        let el = document.getElementById(id);
+        if (el) {
+            if (estaAbierta) {
+                let f = parseFloat(window.sesionCajaActual.monto_inicial) || 0;
+                el.innerText = `Cajero: ${window.sesionCajaActual.cajero} | Apertura: ${window.sesionCajaActual.fecha_apertura} | Fondo Inicial: $${f.toFixed(2)}`;
+            } else {
+                el.innerText = "No hay una caja abierta actualmente en esta sucursal.";
+            }
+        }
+    });
 
-    if (window.sesionCajaActual && window.sesionCajaActual.estado === 'abierta') {
-        lblEstado.innerText = "ABIERTO 🟢";
-        lblEstado.style.color = "#28a745";
-        lblInfo.innerText = `Cajero: ${window.sesionCajaActual.cajero} | Apertura: ${window.sesionCajaActual.fecha_apertura} | Fondo Inicial: $${parseFloat(window.sesionCajaActual.monto_inicial || 0).toFixed(2)}`;
-        
-        if (btnAbrir) btnAbrir.style.display = 'none';
-        if (btnCerrar) btnCerrar.style.display = 'inline-flex';
-    } else {
-        lblEstado.innerText = "CERRADO 🔴";
-        lblEstado.style.color = "#dc3545";
-        lblInfo.innerText = "No hay una caja abierta en esta sucursal. Inicia un turno para comenzar.";
-        
-        if (btnAbrir) btnAbrir.style.display = 'inline-flex';
-        if (btnCerrar) btnCerrar.style.display = 'none';
-    }
+    // 3. Mostrar/Ocultar botón de Abrir
+    idsAbrir.forEach(id => {
+        let el = document.getElementById(id);
+        if (el) el.style.display = estaAbierta ? 'none' : 'flex';
+    });
+
+    // 4. Mostrar/Ocultar botón de Cerrar
+    idsCerrar.forEach(id => {
+        let el = document.getElementById(id);
+        if (el) el.style.display = estaAbierta ? 'flex' : 'none';
+    });
 };
 // Se ejecuta al cargar el script para sincronizar la interfaz de inmediato
 if (document.readyState === 'complete' || document.readyState === 'interactive') {
@@ -8124,30 +8231,56 @@ window.cerrarTurnoActual = function() {
     
     let fondo = parseFloat(window.sesionCajaActual.monto_inicial) || 0;
     
+    // 🔥 FUNCION ESCUDO: Verifica la hora exacta para evitar fantasmas
+    const perteneceAlTurno = (item) => {
+        if (item.id_sesion_caja) return item.id_sesion_caja === idSesion; 
+        
+        // Si no tiene etiqueta, verificamos que sea de hoy
+        let esDeHoy = (item.fecha === fechaHoy && (item.sucursal || "Matriz") === sucTurno);
+        if (!esDeHoy) return false;
+        
+        // ⏰ EL SECRETO: Verificamos si sucedió ANTES de abrir la caja
+        if (item.id && !isNaN(item.id) && idSesion && !isNaN(idSesion)) {
+            if (Number(item.id) < Number(idSesion)) return false; // Fantasma eliminado 👻🚫
+        }
+        return true;
+    };
+    
     // 🧮 1. VENTAS
     let ventasEfectivo = 0, ventasAnuladas = 0;
     if (typeof ventas !== 'undefined' && Array.isArray(ventas)) {
         ventas.forEach(v => {
-            let metodo = v.metodo || ""; // 🛡️ Escudo para ventas antiguas sin método
+            let metodo = v.metodo || ""; 
             if (!metodo.includes("Efectivo") || v.cajero !== cajeroTurno) return;
-            if (v.id_sesion_caja === idSesion || (v.fecha === fechaHoy && (v.sucursal || "Matriz") === sucTurno)) {
-                let total = parseFloat(v.total) || 0;
-                if (v.anulada === true || v.cancelada === true || v.estado === 'anulado') ventasAnuladas += total;
-                else ventasEfectivo += total; 
-            }
+            
+            if (!perteneceAlTurno(v)) return; // <-- APLICAMOS EL ESCUDO
+
+            let total = parseFloat(v.total) || 0;
+            if (v.anulada === true || v.cancelada === true || v.estado === 'anulado') ventasAnuladas += total;
+            else ventasEfectivo += total; 
         });
     }
     
     // 🧮 2. INGRESOS Y GASTOS
     let ingresosExtra = 0, retirosGastos = 0;
+    let listaIngresos = [];
+    let listaGastos = [];
+
     if (typeof movimientos !== 'undefined' && Array.isArray(movimientos)) {
         movimientos.forEach(m => {
-            let tipo = m.tipo || ""; // 🛡️ Escudo para movimientos
+            let tipo = m.tipo || ""; 
             if (m.anulado === true || m.cancelado === true || m.cajero !== cajeroTurno) return;
-            if (m.id_sesion_caja === idSesion || (m.fecha === fechaHoy && (m.sucursal || "Matriz") === sucTurno)) {
-                let monto = parseFloat(m.monto) || 0;
-                if (tipo.includes("Ingreso") || tipo.includes("Entrada")) ingresosExtra += monto;
-                if (tipo.includes("Retiro") || tipo.includes("Gasto")) retirosGastos += monto;
+            
+            if (!perteneceAlTurno(m)) return; // <-- APLICAMOS EL ESCUDO
+
+            let monto = parseFloat(m.monto) || 0;
+            if (tipo.includes("Ingreso") || tipo.includes("Entrada")) {
+                ingresosExtra += monto;
+                listaIngresos.push(m);
+            }
+            if (tipo.includes("Retiro") || tipo.includes("Gasto")) {
+                retirosGastos += monto;
+                listaGastos.push(m);
             }
         });
     }
@@ -8156,25 +8289,50 @@ window.cerrarTurnoActual = function() {
     let comprasEfectivo = 0, comprasAnuladas = 0;
     if (typeof compras !== 'undefined' && Array.isArray(compras)) {
         compras.forEach(c => {
-            let metodo = c.metodo || ""; // 🛡️ Escudo para compras antiguas sin método
+            let metodo = c.metodo || ""; 
             if (!metodo.includes("Efectivo") || c.cajero !== cajeroTurno) return;
-            if (c.id_sesion_caja === idSesion || (c.fecha === fechaHoy && (c.sucursal || "Matriz") === sucTurno)) {
-                let total = parseFloat(c.total) || 0;
-                if (c.anulada === true || c.cancelada === true || c.estado === 'anulado') comprasAnuladas += total;
-                else comprasEfectivo += total;
-            }
+            
+            if (!perteneceAlTurno(c)) return; // <-- APLICAMOS EL ESCUDO
+
+            let total = parseFloat(c.total) || 0;
+            if (c.anulada === true || c.cancelada === true || c.estado === 'anulado') comprasAnuladas += total;
+            else comprasEfectivo += total;
         });
     }
 
     let efEsperado = fondo + ventasEfectivo + ingresosExtra - retirosGastos - comprasEfectivo;
-    window.efectivoEsperadoTemporal = efEsperado; // Guardamos en memoria
+    window.efectivoEsperadoTemporal = efEsperado; 
 
+    // 📝 CONSTRUCCIÓN DEL TEXTO MATEMÁTICO
     let detalleMatematico = `Fondo Inicial: $${fondo.toFixed(2)}\n(+) Ventas: $${ventasEfectivo.toFixed(2)}`;
     if (ventasAnuladas > 0) detalleMatematico += `\n   *(Omitidas $${ventasAnuladas.toFixed(2)} por anulación)`;
     detalleMatematico += `\n(+) Otros Ingresos: $${ingresosExtra.toFixed(2)}\n(-) Gastos: $${retirosGastos.toFixed(2)}\n(-) Compras: $${comprasEfectivo.toFixed(2)}`;
     if (comprasAnuladas > 0) detalleMatematico += `\n   *(Omitidas $${comprasAnuladas.toFixed(2)} por anulación)`;
 
-    // Enviar datos al modal y resetear calculadora
+    // ====================================================================
+    // 🌟 INYECCIÓN DE DETALLES DE MOVIMIENTOS 🌟
+    // ====================================================================
+    detalleMatematico += `\n\n--- DETALLE DE MOVIMIENTOS ---`;
+    
+    if (listaIngresos.length > 0) {
+        detalleMatematico += `\n\n🟢 OTROS INGRESOS (Abonos, Entradas):`;
+        listaIngresos.forEach(m => {
+            detalleMatematico += `\n + $${parseFloat(m.monto).toFixed(2)} | ${m.motivo || 'Ingreso'} (${m.hora})`;
+        });
+    }
+    
+    if (listaGastos.length > 0) {
+        detalleMatematico += `\n\n🔴 GASTOS Y RETIROS (Pagos a Proveedor, etc):`;
+        listaGastos.forEach(m => {
+            detalleMatematico += `\n - $${parseFloat(m.monto).toFixed(2)} | ${m.motivo || 'Gasto'} (${m.hora})`;
+        });
+    }
+
+    if (listaIngresos.length === 0 && listaGastos.length === 0) {
+        detalleMatematico += `\n\n(No hay ingresos ni gastos extra registrados en este turno)`;
+    }
+    // ====================================================================
+
     let divDetalle = document.getElementById('arqueo_detalle');
     if (divDetalle) {
         divDetalle.innerText = detalleMatematico;
@@ -8183,10 +8341,9 @@ window.cerrarTurnoActual = function() {
         document.getElementById('arqueo_total_contado').innerText = "0.00";
         document.getElementById('modalArqueo').style.display = 'flex';
     } else {
-        alert("⚠️ No se encontró la ventana de arqueo en el HTML. Verifica que pegaste el código de la calculadora correctamente.");
+        alert("⚠️ No se encontró la ventana de arqueo en el HTML.");
     }
 };
-
 // 🧮 2. CALCULADORA EN TIEMPO REAL
 window.sumarArqueo = function() {
     let b1000 = (parseInt(document.getElementById('arq_1000').value) || 0) * 1000;
@@ -8209,36 +8366,77 @@ window.sumarArqueo = function() {
     document.getElementById('arqueo_total_contado').innerText = totalCalculado.toFixed(2);
 };
 
-// 💾 3. FINALIZAR CIERRE EN BASE DE DATOS
 window.confirmarCierreArqueo = function() {
-    let conteoFisico = parseFloat(document.getElementById('arqueo_total_contado').innerText) || 0;
-    let efEsperado = window.efectivoEsperadoTemporal;
-    let diferencia = conteoFisico - efEsperado;
-
-    let msgDiferencia = diferencia === 0 ? " Exacto (Sin diferencias)" : (diferencia > 0 ? ` Sobrante de +$${diferencia.toFixed(2)}` : ` Faltante de -$${Math.abs(diferencia).toFixed(2)}`);
-
-    if (!confirm(`¿Confirmas cerrar el turno con los siguientes datos?\n\n- Efectivo Contado: $${conteoFisico.toFixed(2)}\n- Balance:${msgDiferencia}`)) return;
-
-    window.sesionCajaActual.estado = 'cerrada';
-    window.sesionCajaActual.fecha_cierre = (typeof getFechaLocal === 'function' ? getFechaLocal() : new Date().toISOString().split('T')[0]) + " " + new Date().toLocaleTimeString();
-    window.sesionCajaActual.efectivo_esperado = parseFloat(efEsperado.toFixed(2));
-    window.sesionCajaActual.efectivo_declarado = parseFloat(conteoFisico.toFixed(2));
-    window.sesionCajaActual.diferencia = parseFloat(diferencia.toFixed(2));
-
-    let idSesionGuardada = window.sesionCajaActual.id;
-    if (typeof db !== 'undefined') {
-        try { db.collection("cajas_sesiones").doc(String(idSesionGuardada)).set(window.sesionCajaActual, { merge: true }).catch(e=>{}); } catch(e) {}
+    // 1. Verificamos que realmente haya un turno abierto
+    if (!window.sesionCajaActual || window.sesionCajaActual.estado !== 'abierta') {
+        return alert("❌ No hay sesión abierta para cerrar.");
     }
+
+    // 2. Extraemos los valores matemáticos de la pantalla
+    let esperado = parseFloat(window.efectivoEsperadoTemporal) || 0;
+    let contado = parseFloat(document.getElementById('arqueo_total_contado').innerText) || 0;
     
+    // Calculamos si hubo faltante (negativo) o sobrante (positivo)
+    let diferencia = parseFloat((contado - esperado).toFixed(2));
+
+    // 3. Confirmación de seguridad antes de cerrar
+    let msj = `Resumen Final del Turno:\n\nEsperado en Sistema: $${esperado.toFixed(2)}\nFísico en Cajón: $${contado.toFixed(2)}\nDiferencia: $${diferencia.toFixed(2)}\n\n¿Estás seguro de finalizar y guardar este turno?`;
+    if (!confirm(msj)) return;
+
+    // 4. 🌟 CREAMOS EL OBJETO DEL ANÁLISIS Y RESUMEN 🌟
+    let idTurnoFinal = "TURNO_" + Date.now();
+    let hoy = typeof getFechaLocal === 'function' ? getFechaLocal() : new Date().toISOString().split('T')[0];
+    let hora = new Date().toLocaleTimeString();
+
+    let resumenTurno = {
+        id_corte: idTurnoFinal,
+        id_sesion: window.sesionCajaActual.id,
+        cajero: window.sesionCajaActual.cajero,
+        sucursal: window.sesionCajaActual.sucursal || "Matriz",
+        fecha_apertura: window.sesionCajaActual.fecha_apertura,
+        fecha_cierre: hoy,
+        hora_cierre: hora,
+        fondo_inicial: parseFloat(window.sesionCajaActual.monto_inicial) || 0,
+        efectivo_esperado: esperado,
+        efectivo_contado: contado,
+        diferencia_caja: diferencia, // Aquí sabrás si le faltó o le sobró dinero
+        detalle_operaciones: document.getElementById('arqueo_detalle').innerText, // Todo el desglose de gastos e ingresos
+        estado: "CERRADO"
+    };
+
+    // 5. GUARDAMOS EL RESUMEN EN MEMORIA LOCAL
+    if (typeof historialTurnos === 'undefined') window.historialTurnos = [];
+    historialTurnos.push(resumenTurno);
+    try { localStorage.setItem("pos_turnos_v1", JSON.stringify(historialTurnos)); } catch(e){}
+
+    // 6. SUBIMOS EL RESUMEN A LA NUBE
+    if (typeof db !== 'undefined') {
+        try { db.collection("turnos_cerrados").doc(String(idTurnoFinal)).set(resumenTurno); } catch(e) {}
+    }
+
+    // 7. CERRAR OFICIALMENTE LA SESIÓN ACTUAL
+    window.sesionCajaActual.estado = 'cerrada';
+    window.sesionCajaActual.fecha_cierre = hoy;
+    window.sesionCajaActual.hora_cierre = hora;
+    
+    // Matamos la sesión activa en el disco local
+    try { localStorage.setItem("pos_sesion_caja", JSON.stringify(window.sesionCajaActual)); } catch(e){}
+    
+    // (Opcional) Subir el cierre a la nube si llevas control de sesiones vivas
+    if (typeof db !== 'undefined') {
+        try { db.collection("sesiones_caja").doc(String(window.sesionCajaActual.id)).set(window.sesionCajaActual); } catch(e) {}
+    }
+
+    // Vaciamos la memoria temporal
     window.sesionCajaActual = null;
-    try { localStorage.removeItem("pos_sesion_activa"); } catch(e){}
 
-    // Ocultar Modal
+    // 8. ACTUALIZAR LA PANTALLA Y CERRAR LA VENTANA
     document.getElementById('modalArqueo').style.display = 'none';
-
-    alert(`✅ Turno cerrado correctamente.${msgDiferencia}`);
+    
     if (typeof actualizarIndicadorTurnoUI === 'function') actualizarIndicadorTurnoUI();
     if (typeof renderCorte === 'function') renderCorte();
+
+    alert(`✅ Turno cerrado exitosamente.\nEl análisis financiero ha sido guardado en el historial.`);
 };
 // 🌟 VERIFICADOR AUTOMÁTICO DE TURNO AL ENTRAR AL SISTEMA
 window.verificarOAbrirTurnoAlLogin = function() {
@@ -8260,3 +8458,316 @@ window.verificarOAbrirTurnoAlLogin = function() {
         }
     }, 500); // Pequeño delay para dejar cargar la pantalla
 };
+// ====================================================================
+// 📊 MÓDULO DE HISTORIAL Y ANÁLISIS DE TURNOS CERRADOS
+// ====================================================================
+
+window.renderHistorialTurnos = function() {
+    let tbody = document.getElementById('r_lista_turnos_cerrados');
+    if (!tbody) return;
+    
+    // Cargar historial de la memoria si está vacío
+    if (typeof historialTurnos === 'undefined') {
+        try {
+            window.historialTurnos = JSON.parse(localStorage.getItem('pos_turnos_v1')) || [];
+        } catch(e) { window.historialTurnos = []; }
+    }
+    
+    tbody.innerHTML = '';
+    
+    if (window.historialTurnos.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="7" style="text-align:center; padding:15px; color:#999;">No hay turnos cerrados registrados todavía.</td></tr>';
+        return;
+    }
+    
+    // Invertimos la lista para mostrar el turno más reciente hasta arriba
+    let turnosInvertidos = [...window.historialTurnos].reverse();
+    
+    turnosInvertidos.forEach((t, i) => {
+        let dif = parseFloat(t.diferencia_caja) || 0;
+        let colorDiferencia = dif === 0 ? '#28a745' : (dif < 0 ? '#dc3545' : '#fd7e14');
+        let txtDiferencia = dif === 0 ? 'Exacto ✅' : (dif < 0 ? `-$${Math.abs(dif).toFixed(2)} ❌` : `+$${dif.toFixed(2)} ⚠️`);
+        
+        // El índice real nos sirve para saber cuál abrir en la ventana
+        let realIndex = window.historialTurnos.length - 1 - i; 
+        
+        let tr = document.createElement('tr');
+        tr.innerHTML = `
+            <td>${t.fecha_cierre} <small style="color:#666">(${t.hora_cierre})</small></td>
+            <td><b>${t.cajero}</b></td>
+            <td>${t.sucursal}</td>
+            <td style="text-align:right;">$${parseFloat(t.efectivo_esperado).toFixed(2)}</td>
+            <td style="text-align:right;"><b>$${parseFloat(t.efectivo_contado).toFixed(2)}</b></td>
+            <td style="color:${colorDiferencia}; font-weight:bold; text-align:right;">${txtDiferencia}</td>
+            <td style="text-align:center;">
+                <button onclick="verDetalleTurnoHistorial(${realIndex})" style="background:#6f42c1; color:white; border:none; padding:6px 12px; border-radius:4px; cursor:pointer; font-size:11px; font-weight:bold;">🔍 VER</button>
+            </td>
+        `;
+        tbody.appendChild(tr);
+    });
+};
+
+window.verDetalleTurnoHistorial = function(index) {
+    let t = window.historialTurnos[index];
+    if (!t) return;
+    
+    let contenido = `==== REPORTE DE CIERRE ====\n`;
+    contenido += `ID Sesión: ${t.id_sesion}\n`;
+    contenido += `Fecha: ${t.fecha_cierre} a las ${t.hora_cierre}\n`;
+    contenido += `Cajero: ${t.cajero}\n`;
+    contenido += `Sucursal: ${t.sucursal}\n`;
+    contenido += `===========================\n\n`;
+    
+    contenido += `EFECTIVO ESPERADO: $${parseFloat(t.efectivo_esperado).toFixed(2)}\n`;
+    contenido += `EFECTIVO CONTADO:  $${parseFloat(t.efectivo_contado).toFixed(2)}\n`;
+    
+    let dif = parseFloat(t.diferencia_caja);
+    if (dif === 0) contenido += `ESTADO DEL CUADRE: EXACTO ✅\n\n`;
+    else if (dif < 0) contenido += `FALTANTE EN CAJA: -$${Math.abs(dif).toFixed(2)} ❌\n\n`;
+    else contenido += `SOBRANTE EN CAJA: +$${dif.toFixed(2)} ⚠️\n\n`;
+    
+    // Inyectamos el chisme completo de ventas y gastos guardado
+    contenido += t.detalle_operaciones || "(Sin detalles guardados en esta versión)";
+    
+    document.getElementById('print_detalle_turno').innerText = contenido;
+    document.getElementById('modalDetalleTurno').style.display = 'flex';
+};
+
+// 🌟 HACK: Enganchamos la tabla para que se actualice solita al abrir el Dashboard
+let oldRenderCorte = window.renderCorte;
+window.renderCorte = function() {
+    if (typeof oldRenderCorte === 'function') oldRenderCorte();
+    renderHistorialTurnos();
+};
+// ====================================================================
+// ⌨️ NAVEGACIÓN RÁPIDA CON 'ENTER' EN LA CALCULADORA DE ARQUEO
+// ====================================================================
+document.addEventListener('DOMContentLoaded', () => {
+    // Seleccionamos todos los cuadritos del arqueo basándonos en su clase
+    let inputsArqueo = document.querySelectorAll('.arq-input');
+    
+    inputsArqueo.forEach((input, index) => {
+        input.addEventListener('keydown', function(event) {
+            if (event.key === 'Enter') {
+                event.preventDefault(); // Evitamos que la página intente hacer cosas raras
+                
+                // Buscamos el siguiente cuadrito en la fila
+                let siguienteInput = inputsArqueo[index + 1];
+                if (siguienteInput) {
+                    siguienteInput.focus();
+                    siguienteInput.select(); // Resalta el número para que sea fácil sobreescribirlo
+                }
+            }
+        });
+    });
+});
+
+// ====================================================================
+// 💸 MÓDULO DE RECEPCIÓN Y DEVOLUCIÓN DE TRANSFERENCIAS
+// ====================================================================
+
+window.transferenciaPendienteActual = null;
+window.transferenciaDevueltaActual = null;
+
+window.iniciarRadarTransferencias = function() {
+    if (typeof db === 'undefined' || typeof usuarioActual === 'undefined' || !usuarioActual) return;
+
+    let miNombreLimpio = String(usuarioActual).trim().toLowerCase();
+
+    try {
+        let coleccionTrans = db.collection("transferencias");
+
+        // ESCENARIO 1: Si estás usando Firebase Firestore original
+        if (typeof coleccionTrans.where === 'function') {
+            coleccionTrans
+              .where("receptor", "==", String(usuarioActual).trim())
+              .where("estado", "==", "pendiente")
+              .onSnapshot((snapshot) => {
+                  snapshot.docChanges().forEach((change) => {
+                      if (change.type === "added" || change.type === "modified") {
+                          abrirModalTransferencia(change.doc.id, change.doc.data());
+                      }
+                  });
+              }, (err) => console.log("Radar A:", err));
+
+            coleccionTrans
+              .where("emisor", "==", String(usuarioActual).trim())
+              .where("estado", "==", "devuelta")
+              .onSnapshot((snapshot) => {
+                  snapshot.docChanges().forEach((change) => {
+                      if (change.type === "added" || change.type === "modified") {
+                          abrirModalDevolucion(change.doc.id, change.doc.data());
+                      }
+                  });
+              }, (err) => console.log("Radar B:", err));
+
+        } else {
+            // ESCENARIO 2: Si tu 'db' es una base de datos local o emulada (Sin .where())
+            console.warn("⚠️ 'db' local detectada. Usando escaneo manual de transferencias.");
+            
+            setInterval(() => {
+                let procesarDatos = (docs) => {
+                    if (!docs) return;
+                    let lista = Array.isArray(docs) ? docs : Object.values(docs);
+                    
+                    lista.forEach(data => {
+                        if (!data) return;
+                        let rec = String(data.receptor || '').trim().toLowerCase();
+                        let emi = String(data.emisor || '').trim().toLowerCase();
+                        let id = data.id || data.idDoc;
+
+                        // Antena A: Recibir
+                        if (rec === miNombreLimpio && data.estado === "pendiente") {
+                            abrirModalTransferencia(id, data);
+                        }
+                        // Antena B: Devolución
+                        if (emi === miNombreLimpio && data.estado === "devuelta") {
+                            abrirModalDevolucion(id, data);
+                        }
+                    });
+                };
+
+                // Intentamos leer datos según el tipo de db local que tengas
+                if (typeof coleccionTrans.get === 'function') {
+                    coleccionTrans.get().then(snap => {
+                        let docs = snap.docs ? snap.docs.map(d => ({id: d.id, ...d.data()})) : snap;
+                        procesarDatos(docs);
+                    }).catch(e => {});
+                } else if (typeof coleccionTrans === 'function') {
+                    procesarDatos(coleccionTrans());
+                }
+            }, 3000); // Revisa cada 3 segundos en segundo plano
+        }
+
+    } catch (error) {
+        console.error("❌ Error en iniciarRadarTransferencias:", error);
+    }
+};
+
+// 2. MOSTRAR ALERTA DE DINERO NUEVO RECIBIDO
+window.abrirModalTransferencia = function(idDoc, data) {
+    window.transferenciaPendienteActual = { id: idDoc, ...data };
+    document.getElementById('notif_transf_emisor').innerText = data.emisor || "Otro Cajero";
+    document.getElementById('notif_transf_monto').innerText = "$" + parseFloat(data.monto).toFixed(2);
+
+    let selectSuc = document.getElementById('notif_transf_sucursal');
+    selectSuc.innerHTML = '';
+    let sucActiva = (window.sesionCajaActual && window.sesionCajaActual.sucursal) ? window.sesionCajaActual.sucursal : (typeof sucursalActual !== 'undefined' ? sucursalActual : "Matriz");
+
+    selectSuc.innerHTML += `<option value="${sucActiva}">${sucActiva} (Sesión Actual)</option>`;
+    selectSuc.innerHTML += `<option value="Matriz">Matriz</option>`;
+    selectSuc.innerHTML += `<option value="Sucursal 1">Sucursal 1</option>`;
+    selectSuc.innerHTML += `<option value="Sucursal 2">Sucursal 2</option>`;
+
+    document.getElementById('modalNotificacionTransferencia').style.display = 'flex';
+};
+
+// 3. ACEPTAR DINERO NUEVO
+window.aceptarTransferencia = function() {
+    let t = window.transferenciaPendienteActual;
+    if (!t) return;
+
+    let sucElegida = document.getElementById('notif_transf_sucursal').value;
+    let monto = parseFloat(t.monto);
+    let hoy = typeof getFechaLocal === 'function' ? getFechaLocal() : new Date().toISOString().split('T')[0];
+    let hora = new Date().toLocaleTimeString();
+    let idMov = Date.now();
+    let idSesion = window.sesionCajaActual ? window.sesionCajaActual.id : null;
+
+    let nuevoMov = {
+        id: idMov, id_sesion_caja: idSesion, fecha: hoy, hora: hora, cajero: usuarioActual,
+        sucursal: sucElegida, tipo: "Ingreso", monto: monto, motivo: `Transferencia recibida de: ${t.emisor}`
+    };
+
+    if (typeof movimientos === 'undefined') window.movimientos = [];
+    movimientos.push(nuevoMov);
+    try { localStorage.setItem("pos_movimientos_v1", JSON.stringify(movimientos)); } catch(e){}
+    
+    if (typeof db !== 'undefined') {
+        try { 
+            db.collection("movimientos").doc(String(idMov)).set(nuevoMov);
+            db.collection("transferencias").doc(String(t.id)).update({ estado: "aceptada", sucursal_destino: sucElegida });
+        } catch(e){}
+    }
+
+    document.getElementById('modalNotificacionTransferencia').style.display = 'none';
+    window.transferenciaPendienteActual = null;
+    alert(`✅ Transferencia de $${monto} ingresada exitosamente en ${sucElegida}.`);
+    if (typeof renderCorte === 'function') renderCorte();
+};
+
+// 4. RECHAZAR DINERO NUEVO (Lo envía de vuelta al emisor)
+window.rechazarTransferencia = function() {
+    let t = window.transferenciaPendienteActual;
+    if (!t) return;
+    
+    if (typeof db !== 'undefined') {
+        // 🔥 Magia: Cambiamos el estado a "devuelta" para que le brinque al radar del otro cajero
+        try { db.collection("transferencias").doc(String(t.id)).update({ estado: "devuelta" }); } catch(e){}
+    }
+    
+    document.getElementById('modalNotificacionTransferencia').style.display = 'none';
+    window.transferenciaPendienteActual = null;
+    alert("❌ Transferencia rechazada. Se ha notificado al emisor para que regrese el dinero a su caja.");
+};
+
+// =========================================================================================
+
+// 5. MOSTRAR ALERTA DE DINERO DEVUELTO (RECHAZADO POR EL OTRO)
+window.abrirModalDevolucion = function(idDoc, data) {
+    window.transferenciaDevueltaActual = { id: idDoc, ...data };
+    document.getElementById('notif_dev_receptor').innerText = data.receptor || "El destinatario";
+    document.getElementById('notif_dev_monto').innerText = "$" + parseFloat(data.monto).toFixed(2);
+
+    let selectSuc = document.getElementById('notif_dev_sucursal');
+    selectSuc.innerHTML = '';
+    let sucActiva = (window.sesionCajaActual && window.sesionCajaActual.sucursal) ? window.sesionCajaActual.sucursal : (typeof sucursalActual !== 'undefined' ? sucursalActual : "Matriz");
+
+    selectSuc.innerHTML += `<option value="${sucActiva}">${sucActiva} (Sesión Actual)</option>`;
+    selectSuc.innerHTML += `<option value="Matriz">Matriz</option>`;
+    selectSuc.innerHTML += `<option value="Sucursal 1">Sucursal 1</option>`;
+    selectSuc.innerHTML += `<option value="Sucursal 2">Sucursal 2</option>`;
+
+    document.getElementById('modalDevolucionTransferencia').style.display = 'flex';
+};
+
+// 6. ACEPTAR EL DINERO DEVUELTO (Lo regresa a tu propia caja)
+window.aceptarDineroDevuelto = function() {
+    let t = window.transferenciaDevueltaActual;
+    if (!t) return;
+
+    let sucElegida = document.getElementById('notif_dev_sucursal').value;
+    let monto = parseFloat(t.monto);
+    let hoy = typeof getFechaLocal === 'function' ? getFechaLocal() : new Date().toISOString().split('T')[0];
+    let hora = new Date().toLocaleTimeString();
+    let idMov = Date.now();
+    let idSesion = window.sesionCajaActual ? window.sesionCajaActual.id : null;
+
+    // Se crea un "Ingreso" para reponer el dinero que originalmente habías sacado
+    let nuevoMov = {
+        id: idMov, id_sesion_caja: idSesion, fecha: hoy, hora: hora, cajero: usuarioActual,
+        sucursal: sucElegida, tipo: "Ingreso", monto: monto, motivo: `Devolución de dinero rechazado por: ${t.receptor}`
+    };
+
+    if (typeof movimientos === 'undefined') window.movimientos = [];
+    movimientos.push(nuevoMov);
+    try { localStorage.setItem("pos_movimientos_v1", JSON.stringify(movimientos)); } catch(e){}
+    
+    if (typeof db !== 'undefined') {
+        try { 
+            db.collection("movimientos").doc(String(idMov)).set(nuevoMov); 
+            // Matamos la transferencia para siempre
+            db.collection("transferencias").doc(String(t.id)).update({ estado: "cancelada" });
+        } catch(e){}
+    }
+
+    document.getElementById('modalDevolucionTransferencia').style.display = 'none';
+    window.transferenciaDevueltaActual = null;
+    alert(`📥 El dinero rechazado ha sido reingresado a tu caja de ${sucElegida}.`);
+    if (typeof renderCorte === 'function') renderCorte();
+};
+
+// 🌟 INICIALIZADOR: Ponemos a funcionar el radar de 2 antenas
+setTimeout(() => {
+    if(typeof iniciarRadarTransferencias === 'function') iniciarRadarTransferencias();
+}, 3000);
