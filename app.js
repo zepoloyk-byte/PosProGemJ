@@ -5614,98 +5614,125 @@ function renderT() {
 }
 
 window.ejecutarTransferencia = function() { 
-    let ori = document.getElementById('t_origen').value; 
-    let des = document.getElementById('t_destino').value; 
-    
-    // Limpiamos emojis y espacios extra
-    let oriLimpio = String(ori || "").replace(/📍/g, '').trim();
-    let desLimpio = String(des || "").replace(/📍/g, '').trim();
-    
-    if(oriLimpio === desLimpio) return alert("❌ El Origen y el Destino no pueden ser iguales."); 
-    if(carT.length === 0) return alert("❌ El carrito de envíos está vacío."); 
-    if(!confirm(`📦 ¿Confirmas el envío de mercancía desde ${oriLimpio} hacia ${desLimpio}?`)) return; 
-    
-    let idEnvio = Date.now();
-    
-    // Descontamos stock del origen y aplicamos la Magia Maestro-Espejo
-    carT.forEach(x => { 
-        let pOriginal = inv[x.cod] || {};
-        
-        // 🌟 MAGIA MAESTRO-ESPEJO: Encontramos al Jefe de inmediato
-        let codMaestro = (pOriginal.grupo && inv[pOriginal.grupo]) ? pOriginal.grupo : x.cod;
-        let pMaestro = inv[codMaestro] || pOriginal;
+    try {
+        let elemOri = document.getElementById('t_origen') || document.getElementById('traspaso_desde') || document.getElementById('m_origen');
+        let elemDes = document.getElementById('t_destino') || document.getElementById('traspaso_hacia') || document.getElementById('m_destino');
 
-        if(!pMaestro.stock || typeof pMaestro.stock !== 'object') {
-             let stockAntiguo = parseFloat(pMaestro.stock) || 0;
-             pMaestro.stock = {}; 
-             // Si el objeto no existía, asumimos que el stock viejo pertenece a Matriz
-             pMaestro.stock['Matriz'] = stockAntiguo;
+        let ori = elemOri ? elemOri.value : "";
+        let des = elemDes ? elemDes.value : "";
+        
+        let oriLimpio = String(ori || "").replace(/📍/g, '').trim();
+        let desLimpio = String(des || "").replace(/📍/g, '').trim();
+        
+        if (!desLimpio) return alert("⚠️ Por favor selecciona la sucursal de destino (HACIA:).");
+        if (!oriLimpio) return alert("⚠️ Por favor selecciona la sucursal de origen (DESDE:).");
+        if (oriLimpio === desLimpio) return alert("❌ El Origen y el Destino no pueden ser iguales."); 
+        
+        if (typeof carT === 'undefined' || !carT || carT.length === 0) {
+            return alert("❌ El carrito de envíos está vacío."); 
         }
         
-        // 📸 FOTOGRAFÍA 1: Leer el stock exacto del MAESTRO en la sucursal de origen limpia
-        let stockAntesReal = parseFloat(pMaestro.stock[oriLimpio]) || 0;
-        let cantEnviar = parseFloat(x.can);
+        if (!confirm(`📦 ¿Confirmas el envío de mercancía desde ${oriLimpio} hacia ${desLimpio}?`)) return; 
         
-        // 📸 FOTOGRAFÍA 2: Restar lo que se está enviando (Obligando a 3 decimales)
-        let stockDespuesReal = parseFloat((stockAntesReal - cantEnviar).toFixed(3));
+        let idEnvio = Date.now();
         
-        pMaestro.stock[oriLimpio] = stockDespuesReal; 
+        carT.forEach(x => { 
+            let codigoProducto = x.cod || x.id;
+            let pOriginal = (typeof inv !== 'undefined' && inv[codigoProducto]) ? inv[codigoProducto] : {};
+            
+            let codMaestro = (pOriginal.grupo && inv && inv[pOriginal.grupo]) ? pOriginal.grupo : codigoProducto;
+            let pMaestro = (typeof inv !== 'undefined' && inv[codMaestro]) ? inv[codMaestro] : pOriginal;
+
+            if (!pMaestro.stock || typeof pMaestro.stock !== 'object') {
+                let stockAntiguo = parseFloat(pMaestro.stock) || 0;
+                pMaestro.stock = {}; 
+                pMaestro.stock['Matriz'] = stockAntiguo;
+            }
+            
+            let stockAntesReal = parseFloat(pMaestro.stock[oriLimpio]) || 0;
+            let cantEnviar = parseFloat(x.can || x.cantidad || 1);
+            let stockDespuesReal = parseFloat((stockAntesReal - cantEnviar).toFixed(3));
+            
+            pMaestro.stock[oriLimpio] = stockDespuesReal; 
+            
+            // 🌟 SUBIDA A LA NUBE SIN DEPENDER DE FIREBASE
+            if (typeof db !== 'undefined' && db.collection) {
+                let campoStockOrigen = `stock.${oriLimpio}`;
+                let patchData = {};
+                patchData[campoStockOrigen] = stockDespuesReal;
+                
+                db.collection("inventario").doc(String(codMaestro)).set(patchData, { merge: true })
+                    .catch(e => console.error("❌ Error en la nube:", e));
+            }
+            
+            if (typeof registrarEnKardex === 'function') {
+                registrarEnKardex(
+                    codMaestro, 
+                    x.nom || "Producto", 
+                    "TRANSFERENCIA (SALIDA)", 
+                    -cantEnviar, 
+                    parseFloat(pMaestro.pv) || parseFloat(pOriginal.pv) || 0, 
+                    parseFloat(x.cReal) || parseFloat(pMaestro.cos) || parseFloat(pOriginal.cos) || 0,
+                    stockAntesReal,       
+                    stockDespuesReal,     
+                    oriLimpio             
+                );
+            }
+            
+            x.cod = codMaestro;
+        }); 
         
-        // ☁️ 🚀 SUBIDA BLINDADA A LA NUBE (Solo restamos en el cajón de Origen)
-        if(typeof db !== 'undefined') {
-            let campoStockOrigen = `stock.${oriLimpio}`;
-            db.collection("inventario").doc(String(codMaestro)).set({
-                [campoStockOrigen]: firebase.firestore.FieldValue.increment(-cantEnviar)
-            }, { merge: true }).catch(e => console.error("❌ Error al descontar origen en la nube:", e));
+        let elTotalVal = document.getElementById('t_total_val') || document.getElementById('lbl_costo_lote');
+        let elTotalArt = document.getElementById('t_total_art') || document.getElementById('lbl_total_articulos');
+
+        let textoValor = elTotalVal ? elTotalVal.innerText : "$0.00";
+        let textoArticulos = elTotalArt ? elTotalArt.innerText : String(carT.length);
+
+        let nuevaTransferencia = { 
+            id: idEnvio, 
+            fecha: new Date().toLocaleString(), 
+            origen: oriLimpio, 
+            destino: desLimpio, 
+            items: [...carT], 
+            valor: textoValor, 
+            total_art: textoArticulos,
+            estado: 'pendiente', 
+            obs: '' 
+        };
+        
+        if (typeof transferencias === 'undefined') window.transferencias = [];
+        transferencias.push(nuevaTransferencia); 
+        
+        try { localStorage.setItem("pos_precision_v6", JSON.stringify(inv)); } catch(e) {}
+        try { localStorage.setItem("pos_transferencias_v6", JSON.stringify(transferencias)); } catch(e) {}
+        
+        if (typeof db !== 'undefined' && db.collection) {
+            db.collection("transferencias").doc(String(idEnvio)).set(nuevaTransferencia)
+            .catch(e => console.error("Error al subir:", e));
         }
+
+        alert(`✅ Envío creado exitosamente. Notificado a ${desLimpio}.`); 
         
-        // 🌟 ENVIAMOS LAS FOTOS AL KARDEX (Inyectando el Origen Limpio)
-        if(typeof registrarEnKardex === 'function') {
-            registrarEnKardex(
-                codMaestro, 
-                x.nom, 
-                "TRANSFERENCIA (SALIDA)", 
-                -cantEnviar, 
-                parseFloat(pMaestro.pv) || parseFloat(pOriginal.pv) || 0, 
-                parseFloat(x.cReal) || parseFloat(pMaestro.cos) || parseFloat(pOriginal.cos) || 0,
-                stockAntesReal,       // 👈 Foto 1
-                stockDespuesReal,     // 👈 Foto 2
-                oriLimpio             // 🌟 INYECTAMOS LA SUCURSAL DE ORIGEN (OBLIGATORIO)
-            );
-        }
+        // LIMPIEZA Y CIERRE DE MODALES
+        carT = []; 
         
-        // 🚀 TRUCO MAESTRO: Cambiamos el código para que al recibir, sume al Maestro
-        x.cod = codMaestro;
-    }); 
-    
-    let nuevaTransferencia = { 
-        id: idEnvio, 
-        fecha: new Date().toLocaleString(), 
-        origen: oriLimpio, destino: desLimpio, 
-        items: [...carT], 
-        valor: document.getElementById('t_total_val').innerText, 
-        total_art: document.getElementById('t_total_art').innerText,
-        estado: 'pendiente', obs: '' 
-    };
-    
-    transferencias.push(nuevaTransferencia); 
-    
-    // 🛡️ PARACAÍDAS DE MEMORIA LOCAL
-    try { localStorage.setItem("pos_precision_v6", JSON.stringify(inv)); } catch(e) { console.warn("Memoria local de inventario llena."); }
-    try { localStorage.setItem("pos_transferencias_v6", JSON.stringify(transferencias)); } catch(e) { console.warn("Memoria local de envíos llena."); }
-    
-    if(typeof db !== 'undefined') {
-        db.collection("transferencias").doc(String(idEnvio)).set(nuevaTransferencia)
-        .catch(e => alert("Error al subir transferencia: " + e));
+        if (typeof renderCarT === 'function') renderCarT();
+        if (typeof renderTraspaso === 'function') renderTraspaso();
+        if (typeof renderI === 'function') renderI(); 
+        if (typeof actualizarContadorRecepciones === 'function') actualizarContadorRecepciones(); 
+
+        let modales = document.querySelectorAll('.modal, .w3-modal');
+        modales.forEach(m => {
+            if (m.style.display === 'block' || m.style.display === 'flex') {
+                m.style.display = 'none';
+            }
+        });
+
+    } catch (err) {
+        alert("⚠️ Hubo un detalle al procesar la transferencia:\n" + err.message);
+        console.error("Error completo:", err);
     }
-
-    alert(`✅ Envío creado exitosamente. Ya fue notificado a ${desLimpio}.`); 
-    carT = []; 
-    if(typeof renderI === 'function') renderI(); 
-    if(typeof cerrarModales === 'function') cerrarModales(); 
-    if(typeof actualizarContadorRecepciones === 'function') actualizarContadorRecepciones(); 
 };
-
 // ---------------------------------------------------------
 // 2. RECIBIR MERCANCÍA (ENTRADAS - 2 PASOS)
 // ---------------------------------------------------------
@@ -5872,93 +5899,119 @@ function navegarCantidadesRecepcion(e, i) {
 }
 // Paso Final: Guardar recepción y sumar el stock
 window.confirmarRecepcion = function() { 
-    let tIndex = transferencias.findIndex(x => x.id === idTransferenciaActual); 
-    if(tIndex === -1) return; 
-    
-    let trans = transferencias[tIndex];
-    let oriLimpio = trans.origen;
-
-    if(!confirm("📥 ¿Confirmar el ingreso físico a tu inventario?")) return; 
-    
-    let detallesFaltantes = []; // 📝 NUEVO: Libreta para anotar qué faltó exactamente
-
-    carR.forEach(x => { 
-        let pO = inv[x.cod] || {};
-        if(!pO.stock) pO.stock = {}; 
+    try {
+        let tIndex = transferencias.findIndex(x => x.id === idTransferenciaActual); 
+        if(tIndex === -1) return alert("❌ No se encontró la transferencia actual."); 
         
-        let cantEnviada = parseFloat(x.can) || 0;
-        let cantRecibidaTotal = parseFloat(x.can_rec) || 0;
+        let trans = transferencias[tIndex];
+        let oriLimpio = trans.origen;
 
-        // 🟢 1. MANEJO DEL STOCK QUE SÍ LLEGÓ
-        if(cantRecibidaTotal > 0) { 
-            let stockAntesReal = parseFloat(pO.stock[sucursalActual]) || 0;
-            let stockDespuesReal = parseFloat((stockAntesReal + cantRecibidaTotal).toFixed(3));
-            
-            pO.stock[sucursalActual] = stockDespuesReal; 
-            
-            if(typeof db !== 'undefined') {
-                let campoStockDestino = `stock.${sucursalActual}`;
-                db.collection("inventario").doc(String(x.cod)).set({
-                    [campoStockDestino]: firebase.firestore.FieldValue.increment(cantRecibidaTotal)
-                }, { merge: true }).catch(e => console.error("Error sumando en Destino:", e));
-            }
-            
-            if(typeof registrarEnKardex === 'function') {
-                registrarEnKardex(
-                    x.cod, x.nom, "TRANSFERENCIA (ENTRADA)", cantRecibidaTotal, 
-                    pO.pv || 0, x.cReal || pO.cos || 0,
-                    stockAntesReal, stockDespuesReal
-                );
-            }
-        } 
-
-        // 🚨 2. MANEJO DEL FALTANTE
-        let faltante = parseFloat((cantEnviada - cantRecibidaTotal).toFixed(3));
+        if(!confirm("📥 ¿Confirmar el ingreso físico a tu inventario?")) return; 
         
-        if (faltante > 0) {
-            detallesFaltantes.push(`- ${faltante} de ${x.nom}`); // 📝 Anotamos el producto faltante
+        let detallesFaltantes = []; // 📝 Libreta para anotar qué faltó exactamente
 
-            let stockAntesOrigen = parseFloat(pO.stock[oriLimpio]) || 0;
-            let stockDespuesOrigen = parseFloat((stockAntesOrigen + faltante).toFixed(3));
+        carR.forEach(x => { 
+            let pO = inv[x.cod] || {};
+            if(!pO.stock) pO.stock = {}; 
             
-            pO.stock[oriLimpio] = stockDespuesOrigen;
+            let cantEnviada = parseFloat(x.can) || 0;
+            let cantRecibidaTotal = parseFloat(x.can_rec) || 0;
 
-            if(typeof db !== 'undefined') {
-                let campoStockOrigen = `stock.${oriLimpio}`;
-                db.collection("inventario").doc(String(x.cod)).set({
-                    [campoStockOrigen]: firebase.firestore.FieldValue.increment(faltante)
-                }, { merge: true }).catch(e => console.error("Error devolviendo a Origen:", e));
-            }
+            // 🟢 1. MANEJO DEL STOCK QUE SÍ LLEGÓ (DESTINO)
+            if(cantRecibidaTotal > 0) { 
+                let stockAntesReal = parseFloat(pO.stock[sucursalActual]) || 0;
+                let stockDespuesReal = parseFloat((stockAntesReal + cantRecibidaTotal).toFixed(3));
+                
+                pO.stock[sucursalActual] = stockDespuesReal; 
+                
+                // ☁️ Sincronización limpia en la nube (Sin Firebase increment)
+                if(typeof db !== 'undefined' && db.collection) {
+                    let campoStockDestino = `stock.${sucursalActual}`;
+                    let patchDestino = {};
+                    patchDestino[campoStockDestino] = stockDespuesReal;
 
-            if(typeof registrarEnKardex === 'function') {
-                registrarEnKardex(
-                    x.cod, x.nom, "DEVOLUCIÓN DE ENVÍO (FALTANTE)", faltante, 
-                    pO.pv || 0, x.cReal || pO.cos || 0,
-                    stockAntesOrigen, stockDespuesOrigen,
-                    oriLimpio
-                );
+                    db.collection("inventario").doc(String(x.cod)).set(patchDestino, { merge: true })
+                        .catch(e => console.error("Error sumando en Destino:", e));
+                }
+                
+                if(typeof registrarEnKardex === 'function') {
+                    registrarEnKardex(
+                        x.cod, x.nom, "TRANSFERENCIA (ENTRADA)", cantRecibidaTotal, 
+                        pO.pv || 0, x.cReal || pO.cos || 0,
+                        stockAntesReal, stockDespuesReal
+                    );
+                }
+            } 
+
+            // 🚨 2. MANEJO DEL FALTANTE (DEVOLUCIÓN AL ORIGEN)
+            let faltante = parseFloat((cantEnviada - cantRecibidaTotal).toFixed(3));
+            
+            if (faltante > 0) {
+                detallesFaltantes.push(`- ${faltante} de ${x.nom}`); 
+
+                let stockAntesOrigen = parseFloat(pO.stock[oriLimpio]) || 0;
+                let stockDespuesOrigen = parseFloat((stockAntesOrigen + faltante).toFixed(3));
+                
+                pO.stock[oriLimpio] = stockDespuesOrigen;
+
+                // ☁️ Sincronización limpia en la nube (Sin Firebase increment)
+                if(typeof db !== 'undefined' && db.collection) {
+                    let campoStockOrigen = `stock.${oriLimpio}`;
+                    let patchOrigen = {};
+                    patchOrigen[campoStockOrigen] = stockDespuesOrigen;
+
+                    db.collection("inventario").doc(String(x.cod)).set(patchOrigen, { merge: true })
+                        .catch(e => console.error("Error devolviendo a Origen:", e));
+                }
+
+                if(typeof registrarEnKardex === 'function') {
+                    registrarEnKardex(
+                        x.cod, x.nom, "DEVOLUCIÓN DE ENVÍO (FALTANTE)", faltante, 
+                        pO.pv || 0, x.cReal || pO.cos || 0,
+                        stockAntesOrigen, stockDespuesOrigen,
+                        oriLimpio
+                    );
+                }
             }
+        }); 
+        
+        trans.estado = 'completada'; 
+        
+        let elObs = document.getElementById('r_proc_obs');
+        trans.obs = elObs ? elObs.value : ""; 
+        trans.items_recibidos = [...carR]; 
+        
+        // 📩 Preparamos el mensaje para la sucursal de origen si hubo faltantes
+        if (detallesFaltantes.length > 0) {
+            trans.hay_mensaje_origen = true;
+            trans.origen_enterado = false;
+            trans.mensaje_origen = `⚠️ ATENCIÓN SUCURSAL ${oriLimpio}:\n\nLa sucursal ${sucursalActual} recibió tu envío (Folio: ${trans.id}), pero reportó que FALTÓ lo siguiente:\n${detallesFaltantes.join('\n')}\n\n✅ Este faltante ya fue regresado a tu inventario automáticamente.`;
         }
-    }); 
-    
-    trans.estado = 'completada'; 
-    trans.obs = document.getElementById('r_proc_obs').value; 
-    trans.items_recibidos = [...carR]; 
-    
-    // 📩 NUEVO: Preparamos el mensaje para la sucursal de origen si hubo faltantes
-    if (detallesFaltantes.length > 0) {
-        trans.hay_mensaje_origen = true;
-        trans.origen_enterado = false;
-        trans.mensaje_origen = `⚠️ ATENCIÓN SUCURSAL ${oriLimpio}:\n\nLa sucursal ${sucursalActual} recibió tu envío (Folio: ${trans.id}), pero reportó que FALTÓ lo siguiente:\n${detallesFaltantes.join('\n')}\n\n✅ Este faltante ya fue regresado a tu inventario automáticamente.`;
+
+        // 🛡️ Guardado en almacenamiento local
+        try { localStorage.setItem("pos_precision_v6", JSON.stringify(inv)); } catch(e){}
+        try { localStorage.setItem("pos_transferencias_v6", JSON.stringify(transferencias)); } catch(e){}
+        
+        if(typeof db !== 'undefined' && db.collection) {
+            db.collection("transferencias").doc(String(idTransferenciaActual)).set(trans, { merge: true });
+        }
+
+        alert("✅ Recepción completada. El stock recibido se sumó a tu inventario y los faltantes regresaron al origen."); 
+        
+        // 🧹 Limpieza de UI y cierre de modales
+        if(typeof renderI === 'function') renderI(); 
+        if(typeof cerrarModales === 'function') cerrarModales(); 
+        else {
+            let modales = document.querySelectorAll('.modal, .w3-modal');
+            modales.forEach(m => m.style.display = 'none');
+        }
+
+        if(typeof actualizarContadorRecepciones === 'function') actualizarContadorRecepciones(); 
+
+    } catch (err) {
+        alert("⚠️ Error al confirmar recepción:\n" + err.message);
+        console.error("Error completo en confirmarRecepcion:", err);
     }
-
-    try { localStorage.setItem("pos_precision_v6", JSON.stringify(inv)); } catch(e){}
-    try { localStorage.setItem("pos_transferencias_v6", JSON.stringify(transferencias)); } catch(e){}
-    
-    if(typeof db !== 'undefined') db.collection("transferencias").doc(String(idTransferenciaActual)).set(trans);
-
-    alert("✅ Recepción completada. El stock recibido se sumó a tu inventario y los faltantes regresaron al origen."); 
-    renderI(); cerrarModales(); actualizarContadorRecepciones(); 
 };
 
 // ====================================================================
