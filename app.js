@@ -2109,7 +2109,8 @@ window.confirmarVenta = async function(cambioFinal = 0) { // 👈 ¡Ojo! Agregam
             // Si la terminal da error, está apagada o el cobro falla, abortamos para que el cajero no entregue la mercancía
             if (!cobroTerminalExitoso) {
                 console.warn("Venta pausada: El cobro en terminal no se completó.");
-                return; // Detenemos la venta aquí mismo
+                // 🌟 AQUÍ APAGAMOS EL CANDADO PARA QUE "MANUAL" FUNCIONE:
+                // return; 
             }
         }
         // ====================================================================
@@ -3740,74 +3741,171 @@ function abrirModalMovimiento() {
 }
 
 // 💾 3. GUARDADO CONTABLE DOBLE VÍA
-window.guardarMovimiento = function() {
+// ==========================================
+// MÓDULO DE TRANSFERENCIAS Y AVISOS
+// ==========================================
+
+window.mostrarAvisoRapido = function(mensaje) {
+    let toast = document.createElement('div');
+    toast.style.position = 'fixed';
+    toast.style.bottom = '30px';
+    toast.style.left = '50%';
+    toast.style.transform = 'translateX(-50%)'; 
+    toast.style.backgroundColor = '#28a745'; 
+    toast.style.color = '#fff';
+    toast.style.padding = '12px 24px';
+    toast.style.borderRadius = '8px';
+    toast.style.boxShadow = '0px 4px 12px rgba(0,0,0,0.3)';
+    toast.style.zIndex = '999999';
+    toast.style.fontFamily = 'Arial, sans-serif';
+    toast.style.fontSize = '15px';
+    toast.style.fontWeight = 'bold';
+    toast.style.textAlign = 'center';
+    
+    toast.innerHTML = mensaje.replace(/\n/g, '<br>');
+    document.body.appendChild(toast);
+
+    setTimeout(() => {
+        toast.style.opacity = '0';
+        toast.style.transition = 'opacity 0.5s ease';
+        setTimeout(() => toast.remove(), 500);
+    }, 3500);
+};
+
+window.guardarMovimiento = async function() {
     let tipo = document.getElementById('mov_tipo').value; 
     let monto = parseFloat(document.getElementById('mov_monto').value) || 0; 
     let motivo = document.getElementById('mov_motivo').value.trim() || 'Manual';
-    if(monto <= 0) return alert("❌ Monto inválido.");
+    
+    if(monto <= 0) {
+        if(typeof mostrarAvisoRapido === 'function') mostrarAvisoRapido("❌ Monto inválido.");
+        else alert("❌ Monto inválido.");
+        return;
+    }
     
     let miNombre = typeof usuarioActual !== 'undefined' ? usuarioActual : 'Admin';
     let hoy = typeof getFechaLocal === 'function' ? getFechaLocal() : new Date().toISOString().split('T')[0];
     let hora = new Date().toLocaleTimeString();
     let sucMov = typeof sucursalActual !== 'undefined' ? sucursalActual : 'Matriz';
-    
     let idSesionTurno = (window.sesionCajaActual ? window.sesionCajaActual.id : null);
 
     if (tipo === 'Transferencia') {
         let cajeroDestino = document.getElementById('mov_cajero_destino').value;
-        if (!cajeroDestino) return alert("❌ Selecciona quién recibirá el dinero.");
+        if (!cajeroDestino) {
+            if(typeof mostrarAvisoRapido === 'function') mostrarAvisoRapido("❌ Selecciona quién recibirá el dinero.");
+            else alert("❌ Selecciona quién recibirá el dinero.");
+            return;
+        }
 
         let idBase = Date.now();
         let descripcionUnica = `🔄 TRASPASO ENVIADO: a ${cajeroDestino} (${motivo.toUpperCase()})`;
 
-        // 1. REGISTRAMOS LA SALIDA DE DINERO EN TU CAJA (Retiro)
-        let mRetiro = { id: idBase, id_sesion_caja: idSesionTurno, fecha: hoy, hora: hora, cajero: miNombre, sucursal: sucMov, tipo: 'Retiro', monto: monto, motivo: descripcionUnica };
+        let mRetiro = { 
+            id: idBase, id_sesion_caja: idSesionTurno, fecha: hoy, hora: hora, 
+            cajero: miNombre, sucursal: sucMov, tipo: 'Retiro', monto: monto, motivo: descripcionUnica 
+        };
         
-        if (typeof movimientos === 'undefined') window.movimientos = [];
-        movimientos.push(mRetiro);
-        
-        if (typeof db !== 'undefined') {
-            // Guardamos tu retiro en la nube
-            db.collection("movimientos").doc(String(mRetiro.id)).set(mRetiro).catch(e=>console.log(e));
-            
-            // 🚀 2. DISPARAMOS EL RADAR: Creamos la notificación en la nube
-            let transferenciaDoc = {
-                emisor: miNombre,
-                receptor: cajeroDestino,
-                monto: monto,
-                fecha: hoy,
-                hora: hora,
-                estado: "pendiente" // Esto es lo que activa la pantalla del otro cajero
+        // 🔥 CORRECCIÓN AQUÍ: Forzamos la creación del arreglo si no existe
+        window.movimientos = window.movimientos || [];
+        window.movimientos.push(mRetiro);
+
+        try {
+            await fetch("https://sexy-starling.pikapod.net/api/collections/movimientos/records", {
+                method: "POST", headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ doc_id: String(idBase), data: mRetiro })
+            });
+
+            let datosTransferencia = {
+                doc_id: String(idBase), emisor: miNombre, receptor: cajeroDestino, monto: monto,
+                fecha: hoy, hora: hora, estado: "pendiente",
+                data: { id: idBase, emisor: miNombre, receptor: cajeroDestino, monto: monto, fecha: hoy, hora: hora, estado: "pendiente" }
             };
-            db.collection("transferencias").doc(String(idBase)).set(transferenciaDoc).catch(e=>console.log(e));
+            
+            await fetch("https://sexy-starling.pikapod.net/api/collections/transferencias/records", {
+                method: "POST", headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(datosTransferencia)
+            });
+        } catch (e) {
+            console.error("Error guardando en la nube:", e);
         }
-        
+
         cerrarModales(); 
-        alert(`✅ Traspaso enviado.\nSe descontaron $${monto.toFixed(2)} de tu caja. Esperando a que ${cajeroDestino} acepte el dinero.`);
+        if(typeof mostrarAvisoRapido === 'function') mostrarAvisoRapido(`✅ Traspaso enviado.\nSe descontaron $${monto.toFixed(2)} de tu caja.`);
+        else alert(`✅ Traspaso enviado.\nSe descontaron $${monto.toFixed(2)} de tu caja.`);
     
     } else {
         let idMov = Date.now(); 
-        let nuevoMov = { id: idMov, id_sesion_caja: idSesionTurno, fecha: hoy, hora: hora, cajero: miNombre, sucursal: sucMov, tipo: tipo, monto: monto, motivo: motivo };
-        
-        if (typeof movimientos === 'undefined') window.movimientos = [];
-        movimientos.push(nuevoMov); 
-        
-        if (typeof db !== 'undefined') db.collection("movimientos").doc(String(idMov)).set(nuevoMov).catch(e=>console.log(e));
+        let nuevoMov = { 
+            id: idMov, id_sesion_caja: idSesionTurno, fecha: hoy, hora: hora, 
+            cajero: miNombre, sucursal: sucMov, tipo: tipo, monto: monto, motivo: motivo 
+        };
+
+        // 🔥 CORRECCIÓN AQUÍ: Forzamos la creación del arreglo si no existe
+        window.movimientos = window.movimientos || [];
+        window.movimientos.push(nuevoMov); 
+
+        try {
+            await fetch("https://sexy-starling.pikapod.net/api/collections/movimientos/records", {
+                method: "POST", headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ doc_id: String(idMov), data: nuevoMov })
+            });
+        } catch (e) {}
+
         cerrarModales(); 
-        alert(`✅ ${tipo} registrado.`); 
+        if(typeof mostrarAvisoRapido === 'function') mostrarAvisoRapido(`✅ ${tipo} registrado.`);
+        else alert(`✅ ${tipo} registrado.`);
     }
 
-    // PROTECCIÓN DE MEMORIA LOCAL
-    try {
-        localStorage.setItem("pos_movimientos_v1", JSON.stringify(movimientos));
-    } catch (e) {
-        movimientos = movimientos.slice(-200); 
-        localStorage.setItem("pos_movimientos_v1", JSON.stringify(movimientos));
-    }
-    
-    // ACTUALIZAR PANTALLA SI ESTAMOS EN EL DASHBOARD
-    if(typeof renderCorte === 'function') renderCorte();
+    try { localStorage.setItem("pos_movimientos_v1", JSON.stringify(window.movimientos)); } catch (e) {}
+    if (typeof renderCorte === 'function') renderCorte();
 };
+
+window.abrirModalDevolucion = async function(idRecord, datosModal) {
+    let monto = parseFloat(datosModal.monto) || 0;
+    let idSesionTurno = (window.sesionCajaActual ? window.sesionCajaActual.id : null);
+    let hoy = typeof getFechaLocal === 'function' ? getFechaLocal() : new Date().toISOString().split('T')[0];
+    let hora = new Date().toLocaleTimeString();
+    let sucMov = typeof sucursalActual !== 'undefined' ? sucursalActual : 'Matriz';
+    let miNombre = typeof usuarioActual !== 'undefined' ? usuarioActual : 'Admin';
+
+    let nuevoMov = {
+        id: Date.now(), 
+        id_sesion_caja: idSesionTurno, 
+        fecha: hoy, 
+        hora: hora,
+        cajero: miNombre, 
+        sucursal: sucMov, 
+        tipo: "Ingreso", 
+        monto: monto,
+        motivo: `↩️ REEMBOLSO: Traspaso rechazado`
+    };
+
+    // 🔥 CORRECCIÓN AQUÍ: Forzamos la creación del arreglo si no existe
+    window.movimientos = window.movimientos || [];
+    window.movimientos.push(nuevoMov);
+
+    try {
+        await fetch("https://sexy-starling.pikapod.net/api/collections/movimientos/records", {
+            method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ doc_id: String(nuevoMov.id), data: nuevoMov })
+        });
+
+        await fetch(`https://sexy-starling.pikapod.net/api/collections/transferencias/records/${idRecord}`, {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ estado: "cancelada", "data.estado": "cancelada" })
+        });
+    } catch(e) {}
+
+    try { localStorage.setItem("pos_movimientos_v1", JSON.stringify(window.movimientos)); } catch (e) {}
+    if (typeof renderCorte === 'function') renderCorte();
+
+    if (typeof mostrarAvisoRapido === 'function') mostrarAvisoRapido(`✅ Reembolso de $${monto.toFixed(2)} devuelto a tu caja.`);
+};
+
+
+
+
 function registrarGasto() { let monto = parseFloat(prompt("💸 ¿Cuánto vas a retirar?")); if (isNaN(monto) || monto <= 0) return; let motivo = prompt("¿Motivo?"); if (!motivo) return; procesarRetiroCaja(monto, `GASTO: ${motivo.toUpperCase()}`); }
 window.registrarPrecorte = function() { 
     let ef = (typeof calcularEfectivoEnCaja === 'function') ? calcularEfectivoEnCaja() : (currentCorteData ? currentCorteData.esperado : 0); 
@@ -3973,14 +4071,13 @@ window.verificarPinYCancelar = function() {
 // ====================================================================
 window.renderCorte = function() { 
     try {
-        let fInicio = document.getElementById('corte_fecha_inicio').value; 
-        let fFin = document.getElementById('corte_fecha_fin').value; 
-        let fCajero = document.getElementById('corte_cajero').value; 
-        let fSuc = document.getElementById('corte_sucursal').value; 
-        let hoy = getFechaLocal();
+        let fInicio = document.getElementById('corte_fecha_inicio') ? document.getElementById('corte_fecha_inicio').value : ''; 
+        let fFin = document.getElementById('corte_fecha_fin') ? document.getElementById('corte_fecha_fin').value : ''; 
+        let fCajero = document.getElementById('corte_cajero') ? document.getElementById('corte_cajero').value : ''; 
+        let fSuc = document.getElementById('corte_sucursal') ? document.getElementById('corte_sucursal').value : ''; 
+        let hoy = (typeof getFechaLocal === 'function') ? getFechaLocal() : new Date().toISOString().split('T')[0];
 
-        // 🌟 1. DETECCION DE MODO SESION (TURNO) VS MODO HISTORICO (FECHAS)
-        // Si existe una sesión de caja activa y no hay filtros manuales de fechas pasadas, filtramos por la Sesión.
+        // 🌟 1. DETECCIÓN DE MODO SESIÓN (TURNO) VS MODO HISTÓRICO (FECHAS)
         let sesionActiva = (typeof sesionCajaActual !== 'undefined' && sesionCajaActual && sesionCajaActual.estado === 'abierta') ? sesionCajaActual : null;
         let esFiltroHistorico = (fInicio && fInicio !== hoy) || (fFin && fFin !== hoy);
 
@@ -4019,15 +4116,13 @@ window.renderCorte = function() {
             return;
         }
 
-        // 🔍 2. FILTRADO INTELIGENTE DE VENTAS (POR SESIÓN / TURNO O FECHA)
+        // 🔍 2. FILTRADO INTELIGENTE DE VENTAS
         let filteredVentas = todasLasVentas.filter(v => { 
-            // Si hay sesión activa y no se forzó un rango de fechas históricas, agrupamos por id_sesion
             if (sesionActiva && !esFiltroHistorico) {
-                return v.id_sesion_caja === sesionActiva.id && 
+                return (v.id_sesion_caja === sesionActiva.id || v.fecha === hoy) && 
                        (!fCajero || v.cajero === fCajero) && 
                        (!fSuc || v.sucursal === fSuc || (fSuc === "Matriz" && !v.sucursal));
             }
-            // Modo histórico por fechas
             let vFecha = v.fecha || hoy; 
             return (vFecha >= fInicio && vFecha <= fFin) && 
                    (!fCajero || v.cajero === fCajero) && 
@@ -4112,44 +4207,70 @@ window.renderCorte = function() {
             });
         }); 
 
-        // 🔍 3. FILTRADO INTELIGENTE DE MOVIMIENTOS (RETIROS / INGRESOS)
+        // 🔍 3. FILTRADO MULTI-USUARIO ROBUSTO DE MOVIMIENTOS (RETIROS / INGRESOS)
         let ing_efectivo = 0, ret_efectivo = 0, flujo_ing_otros = 0, flujo_out_compras = 0, flujo_out_otros = 0;
         let listaRetirosGastos = []; 
         let listaIngresosExtra = []; 
 
+        let usuarioSesionLimpio = String(typeof usuarioActual !== 'undefined' ? usuarioActual : '').trim().toLowerCase();
+        let fCajeroLimpio = String(fCajero || '').trim().toLowerCase();
+
         let filteredMovs = todosLosMovs.filter(m => {
-            if (sesionActiva && !esFiltroHistorico) {
-                return m.id_sesion_caja === sesionActiva.id && (!fCajero || m.cajero === fCajero) && (!fSuc || m.sucursal === fSuc);
-            }
+            if (!m) return false;
             let mFecha = m.fecha || hoy;
-            return mFecha >= fInicio && mFecha <= fFin && (!fCajero || m.cajero === fCajero) && (!fSuc || m.sucursal === fSuc);
+            let mCajero = String(m.cajero || '').trim().toLowerCase();
+
+            // Si se eligió un cajero específico en el selector
+            if (fCajeroLimpio) {
+                return mCajero === fCajeroLimpio && (mFecha === hoy || (mFecha >= fInicio && mFecha <= fFin));
+            }
+
+            // Si estamos en sesión activa (Corte del Turno Actual)
+            if (sesionActiva && !esFiltroHistorico) {
+                let coincideSesion = m.id_sesion_caja && String(m.id_sesion_caja) === String(sesionActiva.id);
+                // Si coincide el usuario activo O si no hay filtro estricto de cajero
+                let coincideUsuario = (mFecha === hoy) && (mCajero === usuarioSesionLimpio || usuarioSesionLimpio === 'admin' || !usuarioSesionLimpio);
+                let coincideSucursal = (!fSuc || m.sucursal === fSuc || (fSuc === "Matriz" && !m.sucursal));
+
+                return (coincideSesion || coincideUsuario) && coincideSucursal;
+            }
+
+            // Modo histórico por fechas
+            return mFecha >= fInicio && mFecha <= fFin;
         });
 
         filteredMovs.forEach(m => {
-            let montoM = parseFloat(m.monto) || 0; let mMotivo = (m.motivo || '').toLowerCase();
+            let montoM = parseFloat(m.monto) || 0; 
+            let mMotivo = (m.motivo || '').toLowerCase();
+            let mTipo = String(m.tipo || '').trim();
             
-            if(m.tipo === 'Ingreso') { 
-                ing_efectivo += montoM; flujo_ing_otros += montoM; 
+            if (mTipo === 'Ingreso') { 
+                ing_efectivo += montoM; 
+                flujo_ing_otros += montoM; 
                 listaIngresosExtra.push(m);
-            } else if(m.tipo === 'Retiro') { 
+            } else if (mTipo === 'Retiro' || mTipo === 'Gasto') { 
                 ret_efectivo += montoM; 
-                if (mMotivo.includes('compra') || mMotivo.includes('proveedor')) flujo_out_compras += montoM; else flujo_out_otros += montoM; 
+                if (mMotivo.includes('compra') || mMotivo.includes('proveedor')) {
+                    flujo_out_compras += montoM; 
+                } else {
+                    flujo_out_otros += montoM; 
+                }
                 listaRetirosGastos.push(m);
             }
             
-            let isIngreso = m.tipo === 'Ingreso';
+            let isIngreso = (mTipo === 'Ingreso');
             operacionesHTML.push({
                 id: m.id,
-                html: `<tr style="background:#fcfcfc;"><td>${m.fecha} ${m.hora}</td><td>${m.cajero || 'Admin'}</td><td>${m.sucursal || 'Matriz'}</td><td style="font-weight:bold; color:${isIngreso?'var(--s)':'var(--danger)'};">${isIngreso?'+':'-'}$$${montoM.toFixed(2)}</td><td><span class="badge-kit" style="background:${isIngreso?'var(--info)':'var(--danger)'}">${m.tipo.toUpperCase()}</span></td><td>${m.motivo}</td></tr>`
+                html: `<tr style="background:#fcfcfc;"><td>${m.fecha || hoy} ${m.hora || ''}</td><td>${m.cajero || 'Admin'}</td><td>${m.sucursal || 'Matriz'}</td><td style="font-weight:bold; color:${isIngreso?'var(--s)':'var(--danger)'};">${isIngreso?'+':'-'}$${montoM.toFixed(2)}</td><td><span class="badge-kit" style="background:${isIngreso?'var(--info)':'var(--danger)'}">${mTipo.toUpperCase()}</span></td><td>${m.motivo || 'Movimiento de Caja'}</td></tr>`
             });
         });
 
-        // 🔍 4. FILTRADO E INTEGRACIÓN DIRECTA DE COMPRAS EN EFECTIVO
+        // 🔍 4. FILTRADO DE COMPRAS EN EFECTIVO
         let comprasEfectivoTotal = 0;
         let filteredCompras = todasLasCompras.filter(c => {
             if (c.anulada) return false;
             if (sesionActiva && !esFiltroHistorico) {
-                return c.id_sesion_caja === sesionActiva.id && (!fCajero || c.cajero === fCajero) && (!fSuc || c.sucursal === fSuc);
+                return (c.id_sesion_caja === sesionActiva.id || c.fecha === hoy) && (!fCajero || c.cajero === fCajero) && (!fSuc || c.sucursal === fSuc);
             }
             let cFecha = c.fecha || hoy;
             return cFecha >= fInicio && cFecha <= fFin && (!fCajero || c.cajero === fCajero) && (!fSuc || c.sucursal === fSuc);
@@ -4163,7 +4284,7 @@ window.renderCorte = function() {
             }
         });
 
-        // 💵 5. ECUACIÓN MATEMÁTICA DEFINITIVA DEL EFECTIVO EN CAJA
+        // 💵 5. CÁLCULO DE CAJA
         let fondoInicial = (sesionActiva && !esFiltroHistorico) ? (parseFloat(sesionActiva.monto_inicial) || 0) : 0;
         let efectivoEnCaja = fondoInicial + ef + ing_efectivo - ret_efectivo - comprasEfectivoTotal;
         
@@ -4176,26 +4297,49 @@ window.renderCorte = function() {
             cajeroCorte: fCajero || "Todos", fechaInicio: fInicio, fechaFin: fFin
         };
 
-        // Renderizado en UI
-        document.getElementById('kpi_ventas').innerText = "$" + tVentas.toLocaleString('es-MX', {minimumFractionDigits: 2});
-        document.getElementById('kpi_ganancia').innerText = "$" + tUtilidad.toLocaleString('es-MX', {minimumFractionDigits: 2});
-        document.getElementById('kpi_no_ventas').innerText = numVentas;
-        document.getElementById('kpi_ticket_prom').innerText = "$" + (numVentas > 0 ? (tVentas / numVentas) : 0).toLocaleString('es-MX', {minimumFractionDigits: 2});
-        document.getElementById('kpi_margen').innerText = (tVentas > 0 ? ((tUtilidad / tVentas) * 100) : 0).toFixed(2) + "%";
+        // Renderizado en interfaz
+        if(document.getElementById('kpi_ventas')) document.getElementById('kpi_ventas').innerText = "$" + tVentas.toLocaleString('es-MX', {minimumFractionDigits: 2});
+        if(document.getElementById('kpi_ganancia')) document.getElementById('kpi_ganancia').innerText = "$" + tUtilidad.toLocaleString('es-MX', {minimumFractionDigits: 2});
+        if(document.getElementById('kpi_no_ventas')) document.getElementById('kpi_no_ventas').innerText = numVentas;
+        if(document.getElementById('kpi_ticket_prom')) document.getElementById('kpi_ticket_prom').innerText = "$" + (numVentas > 0 ? (tVentas / numVentas) : 0).toLocaleString('es-MX', {minimumFractionDigits: 2});
+        if(document.getElementById('kpi_margen')) document.getElementById('kpi_margen').innerText = (tVentas > 0 ? ((tUtilidad / tVentas) * 100) : 0).toFixed(2) + "%";
         
-        document.getElementById('r_efectivo').innerText = "$"+efectivoEnCaja.toFixed(2); 
-        document.getElementById('r_tarjeta').innerText = "$"+ta.toFixed(2); 
-        document.getElementById('r_transferencia').innerText = "$"+trans.toFixed(2); 
-        document.getElementById('r_credito').innerText = "$"+cr.toFixed(2); 
-        document.getElementById('r_total').innerText = "$"+(ef + ta + trans).toFixed(2); 
+        if(document.getElementById('r_efectivo')) document.getElementById('r_efectivo').innerText = "$"+efectivoEnCaja.toFixed(2); 
+        if(document.getElementById('r_tarjeta')) document.getElementById('r_tarjeta').innerText = "$"+ta.toFixed(2); 
+        if(document.getElementById('r_transferencia')) document.getElementById('r_transferencia').innerText = "$"+trans.toFixed(2); 
+        if(document.getElementById('r_credito')) document.getElementById('r_credito').innerText = "$"+cr.toFixed(2); 
+        if(document.getElementById('r_total')) document.getElementById('r_total').innerText = "$"+(ef + ta + trans).toFixed(2); 
 
-        document.getElementById('r_lista_ventas').innerHTML = operacionesHTML.sort((a,b) => b.id - a.id).map(op => op.html).join('') || "<tr><td colspan='6' style='text-align:center'>No hay operaciones en este rango</td></tr>";
+        if(document.getElementById('r_lista_ventas')) document.getElementById('r_lista_ventas').innerHTML = operacionesHTML.sort((a,b) => b.id - a.id).map(op => op.html).join('') || "<tr><td colspan='6' style='text-align:center'>No hay operaciones en este rango</td></tr>";
 
-        let htmlGastos = listaRetirosGastos.map(g => `<tr><td>${g.hora}</td><td>${g.motivo}</td><td style="text-align:right; color:red;">-$${parseFloat(g.monto).toFixed(2)}</td></tr>`).join('');
+        let htmlGastos = listaRetirosGastos.map(g => `<tr><td>${g.hora || ''}</td><td>${g.motivo || 'Retiro'}</td><td style="text-align:right; color:red;">-$${parseFloat(g.monto).toFixed(2)}</td></tr>`).join('');
         let cg = document.getElementById('cc_lista_gastos'); if(cg) { cg.innerHTML = htmlGastos || '<tr><td colspan="3" style="text-align:center; color:#888;">No hubo retiros</td></tr>'; }
         
-        let htmlIngresos = listaIngresosExtra.map(g => `<tr><td>${g.hora}</td><td>${g.motivo}</td><td style="text-align:right; color:#28a745;">+$${parseFloat(g.monto).toFixed(2)}</td></tr>`).join('');
-        let ci = document.getElementById('cc_lista_ingresos'); if(ci) { ci.innerHTML = htmlIngresos || '<tr><td colspan="3" style="text-align:center; color:#888;">No hubo ingresos extra</td></tr>'; }
+        let htmlIngresos = listaIngresosExtra.map(g => `<tr><td>${g.hora || ''}</td><td>${g.motivo || 'Ingreso'}</td><td style="text-align:right; color:#28a745;">+$${parseFloat(g.monto).toFixed(2)}</td></tr>`).join('');
+        let ci = document.getElementById('ci_lista_ingresos') || document.getElementById('cc_lista_ingresos'); if(ci) { ci.innerHTML = htmlIngresos || '<tr><td colspan="3" style="text-align:center; color:#888;">No hubo ingresos extra</td></tr>'; }
+
+        // 🌟 RENDERIZADO EN EL CUADRO DE TEXTO DEL ARQUEO
+        let elemDetalleTexto = document.getElementById('cierre_detalle_texto') || document.getElementById('cc_detalle_arqueo');
+        if (elemDetalleTexto) {
+            let txt = "";
+            if (listaIngresosExtra.length > 0) {
+                txt += "🟢 OTROS INGRESOS (Abonos, Entradas):\n";
+                listaIngresosExtra.forEach(i => {
+                    txt += ` + $${parseFloat(i.monto).toFixed(2)} | 📥 ${i.motivo} (${i.hora || ''})\n`;
+                });
+                txt += "\n";
+            }
+            if (listaRetirosGastos.length > 0) {
+                txt += "🔴 GASTOS Y RETIROS (Salidas, Traspasos):\n";
+                listaRetirosGastos.forEach(r => {
+                    txt += ` - $${parseFloat(r.monto).toFixed(2)} | 🔄 ${r.motivo} (${r.hora || ''})\n`;
+                });
+            }
+            if (!txt) {
+                txt = "(No hay ingresos ni gastos extra registrados en este turno)";
+            }
+            elemDetalleTexto.innerText = txt;
+        }
 
         // Tabla de cajeros KPI
         let htmlCajerosKpi = Object.keys(metricasCajero).map(c => {
@@ -5868,82 +6012,75 @@ window.abrirCorteCaja = async function() {
     // DESCARGAMOS LA NUBE
     try {
         if (typeof pb !== 'undefined') {
-            // 1. Descargamos Ventas
+            // 1. Descargamos Ventas resguardando tanto la raíz como el objeto data
             let recordsVentas = await pb.collection('ventas').getFullList({ requestKey: null });
-            // FORZAMOS EL GUARDADO EN LA VARIABLE GLOBAL
-            window.ventas = recordsVentas.map(r => r.data); 
+            window.ventas = recordsVentas.map(r => {
+                let v = r.data || r;
+                v.id = v.id || r.id;
+                return v;
+            }); 
 
-       // 2. Descargamos Movimientos
+            // 2. Descargamos Movimientos resguardando tanto la raíz como el objeto data (🔥 CORRECCIÓN CRÍTICA)
             let recordsMovs = await pb.collection('movimientos').getFullList({ requestKey: null });
-            // FORZAMOS EL GUARDADO EN LA VARIABLE GLOBAL
-            window.movimientos = recordsMovs.map(r => r.data);
+            window.movimientos = recordsMovs.map(r => {
+                let m = r.data || r;
+                m.id = m.id || r.id;
+                return m;
+            });
             
             console.log("☁️ Datos sincronizados. Ventas:", window.ventas.length, "Movs:", window.movimientos.length);
-
-            // ⚡ REFRESCAMOS EL MENÚ DE CAJEROS A LA FUERZA
-            let selectMenu = document.getElementById('cc_filtro_cajero');
-            if(selectMenu) {
-                let cajerosActivos = new Set();
-                window.ventas.forEach(v => { if(v.cajero) cajerosActivos.add(v.cajero.trim()); });
-                window.movimientos.forEach(m => { if(m.cajero) cajerosActivos.add(m.cajero.trim()); });
-                
-                // Mantenemos la opción por defecto y agregamos los encontrados
-                selectMenu.innerHTML = '<option value="">👤 Todos los cajeros</option>';
-                [...cajerosActivos].forEach(c => {
-                    selectMenu.innerHTML += `<option value="${c}">${c}</option>`;
-                });
-            }
         }
     } catch(e) {
-        console.warn("Sin internet o error al descargar:", e);
+        console.warn("Sin internet o error al descargar de PocketBase:", e);
     }
     
     if (btnConfirmar) btnConfirmar.disabled = false;
+
     // ARMAMOS LA LISTA DE CAJEROS
+    let cajerosActivos = new Set();
+    if (typeof ventas !== 'undefined' && Array.isArray(ventas)) {
+        ventas.forEach(v => { if(v && v.cajero) cajerosActivos.add(v.cajero.trim()); });
+    }
+    if (typeof movimientos !== 'undefined' && Array.isArray(movimientos)) {
+        movimientos.forEach(m => { if(m && m.cajero) cajerosActivos.add(m.cajero.trim()); });
+    }
+    if (typeof usuarioActual !== 'undefined' && usuarioActual && usuarioActual !== 'Admin') {
+        cajerosActivos.add(usuarioActual.trim());
+    }
+
     if(selectMenu) {
         let htmlCajeros = '<option value="">👤 Todos los cajeros</option>';
-        let cajerosActivos = new Set();
-
-        if (typeof ventas !== 'undefined') {
-            ventas.forEach(v => { if(v.cajero) cajerosActivos.add(v.cajero.trim()); });
-        }
-        if (typeof movimientos !== 'undefined') {
-            movimientos.forEach(m => { if(m.cajero) cajerosActivos.add(m.cajero.trim()); });
-        }
-        
-        if (usuarioActual && usuarioActual !== 'Admin') cajerosActivos.add(usuarioActual);
-
         [...cajerosActivos].forEach(c => htmlCajeros += `<option value="${c}">${c}</option>`);
         selectMenu.innerHTML = htmlCajeros;
         
         selectMenu.onchange = function() { window.calcularTotalesCorte(); };
 
-        if (usuarioActual && usuarioActual !== 'Admin') {
-            selectMenu.value = usuarioActual;
+        if (typeof usuarioActual !== 'undefined' && usuarioActual && usuarioActual !== 'Admin') {
+            selectMenu.value = usuarioActual.trim();
         }
     }
 
-    // 🌟 AQUÍ ESTÁ EL CAMBIO SOLICITADO: Por defecto, la fecha/hora exacta de AHORITA MISMO
+    // FECHA / HORA SUGERIDA POR DEFECTO
     let ahoraMilisegundos = Date.now();
     let inicioSugerido = ahoraMilisegundos;
 
-    // Intentamos buscar si hay ventas de hoy para ajustar el inicio a la primera venta del día
     let dHOY = new Date(); dHOY.setHours(0,0,0,0);
-    let ventasDeHoy = ventas.filter(v => Number(v.id) >= dHOY.getTime() && v.sucursal === sucursalActual && !v.anulada);
+    let sucReal = typeof sucursalActual !== 'undefined' ? sucursalActual : 'Matriz';
+    
+    let ventasDeHoy = (window.ventas || []).filter(v => Number(v.id) >= dHOY.getTime() && v.sucursal === sucReal && !v.anulada);
     
     if(ventasDeHoy.length > 0) {
-        // Si hay ventas hoy, la sugerencia de inicio retrocede al momento de la primera venta de hoy
         inicioSugerido = Math.min(...ventasDeHoy.map(v => Number(v.id)));
     } else {
-        // Si no hay ventas, sugerimos arrancar desde el inicio del día actual (00:00) por defecto
         inicioSugerido = dHOY.getTime();
     }
 
-    // Llenamos las cajas con Día y Hora actuales
-    if(inputInicio) inputInicio.value = window.formatearParaInput(inicioSugerido);
-    if(inputFin) inputFin.value = window.formatearParaInput(ahoraMilisegundos);
+    if(inputInicio && typeof window.formatearParaInput === 'function') inputInicio.value = window.formatearParaInput(inicioSugerido);
+    if(inputFin && typeof window.formatearParaInput === 'function') inputFin.value = window.formatearParaInput(ahoraMilisegundos);
 
-    window.calcularTotalesCorte(); 
+    // REFRESCAMOS RENDER CORTE Y CÁLCULOS
+    if (typeof window.renderCorte === 'function') window.renderCorte();
+    if (typeof window.calcularTotalesCorte === 'function') window.calcularTotalesCorte(); 
     
     setTimeout(() => {
         let primerBillete = document.querySelector('.calc-den');
@@ -8568,206 +8705,239 @@ document.addEventListener('DOMContentLoaded', () => {
 
 window.transferenciaPendienteActual = null;
 window.transferenciaDevueltaActual = null;
+window.transferenciasVistas = window.transferenciasVistas || new Set();
 
 window.iniciarRadarTransferencias = function() {
-    if (typeof db === 'undefined' || typeof usuarioActual === 'undefined' || !usuarioActual) return;
+    if (window.intervaloRadar) clearInterval(window.intervaloRadar);
 
-    let miNombreLimpio = String(usuarioActual).trim().toLowerCase();
+    console.log("🚀 Motor de Radar de Transferencias encendido (Esperando sesión...)");
+
+    window.intervaloRadar = setInterval(async () => {
+        if (typeof usuarioActual === 'undefined' || !usuarioActual) return; 
+        
+        let miNombreLimpio = String(usuarioActual).trim().toLowerCase();
+
+        try {
+            let url = "https://sexy-starling.pikapod.net/api/collections/transferencias/records?perPage=20&sort=-created";
+            let res = await fetch(url);
+            if (!res.ok) return;
+            
+            let result = await res.json();
+            let lista = result.items || [];
+
+            for (let record of lista) {
+                let payload = record.data || record;
+                let idRecord = record.id; 
+                
+                // 🌟 CORRECCIÓN 1: Priorizamos el estado raíz de la base de datos
+                let estado = String(record.estado || payload.estado || '').toLowerCase();
+                
+                // 🌟 CORRECCIÓN 2: La memoria ahora guarda ID + Estado (ej. "12345_devuelta")
+                let claveMemoria = idRecord + "_" + estado;
+                
+                // Si ya vimos esta transferencia EN ESTE ESTADO, la saltamos
+                if (window.transferenciasVistas.has(claveMemoria)) continue;
+
+                let rec = String(record.receptor || payload.receptor || '').trim().toLowerCase();
+                let emi = String(record.emisor || payload.emisor || '').trim().toLowerCase();
+
+                // 📥 Dinero recibido
+                if (rec === miNombreLimpio && estado === "pendiente") {
+                    console.log("✅ ¡DINERO ENCONTRADO! Mostrando burbuja verde...", idRecord);
+                    window.transferenciasVistas.add(claveMemoria);
+                    
+                    let datosModal = {
+                        id_pb: idRecord,
+                        emisor: record.emisor || payload.emisor,
+                        receptor: record.receptor || payload.receptor,
+                        monto: record.monto || payload.monto,
+                        fecha: record.fecha || payload.fecha,
+                        hora: record.hora || payload.hora
+                    };
+                    
+                    if (typeof mostrarNotificacionFlotante === 'function') {
+                        mostrarNotificacionFlotante(idRecord, datosModal, 'recibir');
+                    }
+                }
+                
+                // ↩️ Devolución (Rechazo)
+                if (emi === miNombreLimpio && estado === "devuelta") {
+                    console.log("🚫 ¡DEVOLUCIÓN ENCONTRADA! Mostrando burbuja roja...", idRecord);
+                    window.transferenciasVistas.add(claveMemoria);
+                    
+                    let datosModal = {
+                        id_pb: idRecord,
+                        emisor: record.emisor || payload.emisor,
+                        monto: record.monto || payload.monto
+                    };
+                    
+                    if (typeof mostrarNotificacionFlotante === 'function') {
+                        mostrarNotificacionFlotante(idRecord, datosModal, 'devolucion');
+                    }
+                }
+            }
+        } catch (e) {}
+    }, 3000);
+};
+
+// ⚡ ARRANQUE AUTOMÁTICO DE SEGURIDAD
+setTimeout(() => {
+    if (typeof iniciarRadarTransferencias === 'function') {
+        iniciarRadarTransferencias();
+    }
+}, 2000);
+
+// ⚡ ARRANQUE AUTOMÁTICO DE SEGURIDAD (Obliga al radar a prenderse al abrir el sistema)
+setTimeout(() => {
+    if (typeof iniciarRadarTransferencias === 'function') {
+        iniciarRadarTransferencias();
+    }
+}, 2000);
+// 2. MOSTRAR ALERTA DE DINERO NUEVO RECIBIDO
+// ==========================================
+// 1. ABRIR VENTANA DE RECIBIR DINERO (SIMPLIFICADA)
+// ==========================================
+// ==========================================
+// 1. ABRIR VENTANA DE RECIBIR DINERO
+// ==========================================
+window.abrirModalTransferencia = function(idRecord, datosModal) {
+    // Guardamos los datos de la transferencia temporalmente
+    window.transferenciaPendienteActual = { id_pb: idRecord, ...datosModal };
+
+    // Buscamos la ventana y los textos en tu nuevo HTML
+    let modal = document.getElementById('modalNotificacionTransferencia');
+    let lblEmisor = document.getElementById('lbl_transf_emisor');
+    let lblMonto = document.getElementById('lbl_transf_monto');
+    let lblSucursal = document.getElementById('lbl_transf_sucursal');
+
+    if (!modal) {
+        console.error("No se encontró la ventana del modal en el HTML.");
+        return;
+    }
+
+    // Rellenamos los datos si encontramos las etiquetas
+    if (lblEmisor) lblEmisor.innerText = datosModal.emisor || "Admin";
+    if (lblMonto) lblMonto.innerText = parseFloat(datosModal.monto || 0).toFixed(2);
+    if (lblSucursal) lblSucursal.innerText = typeof sucursalActual !== 'undefined' ? sucursalActual : 'Matriz';
+
+    // Mostramos la ventana (usamos 'flex' para que se centre perfectamente)
+    modal.style.display = 'flex';
+};
+// ==========================================
+// 2. ACEPTAR Y GUARDAR DIRECTO A LA CAJA
+// ==========================================
+window.aceptarTransferencia = async function() {
+    let t = window.transferenciaPendienteActual;
+    if (!t) return;
+
+    let monto = parseFloat(t.monto) || 0;
+    
+    // El sistema lee automáticamente dónde está parado el usuario
+    let idSesionTurno = (window.sesionCajaActual ? window.sesionCajaActual.id : null);
+    let hoy = typeof getFechaLocal === 'function' ? getFechaLocal() : new Date().toISOString().split('T')[0];
+    let hora = new Date().toLocaleTimeString();
+    let sucMov = typeof sucursalActual !== 'undefined' ? sucursalActual : 'Matriz';
+    let miNombre = typeof usuarioActual !== 'undefined' ? usuarioActual : 'Admin';
+    let idRegistroPB = t.id_pb || t.id;
+
+    // Creamos el ingreso
+    let nuevoMov = {
+        id: Date.now(), 
+        id_sesion_caja: idSesionTurno, 
+        fecha: hoy, 
+        hora: hora,
+        cajero: miNombre, 
+        sucursal: sucMov, 
+        tipo: "Ingreso", 
+        monto: monto,
+        motivo: `📥 TRASPASO RECIBIDO: de ${t.emisor}`
+    };
+
+    // Blindaje de memoria local
+    window.movimientos = window.movimientos || [];
+    window.movimientos.push(nuevoMov);
 
     try {
-        let coleccionTrans = db.collection("transferencias");
+        // Guardamos el movimiento en la nube
+        await fetch("https://sexy-starling.pikapod.net/api/collections/movimientos/records", {
+            method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ doc_id: String(nuevoMov.id), data: nuevoMov })
+        });
 
-        // ESCENARIO 1: Si estás usando Firebase Firestore original
-        if (typeof coleccionTrans.where === 'function') {
-            coleccionTrans
-              .where("receptor", "==", String(usuarioActual).trim())
-              .where("estado", "==", "pendiente")
-              .onSnapshot((snapshot) => {
-                  snapshot.docChanges().forEach((change) => {
-                      if (change.type === "added" || change.type === "modified") {
-                          abrirModalTransferencia(change.doc.id, change.doc.data());
-                      }
-                  });
-              }, (err) => console.log("Radar A:", err));
-
-            coleccionTrans
-              .where("emisor", "==", String(usuarioActual).trim())
-              .where("estado", "==", "devuelta")
-              .onSnapshot((snapshot) => {
-                  snapshot.docChanges().forEach((change) => {
-                      if (change.type === "added" || change.type === "modified") {
-                          abrirModalDevolucion(change.doc.id, change.doc.data());
-                      }
-                  });
-              }, (err) => console.log("Radar B:", err));
-
-        } else {
-            // ESCENARIO 2: Si tu 'db' es una base de datos local o emulada (Sin .where())
-            console.warn("⚠️ 'db' local detectada. Usando escaneo manual de transferencias.");
-            
-            setInterval(() => {
-                let procesarDatos = (docs) => {
-                    if (!docs) return;
-                    let lista = Array.isArray(docs) ? docs : Object.values(docs);
-                    
-                    lista.forEach(data => {
-                        if (!data) return;
-                        let rec = String(data.receptor || '').trim().toLowerCase();
-                        let emi = String(data.emisor || '').trim().toLowerCase();
-                        let id = data.id || data.idDoc;
-
-                        // Antena A: Recibir
-                        if (rec === miNombreLimpio && data.estado === "pendiente") {
-                            abrirModalTransferencia(id, data);
-                        }
-                        // Antena B: Devolución
-                        if (emi === miNombreLimpio && data.estado === "devuelta") {
-                            abrirModalDevolucion(id, data);
-                        }
-                    });
-                };
-
-                // Intentamos leer datos según el tipo de db local que tengas
-                if (typeof coleccionTrans.get === 'function') {
-                    coleccionTrans.get().then(snap => {
-                        let docs = snap.docs ? snap.docs.map(d => ({id: d.id, ...d.data()})) : snap;
-                        procesarDatos(docs);
-                    }).catch(e => {});
-                } else if (typeof coleccionTrans === 'function') {
-                    procesarDatos(coleccionTrans());
-                }
-            }, 3000); // Revisa cada 3 segundos en segundo plano
-        }
-
-    } catch (error) {
-        console.error("❌ Error en iniciarRadarTransferencias:", error);
-    }
-};
-
-// 2. MOSTRAR ALERTA DE DINERO NUEVO RECIBIDO
-window.abrirModalTransferencia = function(idDoc, data) {
-    window.transferenciaPendienteActual = { id: idDoc, ...data };
-    document.getElementById('notif_transf_emisor').innerText = data.emisor || "Otro Cajero";
-    document.getElementById('notif_transf_monto').innerText = "$" + parseFloat(data.monto).toFixed(2);
-
-    let selectSuc = document.getElementById('notif_transf_sucursal');
-    selectSuc.innerHTML = '';
-    let sucActiva = (window.sesionCajaActual && window.sesionCajaActual.sucursal) ? window.sesionCajaActual.sucursal : (typeof sucursalActual !== 'undefined' ? sucursalActual : "Matriz");
-
-    selectSuc.innerHTML += `<option value="${sucActiva}">${sucActiva} (Sesión Actual)</option>`;
-    selectSuc.innerHTML += `<option value="Matriz">Matriz</option>`;
-    selectSuc.innerHTML += `<option value="Sucursal 1">Sucursal 1</option>`;
-    selectSuc.innerHTML += `<option value="Sucursal 2">Sucursal 2</option>`;
-
-    document.getElementById('modalNotificacionTransferencia').style.display = 'flex';
-};
-
-// 3. ACEPTAR DINERO NUEVO
-window.aceptarTransferencia = function() {
-    let t = window.transferenciaPendienteActual;
-    if (!t) return;
-
-    let sucElegida = document.getElementById('notif_transf_sucursal').value;
-    let monto = parseFloat(t.monto);
-    let hoy = typeof getFechaLocal === 'function' ? getFechaLocal() : new Date().toISOString().split('T')[0];
-    let hora = new Date().toLocaleTimeString();
-    let idMov = Date.now();
-    let idSesion = window.sesionCajaActual ? window.sesionCajaActual.id : null;
-
-    let nuevoMov = {
-        id: idMov, id_sesion_caja: idSesion, fecha: hoy, hora: hora, cajero: usuarioActual,
-        sucursal: sucElegida, tipo: "Ingreso", monto: monto, motivo: `Transferencia recibida de: ${t.emisor}`
-    };
-
-    if (typeof movimientos === 'undefined') window.movimientos = [];
-    movimientos.push(nuevoMov);
-    try { localStorage.setItem("pos_movimientos_v1", JSON.stringify(movimientos)); } catch(e){}
-    
-    if (typeof db !== 'undefined') {
-        try { 
-            db.collection("movimientos").doc(String(idMov)).set(nuevoMov);
-            db.collection("transferencias").doc(String(t.id)).update({ estado: "aceptada", sucursal_destino: sucElegida });
-        } catch(e){}
+        // Le decimos a la nube que la transferencia ya fue aceptada
+        await fetch(`https://sexy-starling.pikapod.net/api/collections/transferencias/records/${idRegistroPB}`, {
+            method: "PATCH", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ estado: "aceptada", "data.estado": "aceptada" })
+        });
+    } catch(e) {
+        console.error("Error al procesar la aceptación:", e);
     }
 
+    // Cerramos la ventana y limpiamos la variable temporal
     document.getElementById('modalNotificacionTransferencia').style.display = 'none';
     window.transferenciaPendienteActual = null;
-    alert(`✅ Transferencia de $${monto} ingresada exitosamente en ${sucElegida}.`);
+    
+    // Actualizamos la tabla de corte de caja
+    try { localStorage.setItem("pos_movimientos_v1", JSON.stringify(window.movimientos)); } catch (e) {}
     if (typeof renderCorte === 'function') renderCorte();
-};
 
-// 4. RECHAZAR DINERO NUEVO (Lo envía de vuelta al emisor)
-window.rechazarTransferencia = function() {
-    let t = window.transferenciaPendienteActual;
-    if (!t) return;
-    
-    if (typeof db !== 'undefined') {
-        // 🔥 Magia: Cambiamos el estado a "devuelta" para que le brinque al radar del otro cajero
-        try { db.collection("transferencias").doc(String(t.id)).update({ estado: "devuelta" }); } catch(e){}
+    // Avisamos del éxito
+    if (typeof mostrarAvisoRapido === 'function') {
+        mostrarAvisoRapido(`✅ Traspaso aceptado.\n+$${monto.toFixed(2)} a tu caja.`);
     }
-    
-    document.getElementById('modalNotificacionTransferencia').style.display = 'none';
-    window.transferenciaPendienteActual = null;
-    alert("❌ Transferencia rechazada. Se ha notificado al emisor para que regrese el dinero a su caja.");
 };
 
-// =========================================================================================
-
-// 5. MOSTRAR ALERTA DE DINERO DEVUELTO (RECHAZADO POR EL OTRO)
-window.abrirModalDevolucion = function(idDoc, data) {
-    window.transferenciaDevueltaActual = { id: idDoc, ...data };
-    document.getElementById('notif_dev_receptor').innerText = data.receptor || "El destinatario";
-    document.getElementById('notif_dev_monto').innerText = "$" + parseFloat(data.monto).toFixed(2);
-
-    let selectSuc = document.getElementById('notif_dev_sucursal');
-    selectSuc.innerHTML = '';
-    let sucActiva = (window.sesionCajaActual && window.sesionCajaActual.sucursal) ? window.sesionCajaActual.sucursal : (typeof sucursalActual !== 'undefined' ? sucursalActual : "Matriz");
-
-    selectSuc.innerHTML += `<option value="${sucActiva}">${sucActiva} (Sesión Actual)</option>`;
-    selectSuc.innerHTML += `<option value="Matriz">Matriz</option>`;
-    selectSuc.innerHTML += `<option value="Sucursal 1">Sucursal 1</option>`;
-    selectSuc.innerHTML += `<option value="Sucursal 2">Sucursal 2</option>`;
-
-    document.getElementById('modalDevolucionTransferencia').style.display = 'flex';
-};
-
-// 6. ACEPTAR EL DINERO DEVUELTO (Lo regresa a tu propia caja)
-window.aceptarDineroDevuelto = function() {
-    let t = window.transferenciaDevueltaActual;
-    if (!t) return;
-
-    let sucElegida = document.getElementById('notif_dev_sucursal').value;
-    let monto = parseFloat(t.monto);
-    let hoy = typeof getFechaLocal === 'function' ? getFechaLocal() : new Date().toISOString().split('T')[0];
-    let hora = new Date().toLocaleTimeString();
-    let idMov = Date.now();
-    let idSesion = window.sesionCajaActual ? window.sesionCajaActual.id : null;
-
-    // Se crea un "Ingreso" para reponer el dinero que originalmente habías sacado
-    let nuevoMov = {
-        id: idMov, id_sesion_caja: idSesion, fecha: hoy, hora: hora, cajero: usuarioActual,
-        sucursal: sucElegida, tipo: "Ingreso", monto: monto, motivo: `Devolución de dinero rechazado por: ${t.receptor}`
-    };
-
-    if (typeof movimientos === 'undefined') window.movimientos = [];
-    movimientos.push(nuevoMov);
-    try { localStorage.setItem("pos_movimientos_v1", JSON.stringify(movimientos)); } catch(e){}
-    
-    if (typeof db !== 'undefined') {
-        try { 
-            db.collection("movimientos").doc(String(idMov)).set(nuevoMov); 
-            // Matamos la transferencia para siempre
-            db.collection("transferencias").doc(String(t.id)).update({ estado: "cancelada" });
-        } catch(e){}
-    }
-
-    document.getElementById('modalDevolucionTransferencia').style.display = 'none';
-    window.transferenciaDevueltaActual = null;
-    alert(`📥 El dinero rechazado ha sido reingresado a tu caja de ${sucElegida}.`);
-    if (typeof renderCorte === 'function') renderCorte();
-};
 
 // 🌟 INICIALIZADOR: Ponemos a funcionar el radar de 2 antenas
 setTimeout(() => {
     if(typeof iniciarRadarTransferencias === 'function') iniciarRadarTransferencias();
 }, 3000);
+window.mostrarNotificacionFlotante = function(idRecord, datosModal, tipo) {
+    // 🧹 1. Eliminar cualquier otra burbuja que ya esté en pantalla para que no se encimen
+    let burbujasPrevias = document.querySelectorAll('.burbuja-notif-pos');
+    burbujasPrevias.forEach(b => b.remove());
+
+    // 2. Crear la nueva burbuja
+    let toast = document.createElement('div');
+    toast.className = 'burbuja-notif-pos'; // Le ponemos una clase para identificarla
+    toast.id = 'toast_' + idRecord;
+    
+    // Estilos de la burbuja
+    toast.style.position = 'fixed';
+    toast.style.bottom = '25px';
+    toast.style.right = '25px';
+    toast.style.backgroundColor = tipo === 'recibir' ? '#28a745' : '#dc3545';
+    toast.style.color = '#fff';
+    toast.style.padding = '15px 20px';
+    toast.style.borderRadius = '10px';
+    toast.style.boxShadow = '0px 6px 15px rgba(0,0,0,0.4)';
+    toast.style.zIndex = '999999';
+    toast.style.cursor = 'pointer';
+    toast.style.display = 'flex';
+    toast.style.flexDirection = 'column';
+    toast.style.gap = '6px';
+    toast.style.fontFamily = 'Arial, sans-serif';
+
+    let titulo = tipo === 'recibir' ? '📥 ¡Nueva Transferencia!' : '↩️ Dinero Devuelto';
+    let msj = tipo === 'recibir' 
+        ? `<b>${datosModal.emisor}</b> te envió <b>$${parseFloat(datosModal.monto).toFixed(2)}</b>`
+        : `<b>${datosModal.emisor}</b> rechazó el dinero.`;
+
+    toast.innerHTML = `
+        <span style="font-size: 16px; font-weight: bold;">${titulo}</span>
+        <span style="font-size: 14px;">${msj}</span>
+        <span style="font-size: 12px; text-decoration: underline; margin-top: 4px;">Clic aquí para revisar</span>
+    `;
+
+    // Acción al darle clic a la burbujita
+    toast.onclick = function() {
+        toast.remove(); // Desaparece la burbuja al darle clic
+        if (tipo === 'recibir' && typeof abrirModalTransferencia === 'function') {
+            abrirModalTransferencia(idRecord, datosModal); 
+        } else if (tipo === 'devolucion' && typeof abrirModalDevolucion === 'function') {
+            abrirModalDevolucion(idRecord, datosModal);
+        }
+    };
+
+    document.body.appendChild(toast);
+};

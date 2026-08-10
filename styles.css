@@ -322,3 +322,14 @@ tbody tr { height: auto !important; }
     text-align: center;
     font-size: 16px;
 }
+<style>
+    /* Forzar tamaño compacto para las notificaciones de transferencia y devolución */
+    #modalNotificacionTransferencia > div,
+    #modalDevolucion > div,
+    .modal-transferencia-compacta {
+        max-width: 500px !important;
+        margin: 10vh auto !important;
+        border-radius: 15px !important;
+        box-shadow: 0px 10px 30px rgba(0,0,0,0.3) !important;
+    }
+</style>

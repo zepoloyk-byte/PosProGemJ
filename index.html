@@ -1646,7 +1646,7 @@
     
 </script>
 
-<script src="app.js?v=34"></script>
+<script src="app.js?v=37"></script>
 <!-- ================= MODAL DE ARQUEO DE CAJA ================= -->
 <div id="modalArqueo" class="modal" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.6); z-index: 9999; align-items: center; justify-content: center;">
     <div style="background: #fff; width: 95%; max-width: 600px; border-radius: 12px; overflow: hidden; box-shadow: 0 5px 15px rgba(0,0,0,0.3); display: flex; flex-direction: column; max-height: 95vh;">
@@ -1720,25 +1720,26 @@
         </div>
     </div>
 </div>
-<!-- ================= MODAL RECIBIR TRANSFERENCIA ================= -->
+<!-- ================= MODAL RECIBIR TRANSFERENCIA (LIMPIO Y AUTOMÁTICO) ================= -->
 <div id="modalNotificacionTransferencia" class="modal" style="display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.7); z-index:99999; align-items:center; justify-content:center;">
-    <div class="modal-content" style="width:95%; max-width:400px; border-top: 5px solid #28a745; background:#fff; padding:20px; border-radius:10px; box-shadow:0 5px 25px rgba(0,0,0,0.5); text-align:center;">
-        <h2 style="margin-top:0; color:#28a745;">💸 ¡Dinero Recibido!</h2>
-        <p style="font-size:16px;">El cajero <b id="notif_transf_emisor">---</b> te ha enviado una transferencia de:</p>
+    <div class="modal-content" style="width:95%; max-width:400px; border-top: 5px solid #28a745; background:#fff; padding:30px; border-radius:12px; box-shadow:0 10px 30px rgba(0,0,0,0.5); text-align:center; font-family: Arial, sans-serif;">
         
-        <h1 style="color:#28a745; margin: 15px 0; font-size:40px;" id="notif_transf_monto">$0.00</h1>
+        <h2 style="margin-top:0; color:#28a745;">💸 ¡Dinero Recibido!</h2>
+        <p style="font-size:16px; color:#333;">El cajero <b id="lbl_transf_emisor">---</b> te ha enviado un traspaso de:</p>
+        
+        <h1 style="color:#28a745; margin: 20px 0; font-size:50px;">
+            $<span id="lbl_transf_monto">0.00</span>
+        </h1>
+        
+        <p style="font-size:13px; color:#777; margin-bottom:25px; line-height:1.4;">
+            Este dinero ingresará automáticamente a tu corte de caja actual.<br>
+            (Sucursal: <b id="lbl_transf_sucursal">Matriz</b>)
+        </p>
+        
+        <button style="background:#28a745; color:white; width:100%; padding:15px; border:none; border-radius:8px; font-size:16px; font-weight:bold; cursor:pointer; box-shadow: 0 4px 10px rgba(40,167,69,0.3); transition: background 0.2s;" onclick="aceptarTransferencia()">
+            ✅ ACEPTAR DINERO
+        </button>
 
-        <div style="text-align:left; margin-top:20px;">
-            <label style="color:#555;"><b>¿En qué sucursal deseas ingresar este dinero?</b></label>
-            <select id="notif_transf_sucursal" class="arq-input" style="width:100%; padding:12px; margin-top:8px; border-radius:5px; border:1px solid #ccc; font-size:15px; font-weight:bold;">
-                <!-- Las opciones se llenarán automáticamente con JS -->
-            </select>
-        </div>
-
-        <div style="display: flex; gap: 10px; margin-top: 25px;">
-            <button style="background:#eee; color:#333; flex: 1; padding:12px; border:none; border-radius:5px; cursor:pointer; font-weight:bold;" onclick="rechazarTransferencia()">❌ RECHAZAR</button>
-            <button style="background:#28a745; color:white; flex: 1; padding:12px; border:none; border-radius:5px; font-weight:bold; cursor:pointer;" onclick="aceptarTransferencia()">✅ ACEPTAR DINERO</button>
-        </div>
     </div>
 </div>
 </body>
