@@ -553,38 +553,52 @@ window.cargarFondosDesdeNube = async function() {
 window.subirFondos = async function() {
     let fileLogin = document.getElementById('file_fondo_login').files[0];
     let filePanel = document.getElementById('file_fondo_panel').files[0];
+    // 🌟 1. ATRAPAMOS LA NUEVA MARCA DE AGUA
+    let fileMarca = document.getElementById('file_marca_agua').files[0]; 
     
-    if (!fileLogin && !filePanel) return alert("⚠️ Selecciona al menos una imagen para subir.");
+    // 🌟 2. ACTUALIZAMOS LA VALIDACIÓN
+    if (!fileLogin && !filePanel && !fileMarca) return alert("⚠️ Selecciona al menos una imagen para subir.");
 
     let btnTxt = document.getElementById('btn_txt_fondos');
     let txtOriginal = btnTxt.innerText;
     btnTxt.innerText = "⏳ SUBIENDO IMÁGENES A LA NUBE...";
     
     try {
-        // FormData es obligatorio para enviar archivos binarios por internet
         let formData = new FormData();
         if (fileLogin) formData.append('fondo_login', fileLogin);
         if (filePanel) formData.append('fondo_panel', filePanel);
+        if (fileMarca) formData.append('marca_agua', fileMarca); // <-- Empaquetamos la marca de agua
 
-        // Buscamos si ya tienes una configuración guardada
-        const records = await pb.collection('config_visual').getFullList({ requestKey: null });
+        // 🌟 3. IDENTIFICAMOS LA SUCURSAL ACTUAL
+        let nombreSucursal = String(typeof sucursalActual !== 'undefined' ? sucursalActual : "Matriz").replace(/📍/g, '').trim();
+        formData.append('sucursal', nombreSucursal); // Guardamos el nombre en PocketBase
+
+        // 🌟 4. BUSCAMOS LA CONFIGURACIÓN ESPECÍFICA DE ESTA SUCURSAL
+        const records = await pb.collection('config_visual').getFullList({ 
+            filter: `sucursal='${nombreSucursal}'`, // Solo busca los de esta tienda
+            requestKey: null 
+        });
         
         if (records.length > 0) {
-            // Si ya existe, la actualizamos
+            // Si ya existe configuración para esta sucursal, la actualizamos
             await pb.collection('config_visual').update(records[0].id, formData);
         } else {
-            // Si es la primera vez, la creamos
+            // Si es la primera vez que esta sucursal guarda fondos, creamos el registro
             await pb.collection('config_visual').create(formData);
         }
 
-        alert("✅ Fondos actualizados correctamente.");
+        alert(`✅ Imágenes actualizadas correctamente para: ${nombreSucursal}`);
         
         // Vaciamos las cajas de subida
         document.getElementById('file_fondo_login').value = '';
         document.getElementById('file_fondo_panel').value = '';
+        if(document.getElementById('file_marca_agua')) document.getElementById('file_marca_agua').value = '';
         
         // Aplicamos los cambios al instante sin tener que recargar la página
-        window.cargarFondosDesdeNube();
+        if (typeof window.cargarFondosDesdeNube === 'function') window.cargarFondosDesdeNube();
+        
+        // 🌟 5. REFRESCAMOS LA MARCA DE AGUA AL INSTANTE
+        if (typeof window.actualizarMarcaDeAgua === 'function') window.actualizarMarcaDeAgua();
         
     } catch (error) {
         console.error("Error al subir fondos:", error);
@@ -721,7 +735,7 @@ function initLoginSelect() {
     sel.innerHTML = htmlUsuarios;
 }
 
-function intentarLogin() {
+window.intentarLogin = function() {
     let u = document.getElementById('login_user').value; 
     let p = document.getElementById('login_pin').value;
     
@@ -785,21 +799,62 @@ function intentarLogin() {
         renderCorte(); 
         document.getElementById('login_pin').value = '';
 
+
         // =================================================================
-        // 🏪 🚨 VERIFICACIÓN AUTOMÁTICA DE TURNO / CAJA AL ENTRAR
+        // 🏪 🚨 VERIFICACIÓN AUTOMÁTICA DE TURNO / CAJA AL ENTRAR (SINCRONIZADO)
         // =================================================================
-        setTimeout(() => {
+        setTimeout(async () => {
+            let sucNombre = String(typeof sucursalActual !== 'undefined' ? sucursalActual : "Matriz").replace(/📍/g, '').trim();
+
+            try {
+                // 1. PREGUNTAMOS A POCKETBASE SI HAY UN TURNO ABIERTO EN ESTA SUCURSAL
+                let urlSesion = `https://sexy-starling.pikapod.net/api/collections/sesiones_caja/records?filter=(estado='abierta'%20&&%20sucursal='${sucNombre}')&sort=-created&limit=1&_t=${Date.now()}`;
+                let res = await fetch(urlSesion, { cache: 'no-store' });
+                
+                if (res.ok) {
+                    let data = await res.json();
+                    if (data.items && data.items.length > 0) {
+                        // ¡Encontramos un turno vivo en la nube! Lo inyectamos al dispositivo actual
+                        let sesionNube = data.items[0];
+                        window.sesionCajaActual = sesionNube.data || sesionNube;
+                        
+                        try { localStorage.setItem("pos_sesion_caja", JSON.stringify(window.sesionCajaActual)); } catch(e){}
+                        console.log("✅ Conectado a la sesión activa en la nube:", window.sesionCajaActual.id);
+                    } else {
+                        // Si no hay en la nube, borramos cualquier fantasma local
+                        window.sesionCajaActual = null;
+                        try { localStorage.removeItem("pos_sesion_caja"); } catch(e){}
+                    }
+                }
+            } catch(e) {
+                console.error("Error al buscar sesión en la nube:", e);
+            }
+            // 2. ACTUALIZAMOS LA INTERFAZ CON LA SESIÓN CORRECTA
+            if (typeof actualizarIndicadorTurnoUI === 'function') {
+                actualizarIndicadorTurnoUI();
+            }
+            
+            // 💧 ACTIVAMOS LA MARCA DE AGUA AL ENTRAR
+            if (typeof actualizarMarcaDeAgua === 'function') {
+                actualizarMarcaDeAgua();
+            }
+
+            // 2. ACTUALIZAMOS LA INTERFAZ CON LA SESIÓN CORRECTA
             if (typeof actualizarIndicadorTurnoUI === 'function') {
                 actualizarIndicadorTurnoUI();
             }
 
-            // Si no hay una sesión abierta en esta sucursal, le proponemos abrir turno
+            // 3. SI DESPUÉS DE PREGUNTAR A LA NUBE SIGUE SIN HABER SESIÓN, LE PEDIMOS ABRIR UNA
             if (!window.sesionCajaActual || window.sesionCajaActual.estado !== 'abierta') {
-                let sucNombre = String(typeof sucursalActual !== 'undefined' ? sucursalActual : "Matriz").replace(/📍/g, '').trim();
                 let deseaAbrir = confirm(`🏪 ¡Hola ${u}!\n\nLa caja de la sucursal [ ${sucNombre} ] se encuentra CERRADA.\n\n¿Deseas INICIAR TURNO e ingresar el Fondo Inicial de caja ahora?`);
                 
                 if (deseaAbrir && typeof abrirMontoInicialCaja === 'function') {
                     abrirMontoInicialCaja();
+                }
+            } else {
+                // Notificamos sutilmente que se unió al turno existente
+                if (typeof mostrarAvisoRapido === 'function') {
+                    mostrarAvisoRapido(`✅ Turno sincronizado.\nConectado a la caja de ${sucNombre}.`);
                 }
             }
         }, 400);
@@ -808,7 +863,34 @@ function intentarLogin() {
         alert("PIN Incorrecto"); 
     }
 }
+window.actualizarMarcaDeAgua = async function() {
+    let nombreSucursal = String(typeof sucursalActual !== 'undefined' ? sucursalActual : "Matriz").replace(/📍/g, '').trim();
+    
+    // 🌟 AHORA BUSCAMOS EL PANEL IZQUIERDO COMPLETO
+    let contenedorPanel = document.querySelector('.panel-izq');
+    if (!contenedorPanel) return; 
 
+    try {
+        let urlPB = `https://sexy-starling.pikapod.net/api/collections/config_visual/records?filter=(sucursal='${nombreSucursal}')`;
+        let respuesta = await fetch(urlPB);
+        let data = await respuesta.json();
+
+        if (data.items && data.items.length > 0) {
+            let configVisual = data.items[0];
+            
+            if (configVisual.marca_agua) {
+                let urlLogo = `https://sexy-starling.pikapod.net/api/files/${configVisual.collectionId}/${configVisual.id}/${configVisual.marca_agua}`;
+                
+                // Aplicamos la variable CSS al panel izquierdo
+                contenedorPanel.style.setProperty('--logo-sucursal', `url('${urlLogo}')`);
+            } else {
+                contenedorPanel.style.setProperty('--logo-sucursal', `none`);
+            }
+        }
+    } catch (error) {
+        console.error("Error al descargar la marca de agua:", error);
+    }
+};
 window.filtrarUsuariosPorSucursal = function() {
     let selectorSucursal = document.getElementById('login_sucursal');
     let selectorUsuarios = document.getElementById('login_user');
@@ -1904,6 +1986,13 @@ window.checkMetodoCobro = function() {
 // 2. FUNCIÓN DE COBRO ACTUALIZADA CON MERCADO PAGO Y GETNET
 window.agregarPagoVenta = async function(terminalSeleccionada = null) { 
     try {
+        // 🛡️ ESCUDO ANTI-DOBLE CLIC Y PAGOS FANTASMAS
+        if (typeof restanteCobro !== 'undefined' && restanteCobro <= 0.001) {
+            // Si ya se cubrió el total, bloqueamos nuevas filas y forzamos el cierre directo
+            if (typeof window.confirmarVenta === 'function') window.confirmarVenta(0);
+            return;
+        }
+
         let met = document.getElementById('m_metodo').value;
         let r = parseFloat(document.getElementById('m_recibido').value) || 0;
         if (r <= 0) return alert("⚠️ Ingresa un monto válido.");
@@ -1931,30 +2020,29 @@ window.agregarPagoVenta = async function(terminalSeleccionada = null) {
 
             if (terminalSeleccionada === 'Mercado Pago') {
                 intentoTerminal = true;
-                cobroExitoso = await enviarCobroTerminal(pagoAplicado); // Función MP
+                cobroExitoso = await enviarCobroTerminal(pagoAplicado); 
             } 
             else if (terminalSeleccionada === 'Getnet') {
                 intentoTerminal = true;
-                cobroExitoso = await enviarCobroGetnet(pagoAplicado); // Función Getnet
+                cobroExitoso = await enviarCobroGetnet(pagoAplicado); 
             }
             else if (terminalSeleccionada === 'Tarjeta Manual') {
                 intentoTerminal = true;
-                cobroExitoso = true; // Pasa directo sin usar internet
+                cobroExitoso = true; 
             }
 
             if (intentoTerminal && !cobroExitoso) {
                 let forzarCobro = confirm("⚠️ Hubo un error de conexión con " + terminalSeleccionada + ".\n\n¿Lograste cobrar el dinero directamente en la maquinita física y deseas forzar el registro de esta venta?");
                 
-                if (!forzarCobro) return; // Abortamos
+                if (!forzarCobro) return; 
             }
             
-            // Re-etiquetamos el método de pago para que en tu ticket y corte Z salga bonito
             met = (terminalSeleccionada === 'Tarjeta Manual') ? 'Tarjeta' : terminalSeleccionada;
         }
 
         if (typeof pagosCobro === 'undefined') window.pagosCobro = [];
         
-        // 🌟 Empujamos el pago a la lista, asegurando que el teléfono del cliente vaya incluido
+        // 🌟 Empujamos el pago a la lista
         pagosCobro.push({ 
             metodo: met, 
             montoAplicado: Number(pagoAplicado.toFixed(2)), 
@@ -1966,6 +2054,14 @@ window.agregarPagoVenta = async function(terminalSeleccionada = null) {
         if(typeof renderPagosCobro === "function") renderPagosCobro();
 
         if (restanteCobro < 0.01) { 
+            // 🎨 CAMBIO VISUAL DEL BOTÓN PARA EVITAR CONFUSIÓN
+            let btnCobrar = Array.from(document.querySelectorAll('button')).find(b => b.innerText.includes('AGREGAR PAGO') || b.innerText.includes('COBRAR'));
+            if (btnCobrar) {
+                btnCobrar.innerText = "⏳ CONFIRMANDO VENTA...";
+                btnCobrar.style.backgroundColor = "#28a745"; // Cambia a Verde
+                btnCobrar.style.pointerEvents = "none"; // Desactiva clics extra físicos
+            }
+            
             window.confirmarVenta(cambio);
         } else {
             document.getElementById('m_recibido').value = restanteCobro.toFixed(2);
@@ -2086,7 +2182,23 @@ async function actualizarAcumuladorDiario(venta, esAnulacion = false) {
 // 🛒 CONFIRMAR VENTA (CONECTADA AL ACUMULADOR)
 // ====================================================================
 // 💳 VENTA CONECTADA A TERMINAL FÍSICA Y CRÉDITOS
-window.confirmarVenta = async function(cambioFinal = 0) { // 👈 ¡Ojo! Agregamos 'async' aquí
+window.confirmarVenta = async function(cambioFinal = 0) { 
+    // 🛠️ 1. CREAMOS LA HERRAMIENTA HASTA ARRIBA (Afuera del try)
+    const restaurarBoton = () => {
+        document.querySelectorAll('button').forEach(btn => {
+            let texto = btn.innerText;
+            if (texto.includes('CONFIRMANDO VENTA') || texto.includes('AGREGAR PAGO (Enter)')) {
+                if (!btn.closest('#modalCobro')) {
+                    btn.innerText = "COBRAR [F12]"; // Botón principal
+                } else {
+                    btn.innerText = "AGREGAR PAGO (Enter)"; // Botón de la ventanita
+                }
+                btn.style.backgroundColor = ""; 
+                btn.style.pointerEvents = "auto"; 
+            }
+        });
+    };
+
     try {
         let tot = parseFloat(document.getElementById('v_total').innerText); 
         if(tot <= 0 || isNaN(tot)) return;
@@ -2094,7 +2206,6 @@ window.confirmarVenta = async function(cambioFinal = 0) { // 👈 ¡Ojo! Agregam
         // ====================================================================
         // 🚀 INTERCEPCIÓN DE MERCADO PAGO (SMART POS)
         // ====================================================================
-        // Buscamos si hay algún pago con tarjeta en este ticket y sumamos cuánto es
         let montoTarjeta = pagosCobro
             .filter(p => {
                 let m = p.metodo.toLowerCase();
@@ -2102,15 +2213,12 @@ window.confirmarVenta = async function(cambioFinal = 0) { // 👈 ¡Ojo! Agregam
             })
             .reduce((sum, p) => sum + (parseFloat(p.montoAplicado) || parseFloat(p.monto) || 0), 0);
 
-        // Si hay dinero por cobrar en tarjeta, despertamos a la maquinita
         if (montoTarjeta > 0) {
             let cobroTerminalExitoso = await enviarCobroTerminal(montoTarjeta);
-            
-            // Si la terminal da error, está apagada o el cobro falla, abortamos para que el cajero no entregue la mercancía
             if (!cobroTerminalExitoso) {
                 console.warn("Venta pausada: El cobro en terminal no se completó.");
-                // 🌟 AQUÍ APAGAMOS EL CANDADO PARA QUE "MANUAL" FUNCIONE:
-                // return; 
+                restaurarBoton(); // Si falla la terminal, restauramos
+                return; 
             }
         }
         // ====================================================================
@@ -2121,7 +2229,6 @@ window.confirmarVenta = async function(cambioFinal = 0) { // 👈 ¡Ojo! Agregam
         let nombresCli = [];
         let ventaAbortada = false;
 
-        // 🌟 VARIABLES DE RASTREO PARA EL TICKET
         let telefonoClienteCredito = "";
         let esVentaCredito = false;
         let montoCreditoTotal = 0;
@@ -2151,14 +2258,16 @@ window.confirmarVenta = async function(cambioFinal = 0) { // 👈 ¡Ojo! Agregam
                 if(typeof db !== 'undefined') db.collection("clientes").doc(p.cliente_tel).set(c); 
                 nombresCli.push(c.nom);
 
-                // 🌟 ATRAPAMOS LOS DATOS DEL CRÉDITO
                 telefonoClienteCredito = p.cliente_tel;
                 esVentaCredito = true;
                 montoCreditoTotal += montoCobrado;
             }
         });
 
-        if (ventaAbortada) return;
+        if (ventaAbortada) { 
+            restaurarBoton(); // Si se cancela por sobregiro, restauramos
+            return; 
+        }
         if (typeof renderClientes === 'function') renderClientes();
 
         let labelCliente = nombresCli.length > 0 ? nombresCli.join(', ') : "Público General";
@@ -2176,7 +2285,6 @@ window.confirmarVenta = async function(cambioFinal = 0) { // 👈 ¡Ojo! Agregam
             let codMaestro = x.maestro_cod || (pOriginal.grupo && inv[pOriginal.grupo] ? pOriginal.grupo : x.cod);
             let pMaestro = inv[codMaestro] || pOriginal;
             
-            // 📸 FOTOGRAFÍA 1: BÚSQUEDA BLINDADA DEL STOCK
             let stockAntesReal = 0;
             if (pMaestro.stock && typeof pMaestro.stock === 'object') {
                 if (pMaestro.stock[sucReal] !== undefined) {
@@ -2198,15 +2306,21 @@ window.confirmarVenta = async function(cambioFinal = 0) { // 👈 ¡Ojo! Agregam
 
             let stockDespuesReal = parseFloat((stockAntesReal - parseFloat(x.can)).toFixed(3));
 
-            // Actualizar contador de promos si existe
+            // 🌟 ARREGLO DECIMALES EN PROMOS
             if(x.promo_ref) {
-                x.promo_ref.usadas = (x.promo_ref.usadas||0) + x.usos_promo;
-                if(typeof db !== 'undefined') db.collection("promociones").doc(String(x.promo_ref.id)).set(x.promo_ref);
+                let usosAnteriores = parseFloat(x.promo_ref.usadas) || 0;
+                let usosAAgregar = parseFloat(x.usos_promo);
+                if (isNaN(usosAAgregar) || usosAAgregar <= 0) {
+                    usosAAgregar = parseFloat(x.can) || 0;
+                }
+                x.promo_ref.usadas = parseFloat((usosAnteriores + usosAAgregar).toFixed(3));
+                if(typeof db !== 'undefined') {
+                    db.collection("promociones").doc(String(x.promo_ref.id)).set(x.promo_ref);
+                }
             }
 
             let cReal = (pMaestro.cos_promedio !== undefined ? parseFloat(pMaestro.cos_promedio) : parseFloat(pMaestro.cos || 0)) * (1 + (parseFloat(pMaestro.iva)||0)/100);
             
-            // Obtenemos el precio base del producto
             let precioUnitarioReal = parseFloat(x.precioManual) || parseFloat(x.pv) || parseFloat(x.pre) || parseFloat(pMaestro.pv) || 0;
             let subtotalBaseItem = parseFloat(x.can) * precioUnitarioReal;
             
@@ -2238,7 +2352,6 @@ window.confirmarVenta = async function(cambioFinal = 0) { // 👈 ¡Ojo! Agregam
         // 🌟 MAGIA: INYECTAR FILA DE DESCUENTO SI EL TOTAL NO CUADRA
         // =========================================================
         let diferenciaPromo = sumaArticulosSinDescuento - tot;
-        
         if (tot > 0 && diferenciaPromo > 0.01) {
             itemsHtml += `<tr>
                 <td></td>
@@ -2295,8 +2408,14 @@ window.confirmarVenta = async function(cambioFinal = 0) { // 👈 ¡Ojo! Agregam
         carV = []; forceWholesale = false; renderV();
         document.getElementById('modalCobro').style.display = 'none';
         document.getElementById('modalTicket').style.display = 'block';
+        
+        // 🌟 Venta exitosa: Restauramos el botón
+        restaurarBoton(); 
+
     } catch(err) { 
         console.error("Error al cobrar:", err); 
+        alert("Error en la venta: " + err.message); 
+        if (typeof restaurarBoton === 'function') restaurarBoton(); // En caso de error crítico, también lo restaura
     }
 };
 // Granel
@@ -2307,27 +2426,62 @@ function calcGranel(p) {
 function confirmarGranel() { 
     let c = parseFloat(document.getElementById('g_cant').value); 
     let dineroExacto = parseFloat(document.getElementById('g_total_m').value); 
+    
     if(c > 0) { 
-        carV.push({ cod: tempGranel.cod, nom: tempGranel.nom, can: c, tipo: 'granel', precioManual: (dineroExacto / c), granelDineroExacto: dineroExacto }); 
-        window.renderV(); cerrarModales(); 
+        let nuevoItem = { 
+            cod: tempGranel.cod, 
+            nom: tempGranel.nom, 
+            can: c, 
+            tipo: 'granel', 
+            precioManual: (dineroExacto / c), 
+            granelDineroExacto: dineroExacto 
+        };
+
+        // 🌟 EL TRUCO: Le pegamos la etiqueta de la promoción para que el sistema la cuente
+        if (tempGranel.promo_ref) {
+            nuevoItem.promo_ref = tempGranel.promo_ref;
+            nuevoItem.usos_promo = c; // Contará los kilos/gramos exactos en la base de datos
+        }
+
+        carV.push(nuevoItem); 
+        
+        if(typeof window.renderV === 'function') window.renderV(); 
+        else if(typeof renderV === 'function') renderV();
+        
+        cerrarModales(); 
     } 
 }
+
 function abrirGranel(c) { 
     tempGranel = {...inv[c], cod: c}; 
     let precioReal = parseFloat(tempGranel.pv) || 0;
     if (tempGranel.pre_sucursales && tempGranel.pre_sucursales[sucursalActual] !== undefined) precioReal = parseFloat(tempGranel.pre_sucursales[sucursalActual]);
     
-    let hoy = getFechaLocal();
+    let hoy = typeof getFechaLocal === 'function' ? getFechaLocal() : new Date().toISOString().split('T')[0];
+    
     if (typeof promociones !== 'undefined' && Array.isArray(promociones)) {
         let promoActiva = promociones.find(pr => pr && pr.cod === c && (!pr.sucursal || pr.sucursal === 'Todas' || pr.sucursal === sucursalActual) && pr.fecha_ini <= hoy && (!pr.fecha_fin || pr.fecha_fin >= hoy) && (pr.limite === 0 || (pr.usadas||0) < pr.limite));
-        if (promoActiva && promoActiva.tipo === 'desc') precioReal = precioReal - (precioReal * (parseFloat(promoActiva.desc) / 100));
+        
+        if (promoActiva && promoActiva.tipo === 'desc') {
+            precioReal = precioReal - (precioReal * (parseFloat(promoActiva.desc) / 100));
+            // 🌟 GUARDAMOS LA REFERENCIA DE LA PROMOCIÓN EN LA MEMORIA TEMPORAL
+            tempGranel.promo_ref = promoActiva; 
+        }
     }
+    
     tempGranel.pv = precioReal; 
-    document.getElementById('g_nom').innerText = tempGranel.nom; document.getElementById('g_cant').value = "1"; document.getElementById('g_total_m').value = precioReal.toFixed(2); 
+    document.getElementById('g_nom').innerText = tempGranel.nom; 
+    document.getElementById('g_cant').value = "1"; 
+    document.getElementById('g_total_m').value = precioReal.toFixed(2); 
     document.getElementById('modalGranel').style.display = 'block'; 
-    let cajaKilos = document.getElementById('g_cant'); let cajaDinero = document.getElementById('g_total_m'); let buscadorPrincipal = document.getElementById('v_cod');
+    
+    let cajaKilos = document.getElementById('g_cant'); 
+    let cajaDinero = document.getElementById('g_total_m'); 
+    let buscadorPrincipal = document.getElementById('v_cod');
+    
     cajaKilos.onkeydown = function(e) { if (e.key === 'ArrowDown') { e.preventDefault(); cajaDinero.focus(); cajaDinero.select(); } else if (e.key === 'Enter') { e.preventDefault(); confirmarGranel(); if(buscadorPrincipal){buscadorPrincipal.value=''; buscadorPrincipal.focus();} } else if (e.key === 'Escape') { e.preventDefault(); cerrarModales(); if(buscadorPrincipal){buscadorPrincipal.value=''; buscadorPrincipal.focus();} } };
     cajaDinero.onkeydown = function(e) { if (e.key === 'ArrowUp') { e.preventDefault(); cajaKilos.focus(); cajaKilos.select(); } else if (e.key === 'Enter') { e.preventDefault(); confirmarGranel(); if(buscadorPrincipal){buscadorPrincipal.value=''; buscadorPrincipal.focus();} } else if (e.key === 'Escape') { e.preventDefault(); cerrarModales(); if(buscadorPrincipal){buscadorPrincipal.value=''; buscadorPrincipal.focus();} } };
+    
     setTimeout(() => { cajaKilos.focus(); cajaKilos.select(); }, 100); 
 }
 
@@ -8589,8 +8743,8 @@ window.confirmarCierreArqueo = function() {
         fondo_inicial: parseFloat(window.sesionCajaActual.monto_inicial) || 0,
         efectivo_esperado: esperado,
         efectivo_contado: contado,
-        diferencia_caja: diferencia, // Aquí sabrás si le faltó o le sobró dinero
-        detalle_operaciones: document.getElementById('arqueo_detalle').innerText, // Todo el desglose de gastos e ingresos
+        diferencia_caja: diferencia, 
+        detalle_operaciones: document.getElementById('arqueo_detalle').innerText, 
         estado: "CERRADO"
     };
 
@@ -8612,7 +8766,6 @@ window.confirmarCierreArqueo = function() {
     // Matamos la sesión activa en el disco local
     try { localStorage.setItem("pos_sesion_caja", JSON.stringify(window.sesionCajaActual)); } catch(e){}
     
-    // (Opcional) Subir el cierre a la nube si llevas control de sesiones vivas
     if (typeof db !== 'undefined') {
         try { db.collection("sesiones_caja").doc(String(window.sesionCajaActual.id)).set(window.sesionCajaActual); } catch(e) {}
     }
@@ -8620,10 +8773,28 @@ window.confirmarCierreArqueo = function() {
     // Vaciamos la memoria temporal
     window.sesionCajaActual = null;
 
+    // ====================================================================
+    // 🧹 ESCOBA DIGITAL: Limpiamos la basura del turno cerrado
+    // ====================================================================
+    window.movimientos = [];
+    if (typeof ventas !== 'undefined') window.ventas = [];
+    if (typeof compras !== 'undefined') window.compras = [];
+
+    try {
+        localStorage.removeItem("pos_movimientos_v1");
+        localStorage.removeItem("pos_ventas_v1"); // Si usas otra clave para ventas, cámbiala aquí
+        localStorage.removeItem("pos_compras_v1");
+    } catch(e) {
+        console.warn("No se pudo limpiar la memoria local.");
+    }
+    // ====================================================================
+
     // 8. ACTUALIZAR LA PANTALLA Y CERRAR LA VENTANA
     document.getElementById('modalArqueo').style.display = 'none';
     
     if (typeof actualizarIndicadorTurnoUI === 'function') actualizarIndicadorTurnoUI();
+    
+    // Al ejecutar renderCorte aquí, se dibujará en blanco porque acabamos de vaciar los arreglos
     if (typeof renderCorte === 'function') renderCorte();
 
     alert(`✅ Turno cerrado exitosamente.\nEl análisis financiero ha sido guardado en el historial.`);
@@ -8762,76 +8933,61 @@ window.transferenciasVistas = window.transferenciasVistas || new Set();
 
 window.iniciarRadarTransferencias = function() {
     if (window.intervaloRadar) clearInterval(window.intervaloRadar);
-
-    console.log("🚀 Motor de Radar de Transferencias encendido (Esperando sesión...)");
+    console.log("🚀 Motor de Radar de Transferencias encendido (Versión JSON)...");
 
     window.intervaloRadar = setInterval(async () => {
         if (typeof usuarioActual === 'undefined' || !usuarioActual) return; 
-        
         let miNombreLimpio = String(usuarioActual).trim().toLowerCase();
 
         try {
-            let url = "https://sexy-starling.pikapod.net/api/collections/transferencias/records?perPage=20&sort=-created";
-            let res = await fetch(url);
+            let url = `https://sexy-starling.pikapod.net/api/collections/transferencias/records?perPage=20&sort=-created&_t=${Date.now()}`;
+            let res = await fetch(url, { cache: 'no-store' });
             if (!res.ok) return;
             
             let result = await res.json();
             let lista = result.items || [];
 
             for (let record of lista) {
-                let payload = record.data || record;
+                // 🌟 TRUCO CLAVE: Desempaquetar "data" por si PocketBase lo envía como texto
+                let payload = record.data || {};
+                if (typeof payload === 'string') {
+                    try { payload = JSON.parse(payload); } catch(e) {}
+                }
+                
                 let idRecord = record.id; 
                 
-                // 🌟 CORRECCIÓN 1: Priorizamos el estado raíz de la base de datos
-                let estado = String(record.estado || payload.estado || '').toLowerCase();
+                // 🌟 PRIORIDAD: Leer el estado desde 'payload' (el bloque JSON que ya arreglamos)
+                let estado = String(payload.estado || record.estado || '').toLowerCase();
                 
-                // 🌟 CORRECCIÓN 2: La memoria ahora guarda ID + Estado (ej. "12345_devuelta")
                 let claveMemoria = idRecord + "_" + estado;
                 
-                // Si ya vimos esta transferencia EN ESTE ESTADO, la saltamos
                 if (window.transferenciasVistas.has(claveMemoria)) continue;
 
-                let rec = String(record.receptor || payload.receptor || '').trim().toLowerCase();
-                let emi = String(record.emisor || payload.emisor || '').trim().toLowerCase();
+                let rec = String(payload.receptor || record.receptor || '').trim().toLowerCase();
+                let emi = String(payload.emisor || record.emisor || '').trim().toLowerCase();
 
                 // 📥 Dinero recibido
                 if (rec === miNombreLimpio && estado === "pendiente") {
-                    console.log("✅ ¡DINERO ENCONTRADO! Mostrando burbuja verde...", idRecord);
                     window.transferenciasVistas.add(claveMemoria);
                     
                     let datosModal = {
                         id_pb: idRecord,
-                        emisor: record.emisor || payload.emisor,
-                        receptor: record.receptor || payload.receptor,
-                        monto: record.monto || payload.monto,
-                        fecha: record.fecha || payload.fecha,
-                        hora: record.hora || payload.hora
+                        emisor: payload.emisor || record.emisor,
+                        receptor: payload.receptor || record.receptor,
+                        monto: payload.monto || record.monto
                     };
                     
                     if (typeof mostrarNotificacionFlotante === 'function') {
                         mostrarNotificacionFlotante(idRecord, datosModal, 'recibir');
                     }
                 }
-                
-                // ↩️ Devolución (Rechazo)
-                if (emi === miNombreLimpio && estado === "devuelta") {
-                    console.log("🚫 ¡DEVOLUCIÓN ENCONTRADA! Mostrando burbuja roja...", idRecord);
-                    window.transferenciasVistas.add(claveMemoria);
-                    
-                    let datosModal = {
-                        id_pb: idRecord,
-                        emisor: record.emisor || payload.emisor,
-                        monto: record.monto || payload.monto
-                    };
-                    
-                    if (typeof mostrarNotificacionFlotante === 'function') {
-                        mostrarNotificacionFlotante(idRecord, datosModal, 'devolucion');
-                    }
-                }
             }
         } catch (e) {}
     }, 3000);
 };
+
+// Auto-iniciar a los 2 segundos
+setTimeout(() => { if(typeof iniciarRadarTransferencias === 'function') iniciarRadarTransferencias(); }, 2000);
 
 // ⚡ ARRANQUE AUTOMÁTICO DE SEGURIDAD
 setTimeout(() => {
@@ -8884,57 +9040,70 @@ window.aceptarTransferencia = async function() {
     if (!t) return;
 
     let monto = parseFloat(t.monto) || 0;
-    
-    // El sistema lee automáticamente dónde está parado el usuario
     let idSesionTurno = (window.sesionCajaActual ? window.sesionCajaActual.id : null);
     let hoy = typeof getFechaLocal === 'function' ? getFechaLocal() : new Date().toISOString().split('T')[0];
     let hora = new Date().toLocaleTimeString();
     let sucMov = typeof sucursalActual !== 'undefined' ? sucursalActual : 'Matriz';
     let miNombre = typeof usuarioActual !== 'undefined' ? usuarioActual : 'Admin';
-    let idRegistroPB = t.id_pb || t.id;
+    
+    // El ID interno de PocketBase (ej. vq2w8oe64fk0bjo)
+    let idRegistroPB = t.id_pb || t.id; 
 
-    // Creamos el ingreso
     let nuevoMov = {
         id: Date.now(), 
         id_sesion_caja: idSesionTurno, 
-        fecha: hoy, 
-        hora: hora,
-        cajero: miNombre, 
-        sucursal: sucMov, 
-        tipo: "Ingreso", 
-        monto: monto,
+        fecha: hoy, hora: hora, cajero: miNombre, 
+        sucursal: sucMov, tipo: "Ingreso", monto: monto,
         motivo: `📥 TRASPASO RECIBIDO: de ${t.emisor}`
     };
 
-    // Blindaje de memoria local
     window.movimientos = window.movimientos || [];
     window.movimientos.push(nuevoMov);
+    try { localStorage.setItem("pos_movimientos_v1", JSON.stringify(window.movimientos)); } catch (e) {}
 
     try {
-        // Guardamos el movimiento en la nube
-        await fetch("https://sexy-starling.pikapod.net/api/collections/movimientos/records", {
-            method: "POST", headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ doc_id: String(nuevoMov.id), data: nuevoMov })
-        });
+        // 1. Guardamos el movimiento de ingreso localmente en la nube
+        if (typeof db !== 'undefined' && db.collection) {
+            db.collection("movimientos").doc(String(nuevoMov.id)).set(nuevoMov).catch(e=>{});
+        }
 
-        // Le decimos a la nube que la transferencia ya fue aceptada
-        await fetch(`https://sexy-starling.pikapod.net/api/collections/transferencias/records/${idRegistroPB}`, {
-            method: "PATCH", headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ estado: "aceptada", "data.estado": "aceptada" })
-        });
+        // 2. 🌟 EL TRUCO PARA POCKETBASE: Leemos la columna "data" y la sobreescribimos
+        let urlPB = `https://sexy-starling.pikapod.net/api/collections/transferencias/records/${idRegistroPB}`;
+        let resGet = await fetch(urlPB, { cache: 'no-store' });
+        
+        if (resGet.ok) {
+            let registroDb = await resGet.json();
+            
+            // Extraemos el bloque JSON (donde está escondido el estado)
+            let datosJson = registroDb.data || {}; 
+            
+            // Lo cambiamos a aceptada
+            datosJson.estado = "aceptada"; 
+            
+            // Mandamos el JSON completo de vuelta a la columna 'data'
+            await fetch(urlPB, {
+                method: "PATCH",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ data: datosJson }) 
+            });
+        }
+
+        // 3. Silenciamos el radar local de inmediato
+        if (window.transferenciasVistas) {
+            window.transferenciasVistas.add(idRegistroPB + "_aceptada");
+            window.transferenciasVistas.add(idRegistroPB + "_pendiente"); 
+        }
+
     } catch(e) {
-        console.error("Error al procesar la aceptación:", e);
+        console.error("Error al comunicarse con PocketBase:", e);
     }
 
-    // Cerramos la ventana y limpiamos la variable temporal
+    // 4. Cerramos ventana y avisamos
     document.getElementById('modalNotificacionTransferencia').style.display = 'none';
     window.transferenciaPendienteActual = null;
     
-    // Actualizamos la tabla de corte de caja
-    try { localStorage.setItem("pos_movimientos_v1", JSON.stringify(window.movimientos)); } catch (e) {}
     if (typeof renderCorte === 'function') renderCorte();
 
-    // Avisamos del éxito
     if (typeof mostrarAvisoRapido === 'function') {
         mostrarAvisoRapido(`✅ Traspaso aceptado.\n+$${monto.toFixed(2)} a tu caja.`);
     }

@@ -333,3 +333,68 @@ tbody tr { height: auto !important; }
         box-shadow: 0px 10px 30px rgba(0,0,0,0.3) !important;
     }
 </style>
+/* Agrupa 2 botones en la misma línea */
+.fila-botones-movil {
+    display: flex;
+    gap: 10px;
+    margin-bottom: 15px;
+}
+
+.fila-botones-movil button {
+    flex: 1; /* Hace que ambos botones midan lo mismo */
+    margin-bottom: 0; /* Quita el margen inferior si ya tenían uno */
+    font-size: 0.9em; /* Letra ligeramente más pequeña para que quepa bien */
+    padding: 10px 5px;
+    white-space: nowrap; /* Evita que el texto se rompa en dos líneas */
+}
+
+/* Agrupa las tarjetas de totales lado a lado */
+.grid-tarjetas-movil {
+    display: grid;
+    grid-template-columns: 1fr 1fr; /* Dos columnas iguales */
+    gap: 10px;
+    margin-bottom: 15px;
+}
+
+.grid-tarjetas-movil .tarjeta { /* Reemplaza .tarjeta con la clase actual de tus recuadros */
+    margin-bottom: 0;
+    padding: 15px 10px;
+}
+
+/* Opcional: Centrar textos en las tarjetas pequeñas */
+.grid-tarjetas-movil h3, 
+.grid-tarjetas-movil h2 {
+    text-align: center;
+    font-size: 1em; 
+}
+/* ======================================================= */
+/* 💧 MARCA DE AGUA FLOTANTE (CORREGIDA Y AL FONDO)        */
+/* ======================================================= */
+
+.panel-izq {
+    position: relative; 
+}
+
+.panel-izq::after {
+    content: "";
+    position: absolute;
+    top: 160px; /* Baja la imagen para que no toque el buscador ni los botones */
+    left: 20px; 
+    right: 20px; 
+    bottom: 20px;
+    
+    background-image: var(--logo-sucursal);
+    background-size: contain; /* Tamaño fijo para que se vea proporcionado */
+    background-position: center; 
+    background-repeat: no-repeat;
+    
+    opacity: 0.15; 
+    pointer-events: none; 
+    z-index: 0; /* Lo manda al fondo absoluto */
+}
+
+/* Protege tu buscador, botones y tabla para que siempre estén arriba de la imagen */
+.panel-izq > * {
+    position: relative;
+    z-index: 1;
+}

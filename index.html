@@ -477,18 +477,36 @@
             </div>
         </div>
 
-        <!-- 📊 2. BARRA DE FILTROS DE FECHAS (TU CÓDIGO ACTUAL) -->
-        <div style="display:flex; gap:10px; margin-bottom: 20px; background: white; padding: 15px; border-radius: 10px; align-items:center; box-shadow: 0 4px 6px rgba(0,0,0,0.05); flex-wrap: wrap;">
-            <div style="flex:1; min-width:120px"><label style="font-size:11px; font-weight:bold; color:#666">FECHA INICIO:</label><input type="date" id="corte_fecha_inicio" onchange="renderCorte()"></div>
-            <div style="flex:1; min-width:120px"><label style="font-size:11px; font-weight:bold; color:#666">FECHA FIN:</label><input type="date" id="corte_fecha_fin" onchange="renderCorte()"></div>
-            <div style="flex:1; min-width:150px"><label style="font-size:11px; font-weight:bold; color:#666">CAJERO:</label><select id="corte_cajero" onchange="renderCorte()"><option value="">Todos los cajeros</option></select></div>
-            <div style="flex:1; min-width:150px"><label style="font-size:11px; font-weight:bold; color:#666">SUCURSAL:</label><select id="corte_sucursal" onchange="renderCorte()"><option value="">Todas (Global)</option></select></div>
-            <div style="width:100%; display: flex; gap: 10px; flex-wrap: wrap;">
-                <button class="btn-search" style="padding: 12px 20px; background:var(--p); flex: 1; min-width: 250px;" onclick="renderCorte()">📊 ANALIZAR (LOCAL)</button>
-                <button class="btn-search" id="btn_analizar_nube" style="padding: 12px 20px; background:var(--info); flex: 1; min-width: 250px;" onclick="descargarVentasNube()">☁️ DESCARGAR DE LA NUBE</button>
-            </div>
-        </div>
-        </div>
+       <!-- 📊 2. BARRA DE FILTROS DE FECHAS (MODIFICADO PARA MÓVIL) -->
+<div style="display:flex; gap:10px; margin-bottom: 20px; background: white; padding: 15px; border-radius: 10px; align-items:center; box-shadow: 0 4px 6px rgba(0,0,0,0.05); flex-wrap: wrap;">
+    
+    <!-- Fechas: 50% y 50% -->
+    <div style="flex: 1 1 45%; min-width:120px;">
+        <label style="font-size:11px; font-weight:bold; color:#666">FECHA INICIO:</label>
+        <input type="date" id="corte_fecha_inicio" onchange="renderCorte()" style="width: 100%; box-sizing: border-box;">
+    </div>
+    <div style="flex: 1 1 45%; min-width:120px;">
+        <label style="font-size:11px; font-weight:bold; color:#666">FECHA FIN:</label>
+        <input type="date" id="corte_fecha_fin" onchange="renderCorte()" style="width: 100%; box-sizing: border-box;">
+    </div>
+
+    <!-- Filtros de listas: 100% de ancho para no verse amontonados -->
+    <div style="flex: 1 1 100%;">
+        <label style="font-size:11px; font-weight:bold; color:#666">CAJERO:</label>
+        <select id="corte_cajero" onchange="renderCorte()" style="width: 100%; box-sizing: border-box;"><option value="">Todos los cajeros</option></select>
+    </div>
+    <div style="flex: 1 1 100%;">
+        <label style="font-size:11px; font-weight:bold; color:#666">SUCURSAL:</label>
+        <select id="corte_sucursal" onchange="renderCorte()" style="width: 100%; box-sizing: border-box;"><option value="">Todas (Global)</option></select>
+    </div>
+
+    <!-- 🌟 BOTONES DE ANÁLISIS LADO A LADO 🌟 -->
+    <div style="width:100%; display: flex; gap: 8px;">
+        <!-- Quitamos el min-width de 250px y ajustamos el padding y fuente -->
+        <button class="btn-search" style="padding: 12px 5px; background:var(--p); flex: 1; min-width: 0; font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;" onclick="renderCorte()">📊 ANALIZAR (LOCAL)</button>
+        <button class="btn-search" id="btn_analizar_nube" style="padding: 12px 5px; background:var(--info); flex: 1; min-width: 0; font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;" onclick="descargarVentasNube()">☁️ DESCARGAR NUBE</button>
+    </div>
+</div>
 
         <div style="display: flex; gap: 10px; margin-bottom: 20px; flex-wrap: wrap;" class="no-print">
             <button onclick="abrirCancelacionMovimientos()" style="flex:1; background:#dc3545; color:white; border:none; padding:10px; border-radius:5px; font-weight:bold; cursor:pointer;">🗑️ Anular Movimiento</button>
@@ -740,56 +758,33 @@
                 </div>
             </div>
 
-            <div class="dash-card" style="border-top:4px solid #ec0000; margin-top:20px; background:#fff5f5;">
-                <h3 style="margin-top:0; color:#ec0000; display:flex; align-items:center; gap:8px;">💳 Terminal Getnet (Santander)</h3>
-                <label style="display:flex; align-items:center; gap:10px; cursor:pointer; font-weight:bold; margin-bottom:15px; color:#333;">
-                    <input type="checkbox" id="gn_activo" style="width:20px; height:20px; cursor:pointer;">
-                    Activar conexión a terminal Getnet
-                </label>
-                <div id="gn_config_campos" style="background:white; padding:15px; border-radius:8px; border:1px solid #ffcccc;">
-                    <label style="font-size:11px; font-weight:bold; color:#ec0000;">TIPO DE CONEXIÓN:</label>
-                    <select id="gn_tipo" onchange="toggleGetnetCampos()" style="margin-bottom: 15px; width:100%; border-color:#ec0000; font-weight:bold;">
-                        <option value="local">📡 Wi-Fi Red Local (IP Directa)</option>
-                        <option value="nube">☁️ Conexión en la Nube (Clover / API)</option>
-                    </select>
-
-                    <div id="gn_campos_local">
-                        <label style="font-size:11px; font-weight:bold; color:#ec0000;">DIRECCIÓN IP DE LA TERMINAL:</label>
-                        <input type="text" id="gn_ip" placeholder="Ej. 192.168.1.50" style="margin-bottom: 15px; width:100%; font-weight:bold;">
-                        <p style="font-size:11px; color:#666; margin-top:-10px; margin-bottom:15px;">*La terminal y la computadora deben estar conectadas al mismo módem.</p>
-                    </div>
-
-                    <div id="gn_campos_nube" style="display:none;">
-                        <label style="font-size:11px; font-weight:bold; color:#ec0000;">ACCESS TOKEN / API KEY:</label>
-                        <input type="password" id="gn_token" placeholder="Llave secreta de Getnet..." style="margin-bottom: 15px; width:100%;">
-                        <label style="font-size:11px; font-weight:bold; color:#ec0000;">ID DE LA TERMINAL:</label>
-                        <input type="text" id="gn_device" placeholder="Número de serie o ID..." style="margin-bottom: 15px; width:100%; font-weight:bold;">
-                    </div>
-                    
-                    <button class="btn-final" style="background:#ec0000; margin-top:10px;" onclick="guardarConfigGetnet()">💾 GUARDAR CLAVES GETNET</button>
-                </div>
-            </div>
-            <div class="dash-card" style="border-top:4px solid #20c997; margin-top:20px; background:#f4fcf9;">
-                <h3 style="margin-top:0; color:#20c997; display:flex; align-items:center; gap:8px;">🎨 Personalizar Fondos de Pantalla</h3>
-                <p style="font-size:12px; color:#666; margin-top:-5px;">Sube tus propias imágenes para la pantalla de inicio y el panel de ventas.</p>
+           <div class="dash-card" style="border-top:4px solid #20c997; margin-top:20px; background:#f4fcf9;">
+                <h3 style="margin-top:0; color:#20c997; display:flex; align-items:center; gap:8px;">🎨 Personalizar Fondos y Logos</h3>
+                <p style="font-size:12px; color:#666; margin-top:-5px;">Sube tus imágenes para la pantalla de inicio, panel de ventas y marca de agua.</p>
                 
-                <div style="display:grid; grid-template-columns: 1fr 1fr; gap:15px; margin-bottom:15px;">
+                <!-- Cambié a 3 columnas adaptables para que quepa el nuevo botón -->
+                <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap:15px; margin-bottom:15px;">
+                    
                     <div style="background:white; padding:15px; border-radius:8px; border:1px solid #d1e7dd;">
-                        <label style="font-size:12px; font-weight:bold; color:#20c997;">🖼️ Fondo de Inicio de Sesión:</label>
+                        <label style="font-size:12px; font-weight:bold; color:#20c997;">🖼️ Fondo de Inicio:</label>
                         <input type="file" id="file_fondo_login" accept="image/png, image/jpeg, image/jpg" style="margin-top:10px; width:100%; font-size: 13px;">
                     </div>
+                    
                     <div style="background:white; padding:15px; border-radius:8px; border:1px solid #d1e7dd;">
-                        <label style="font-size:12px; font-weight:bold; color:#20c997;">🖼️ Fondo de Pestañas (Ventas):</label>
+                        <label style="font-size:12px; font-weight:bold; color:#20c997;">🖼️ Fondo Ventas:</label>
                         <input type="file" id="file_fondo_panel" accept="image/png, image/jpeg, image/jpg" style="margin-top:10px; width:100%; font-size: 13px;">
                     </div>
+
+                    <!-- 🌟 NUEVO BOTÓN: MARCA DE AGUA -->
+                    <div style="background:white; padding:15px; border-radius:8px; border:1px solid #d1e7dd;">
+                        <label style="font-size:12px; font-weight:bold; color:#20c997;">💧 Marca de Agua:</label>
+                        <input type="file" id="file_marca_agua" accept="image/png, image/jpeg, image/jpg" style="margin-top:10px; width:100%; font-size: 13px;">
+                    </div>
+
                 </div>
                 
-                <button class="btn-final" style="background:#20c997;" onclick="subirFondos()"><span id="btn_txt_fondos">💾 SUBIR Y APLICAR FONDOS</span></button>
+                <button class="btn-final" style="background:#20c997;" onclick="subirFondos()"><span id="btn_txt_fondos">💾 SUBIR Y APLICAR FOTOS</span></button>
             </div>
-
-        </div>
-    </div>
-</div>
 
 <div id="kardex-tab" class="tabcontent" style="display:none; padding:20px; font-family:sans-serif;">
     <div style="background:white; padding:20px; border-radius:8px; box-shadow:0 2px 10px rgba(0,0,0,0.1);">
