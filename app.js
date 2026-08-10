@@ -553,10 +553,8 @@ window.cargarFondosDesdeNube = async function() {
 window.subirFondos = async function() {
     let fileLogin = document.getElementById('file_fondo_login').files[0];
     let filePanel = document.getElementById('file_fondo_panel').files[0];
-    // 🌟 1. ATRAPAMOS LA NUEVA MARCA DE AGUA
     let fileMarca = document.getElementById('file_marca_agua').files[0]; 
     
-    // 🌟 2. ACTUALIZAMOS LA VALIDACIÓN
     if (!fileLogin && !filePanel && !fileMarca) return alert("⚠️ Selecciona al menos una imagen para subir.");
 
     let btnTxt = document.getElementById('btn_txt_fondos');
@@ -564,45 +562,39 @@ window.subirFondos = async function() {
     btnTxt.innerText = "⏳ SUBIENDO IMÁGENES A LA NUBE...";
     
     try {
+        let nombreSucursal = String(typeof sucursalActual !== 'undefined' ? sucursalActual : "Matriz").replace(/📍/g, '').trim();
+
         let formData = new FormData();
         if (fileLogin) formData.append('fondo_login', fileLogin);
         if (filePanel) formData.append('fondo_panel', filePanel);
-        if (fileMarca) formData.append('marca_agua', fileMarca); // <-- Empaquetamos la marca de agua
+        if (fileMarca) formData.append('marca_agua', fileMarca);
+        formData.append('sucursal', nombreSucursal);
 
-        // 🌟 3. IDENTIFICAMOS LA SUCURSAL ACTUAL
-        let nombreSucursal = String(typeof sucursalActual !== 'undefined' ? sucursalActual : "Matriz").replace(/📍/g, '').trim();
-        formData.append('sucursal', nombreSucursal); // Guardamos el nombre en PocketBase
-
-        // 🌟 4. BUSCAMOS LA CONFIGURACIÓN ESPECÍFICA DE ESTA SUCURSAL
+        // 🌟 BUSCAMOS SI YA EXISTE UN REGISTRO EXCLUSIVO DE ESTA SUCURSAL
         const records = await pb.collection('config_visual').getFullList({ 
-            filter: `sucursal='${nombreSucursal}'`, // Solo busca los de esta tienda
+            filter: `sucursal='${nombreSucursal}'`,
             requestKey: null 
         });
         
         if (records.length > 0) {
-            // Si ya existe configuración para esta sucursal, la actualizamos
+            // Actualiza solo el de esta sucursal
             await pb.collection('config_visual').update(records[0].id, formData);
         } else {
-            // Si es la primera vez que esta sucursal guarda fondos, creamos el registro
+            // Crea un registro nuevo para esta sucursal
             await pb.collection('config_visual').create(formData);
         }
 
-        alert(`✅ Imágenes actualizadas correctamente para: ${nombreSucursal}`);
+        alert(`✅ Imágenes actualizadas para la sucursal: ${nombreSucursal}`);
         
-        // Vaciamos las cajas de subida
         document.getElementById('file_fondo_login').value = '';
         document.getElementById('file_fondo_panel').value = '';
         if(document.getElementById('file_marca_agua')) document.getElementById('file_marca_agua').value = '';
         
-        // Aplicamos los cambios al instante sin tener que recargar la página
-        if (typeof window.cargarFondosDesdeNube === 'function') window.cargarFondosDesdeNube();
-        
-        // 🌟 5. REFRESCAMOS LA MARCA DE AGUA AL INSTANTE
         if (typeof window.actualizarMarcaDeAgua === 'function') window.actualizarMarcaDeAgua();
         
     } catch (error) {
         console.error("Error al subir fondos:", error);
-        alert("❌ Ocurrió un error al subir las imágenes. Revisa tu conexión.");
+        alert("❌ Ocurrió un error al subir las imágenes.");
     } finally {
         btnTxt.innerText = txtOriginal;
     }
@@ -8390,50 +8382,43 @@ window.cambiarFiltroTop = function(nuevoFiltro) {
 // Variable global para controlar la sesión activa
 window.sesionCajaActual = null;
 
-// Cargar la sesión activa al abrir el punto de venta
-function cargarSesionCajaActiva() {
+// 1. Cargar la sesión activa desde PocketBase filtrando por sucursal
+window.cargarSesionCajaActiva = async function() {
     try {
+        let sucReal = String(typeof sucursalActual !== 'undefined' ? sucursalActual : "Matriz").replace(/📍/g, '').trim();
+
+        // 🌟 Nombre correcto: 'cajas_sesiones'
+        let records = await pb.collection('cajas_sesiones').getFullList({
+            filter: `sucursal='${sucReal}' && estado='abierta'`,
+            requestKey: null
+        });
+
+        if (records.length > 0) {
+            window.sesionCajaActual = records[0];
+            localStorage.setItem("pos_sesion_activa", JSON.stringify(records[0]));
+        } else {
+            window.sesionCajaActual = null;
+            localStorage.removeItem("pos_sesion_activa");
+        }
+    } catch (e) {
+        console.error("Error al sincronizar turno desde la nube:", e);
         let sesionGuardada = localStorage.getItem("pos_sesion_activa");
         if (sesionGuardada) {
             window.sesionCajaActual = JSON.parse(sesionGuardada);
         }
-    } catch (e) {
-        console.error("Error al cargar sesión local:", e);
+    } finally {
+        if (typeof window.actualizarIndicadorTurnoUI === 'function') {
+            window.actualizarIndicadorTurnoUI();
+        }
     }
-}
-cargarSesionCajaActiva();
-
-// Función para Abrir Turno / Caja
-window.abrirMontoInicialCaja = function() {
-    if (window.sesionCajaActual && window.sesionCajaActual.estado === 'abierta') {
-        return alert(`⚠️ Ya existe un turno abierto para la sucursal ${sucursalActual} por el cajero ${window.sesionCajaActual.cajero}`);
-    }
-
-    let fondoInput = prompt("💵 Ingresa el Fondo Inicial de Caja (Efectivo para cambio):", "1000");
-    if (fondoInput === null) return; // Canceló el usuario
-
-    let fondo = parseFloat(fondoInput) || 0;
-    let idSesion = Date.now();
-
-    window.sesionCajaActual = {
-        id: idSesion,
-        cajero: usuarioActual || "Cajero",
-        sucursal: sucursalActual || "Matriz",
-        estado: 'abierta',
-        fecha_apertura: (typeof getFechaLocal === 'function' ? getFechaLocal() : new Date().toISOString().split('T')[0]) + " " + new Date().toLocaleTimeString(),
-        monto_inicial: fondo
-    };
-
-    // Guardado local y en nube
-    try { localStorage.setItem("pos_sesion_activa", JSON.stringify(window.sesionCajaActual)); } catch(e){}
-    if (typeof db !== 'undefined') {
-        db.collection("cajas_sesiones").doc(String(idSesion)).set(window.sesionCajaActual)
-          .catch(e => console.error("Error guardando sesión en nube:", e));
-    }
-
-    alert(`✅ Caja abierta con éxito. Fondo Inicial: $${fondo.toFixed(2)}`);
-    if (typeof renderCorte === 'function') renderCorte();
 };
+
+// Cargar la sesión al iniciar el archivo
+window.cargarSesionCajaActiva();
+
+
+// 2. Función para Abrir Turno / Caja e insertar los 5 datos en PocketBase
+
 
 
 
@@ -8452,31 +8437,45 @@ cargarSesionCajaActiva();
 
 // Actualiza los colores y texto de los botones según el estado
 // 1. Cargador blindado
-window.cargarSesionCajaActiva = function() {
+// 1. Cargar la sesión desde la NUBE (PocketBase) filtrando por la sucursal actual
+window.cargarSesionCajaActiva = async function() {
     try {
+        let sucReal = String(typeof sucursalActual !== 'undefined' ? sucursalActual : "Matriz").replace(/📍/g, '').trim();
+
+        let records = await pb.collection('sesiones_caja').getFullList({
+            filter: `sucursal='${sucReal}' && estado='abierta'`,
+            requestKey: null
+        });
+
+        if (records.length > 0) {
+            window.sesionCajaActual = records[0];
+            localStorage.setItem("pos_sesion_activa", JSON.stringify(records[0]));
+        } else {
+            window.sesionCajaActual = null;
+            localStorage.removeItem("pos_sesion_activa");
+        }
+    } catch (e) {
+        console.error("Error al sincronizar turno desde la nube:", e);
         let sesionGuardada = localStorage.getItem("pos_sesion_activa");
         if (sesionGuardada) {
             window.sesionCajaActual = JSON.parse(sesionGuardada);
         }
-    } catch (e) {
-        console.error("Error al cargar sesión local:", e);
+    } finally {
+        if (typeof window.actualizarIndicadorTurnoUI === 'function') {
+            window.actualizarIndicadorTurnoUI();
+        }
     }
 };
-
-// 2. Ejecutar al iniciar el código
-cargarSesionCajaActiva();
-
-// 3. Interfaz visual a prueba de recargas (F5)
+// 2. Interfaz visual (Mantiene los datos mapeados desde la nube o variables)
 window.actualizarIndicadorTurnoUI = function() {
     let estaAbierta = window.sesionCajaActual && window.sesionCajaActual.estado === 'abierta';
     
-    // Listas con los IDs de AMBOS paneles (Dashboard e Inventario)
     let idsEstado = ['lbl_estado_turno', 'lbl_estado_turno_inv'];
     let idsInfo = ['lbl_info_turno', 'lbl_info_turno_inv'];
     let idsAbrir = ['btn_abrir_turno', 'btn_abrir_turno_inv'];
     let idsCerrar = ['btn_cerrar_turno', 'btn_cerrar_turno_inv'];
 
-    // 1. Actualizar el texto y color (ABIERTO/CERRADO)
+    // 1. Actualizar texto y color
     idsEstado.forEach(id => {
         let el = document.getElementById(id);
         if (el) {
@@ -8485,71 +8484,80 @@ window.actualizarIndicadorTurnoUI = function() {
         }
     });
 
-    // 2. Actualizar los datos del cajero y la hora
+    // 2. Actualizar datos del cajero y la hora
     idsInfo.forEach(id => {
         let el = document.getElementById(id);
         if (el) {
             if (estaAbierta) {
                 let f = parseFloat(window.sesionCajaActual.monto_inicial) || 0;
-                el.innerText = `Cajero: ${window.sesionCajaActual.cajero} | Apertura: ${window.sesionCajaActual.fecha_apertura} | Fondo Inicial: $${f.toFixed(2)}`;
+                let cajero = window.sesionCajaActual.cajero || "Cajero";
+                let fecha = window.sesionCajaActual.fecha_apertura || window.sesionCajaActual.created || "";
+                el.innerText = `Cajero: ${cajero} | Apertura: ${fecha} | Fondo Inicial: $${f.toFixed(2)}`;
             } else {
                 el.innerText = "No hay una caja abierta actualmente en esta sucursal.";
             }
         }
     });
 
-    // 3. Mostrar/Ocultar botón de Abrir
+    // 3. Mostrar/Ocultar botones
     idsAbrir.forEach(id => {
         let el = document.getElementById(id);
         if (el) el.style.display = estaAbierta ? 'none' : 'flex';
     });
 
-    // 4. Mostrar/Ocultar botón de Cerrar
     idsCerrar.forEach(id => {
         let el = document.getElementById(id);
         if (el) el.style.display = estaAbierta ? 'flex' : 'none';
     });
 };
-// Se ejecuta al cargar el script para sincronizar la interfaz de inmediato
+
+// 3. Ejecución inicial conectada a la nube
 if (document.readyState === 'complete' || document.readyState === 'interactive') {
-    setTimeout(actualizarIndicadorTurnoUI, 300);
+    setTimeout(() => { window.cargarSesionCajaActiva(); }, 300);
 } else {
     document.addEventListener("DOMContentLoaded", () => {
-        setTimeout(actualizarIndicadorTurnoUI, 300);
+        setTimeout(() => { window.cargarSesionCajaActiva(); }, 300);
     });
 }
 
-// 🔓 INICIAR TURNO
-window.abrirMontoInicialCaja = function() {
-    if (window.sesionCajaActual && window.sesionCajaActual.estado === 'abierta') {
-        return alert(`⚠️ Ya existe un turno abierto para la sucursal ${sucursalActual} por el cajero ${window.sesionCajaActual.cajero}`);
-    }
+window.abrirMontoInicialCaja = async function() {
+    let montoInput = prompt("💵 Ingresa el Fondo Inicial de Caja para abrir turno:", "0.00");
+    if (montoInput === null) return; // Si le da a cancelar
 
-    let fondoInput = prompt("💵 Ingresa el Fondo Inicial de Caja (Efectivo para dar cambio):", "1000");
-    if (fondoInput === null) return; 
+    let montoInicial = parseFloat(montoInput) || 0;
+    
+    // Obtenemos la sucursal y el usuario actual de forma segura
+    let sucReal = String(typeof sucursalActual !== 'undefined' ? sucursalActual : "Matriz").replace(/📍/g, '').trim();
+    let cajeroActual = String(typeof usuarioActual !== 'undefined' ? usuarioActual : "Cajero").trim();
 
-    let fondo = parseFloat(fondoInput) || 0;
-    let idSesion = Date.now();
-
-    window.sesionCajaActual = {
-        id: idSesion,
-        cajero: usuarioActual || "Cajero",
-        sucursal: String(sucursalActual || "Matriz").replace(/📍/g, '').trim(),
+    // 🌟 Objeto de datos con nombres EXACTOS a tus columnas de PocketBase
+    let datosSesion = {
+        sucursal: sucReal,
+        cajero: cajeroActual,
         estado: 'abierta',
-        fecha_apertura: (typeof getFechaLocal === 'function' ? getFechaLocal() : new Date().toISOString().split('T')[0]) + " " + new Date().toLocaleTimeString(),
-        monto_inicial: fondo
+        monto_inicial: montoInicial,
+        fecha_apertura: new Date().toISOString(), // Fecha ISO válida para campo DateTime en PocketBase
+        efectivo_esperado: montoInicial,
+        efectivo_contado: 0,
+        diferencia_caja: 0
     };
 
-    try { localStorage.setItem("pos_sesion_activa", JSON.stringify(window.sesionCajaActual)); } catch(e){}
-    
-    if (typeof db !== 'undefined') {
-        db.collection("cajas_sesiones").doc(String(idSesion)).set(window.sesionCajaActual)
-          .catch(e => console.error("Error guardando sesión en nube:", e));
-    }
+    try {
+        // Guardamos en la colección correcta 'cajas_sesiones'
+        let record = await pb.collection('cajas_sesiones').create(datosSesion);
+        
+        window.sesionCajaActual = record;
+        localStorage.setItem("pos_sesion_activa", JSON.stringify(record));
 
-    alert(`✅ Turno iniciado con éxito. Fondo Inicial: $${fondo.toFixed(2)}`);
-    actualizarIndicadorTurnoUI();
-    if (typeof renderCorte === 'function') renderCorte();
+        alert(`🟢 Turno abierto con éxito.\nFondo Inicial: $${montoInicial.toFixed(2)}`);
+
+        if (typeof window.actualizarIndicadorTurnoUI === 'function') {
+            window.actualizarIndicadorTurnoUI();
+        }
+    } catch (error) {
+        console.error("Error detallado al abrir turno en PocketBase:", error);
+        alert("❌ No se pudo guardar el turno en PocketBase. Revisa los nombres de los campos.");
+    }
 };
 
 // Variable temporal para recordar el dinero que pidió el sistema
@@ -8710,114 +8718,92 @@ window.sumarArqueo = function() {
     document.getElementById('arqueo_total_contado').innerText = totalCalculado.toFixed(2);
 };
 
-window.confirmarCierreArqueo = function() {
+window.confirmarCierreArqueo = async function() {
     // 1. Verificamos que realmente haya un turno abierto
     if (!window.sesionCajaActual || window.sesionCajaActual.estado !== 'abierta') {
         return alert("❌ No hay sesión abierta para cerrar.");
     }
 
-    // 2. Extraemos los valores matemáticos de la pantalla
+    // 2. Extraemos los valores matemáticos del arqueo
     let esperado = parseFloat(window.efectivoEsperadoTemporal) || 0;
     let contado = parseFloat(document.getElementById('arqueo_total_contado').innerText) || 0;
-    
-    // Calculamos si hubo faltante (negativo) o sobrante (positivo)
     let diferencia = parseFloat((contado - esperado).toFixed(2));
 
-    // 3. Confirmación de seguridad antes de cerrar
+    // 3. Confirmación de seguridad
     let msj = `Resumen Final del Turno:\n\nEsperado en Sistema: $${esperado.toFixed(2)}\nFísico en Cajón: $${contado.toFixed(2)}\nDiferencia: $${diferencia.toFixed(2)}\n\n¿Estás seguro de finalizar y guardar este turno?`;
     if (!confirm(msj)) return;
 
-    // 4. 🌟 CREAMOS EL OBJETO DEL ANÁLISIS Y RESUMEN 🌟
-    let idTurnoFinal = "TURNO_" + Date.now();
-    let hoy = typeof getFechaLocal === 'function' ? getFechaLocal() : new Date().toISOString().split('T')[0];
-    let hora = new Date().toLocaleTimeString();
+    let ahora = new Date().toISOString();
 
-    let resumenTurno = {
-        id_corte: idTurnoFinal,
-        id_sesion: window.sesionCajaActual.id,
-        cajero: window.sesionCajaActual.cajero,
-        sucursal: window.sesionCajaActual.sucursal || "Matriz",
-        fecha_apertura: window.sesionCajaActual.fecha_apertura,
-        fecha_cierre: hoy,
-        hora_cierre: hora,
-        fondo_inicial: parseFloat(window.sesionCajaActual.monto_inicial) || 0,
-        efectivo_esperado: esperado,
-        efectivo_contado: contado,
-        diferencia_caja: diferencia, 
-        detalle_operaciones: document.getElementById('arqueo_detalle').innerText, 
-        estado: "CERRADO"
-    };
-
-    // 5. GUARDAMOS EL RESUMEN EN MEMORIA LOCAL
-    if (typeof historialTurnos === 'undefined') window.historialTurnos = [];
-    historialTurnos.push(resumenTurno);
-    try { localStorage.setItem("pos_turnos_v1", JSON.stringify(historialTurnos)); } catch(e){}
-
-    // 6. SUBIMOS EL RESUMEN A LA NUBE
-    if (typeof db !== 'undefined') {
-        try { db.collection("turnos_cerrados").doc(String(idTurnoFinal)).set(resumenTurno); } catch(e) {}
+    // 🌟 4. ACTUALIZAMOS POCKETBASE EN TIEMPO REAL ('cajas_sesiones')
+    try {
+        if (window.sesionCajaActual && window.sesionCajaActual.id && typeof pb !== 'undefined') {
+            await pb.collection('cajas_sesiones').update(window.sesionCajaActual.id, {
+                estado: 'cerrada',
+                fecha_cierre: ahora,
+                efectivo_esperado: esperado,
+                efectivo_contado: contado,
+                diferencia_caja: diferencia
+            });
+        }
+    } catch (err) {
+        console.error("Error al actualizar el cierre en PocketBase:", err);
     }
 
-    // 7. CERRAR OFICIALMENTE LA SESIÓN ACTUAL
-    window.sesionCajaActual.estado = 'cerrada';
-    window.sesionCajaActual.fecha_cierre = hoy;
-    window.sesionCajaActual.hora_cierre = hora;
-    
-    // Matamos la sesión activa en el disco local
-    try { localStorage.setItem("pos_sesion_caja", JSON.stringify(window.sesionCajaActual)); } catch(e){}
-    
-    if (typeof db !== 'undefined') {
-        try { db.collection("sesiones_caja").doc(String(window.sesionCajaActual.id)).set(window.sesionCajaActual); } catch(e) {}
-    }
-
-    // Vaciamos la memoria temporal
+    // 5. CERRAR OFICIALMENTE LA SESIÓN EN MEMORIA Y DISCO LOCAL
     window.sesionCajaActual = null;
+    localStorage.removeItem("pos_sesion_activa");
+    localStorage.removeItem("pos_sesion_caja");
 
-    // ====================================================================
     // 🧹 ESCOBA DIGITAL: Limpiamos la basura del turno cerrado
-    // ====================================================================
     window.movimientos = [];
     if (typeof ventas !== 'undefined') window.ventas = [];
     if (typeof compras !== 'undefined') window.compras = [];
 
     try {
         localStorage.removeItem("pos_movimientos_v1");
-        localStorage.removeItem("pos_ventas_v1"); // Si usas otra clave para ventas, cámbiala aquí
+        localStorage.removeItem("pos_ventas_v1");
         localStorage.removeItem("pos_compras_v1");
     } catch(e) {
         console.warn("No se pudo limpiar la memoria local.");
     }
-    // ====================================================================
 
-    // 8. ACTUALIZAR LA PANTALLA Y CERRAR LA VENTANA
-    document.getElementById('modalArqueo').style.display = 'none';
+    // 6. ACTUALIZAR PANTALLA Y OCULTAR MODAL
+    let modalArqueo = document.getElementById('modalArqueo');
+    if (modalArqueo) modalArqueo.style.display = 'none';
     
-    if (typeof actualizarIndicadorTurnoUI === 'function') actualizarIndicadorTurnoUI();
-    
-    // Al ejecutar renderCorte aquí, se dibujará en blanco porque acabamos de vaciar los arreglos
+    if (typeof window.actualizarIndicadorTurnoUI === 'function') window.actualizarIndicadorTurnoUI();
     if (typeof renderCorte === 'function') renderCorte();
 
-    alert(`✅ Turno cerrado exitosamente.\nEl análisis financiero ha sido guardado en el historial.`);
+    alert("✅ Turno cerrado exitosamente.");
 };
 // 🌟 VERIFICADOR AUTOMÁTICO DE TURNO AL ENTRAR AL SISTEMA
-window.verificarOAbrirTurnoAlLogin = function() {
-    // Si no hay sesión o la sesión previa ya está abierta, no hacemos nada
+window.verificarOAbrirTurnoAlLogin = async function() {
+    // 1. Primero sincronizamos con PocketBase para saber el estado real en la nube
+    if (typeof window.cargarSesionCajaActiva === 'function') {
+        await window.cargarSesionCajaActiva();
+    }
+
+    // 2. Si la sesión ya está abierta (en este o en otro dispositivo), solo actualizamos la UI y salimos
     if (window.sesionCajaActual && window.sesionCajaActual.estado === 'abierta') {
         if (typeof actualizarIndicadorTurnoUI === 'function') actualizarIndicadorTurnoUI();
         return;
     }
 
-    // Si la caja está cerrada, lanzamos el prompt de apertura
+    // 3. Si la caja realmente está cerrada en la nube, mostramos la invitación para abrir turno
     setTimeout(() => {
-        let confirmApertura = confirm(`🏪 ¡Bienvenido ${usuarioActual || ''}!\n\nLa caja registradora de la sucursal [ ${sucursalActual || 'Matriz'} ] se encuentra CERRADA.\n\n¿Deseas iniciar turno e ingresar el Fondo Inicial ahora mismo?`);
+        let sucLimpia = String(typeof sucursalActual !== 'undefined' ? sucursalActual : "Matriz").replace(/📍/g, '').trim();
+        let confirmApertura = confirm(`🏪 ¡Bienvenido ${usuarioActual || ''}!\n\nLa caja registradora de la sucursal [ ${sucLimpia} ] se encuentra CERRADA.\n\n¿Deseas iniciar turno e ingresar el Fondo Inicial ahora mismo?`);
         
         if (confirmApertura) {
-            abrirMontoInicialCaja();
+            if (typeof abrirMontoInicialCaja === 'function') {
+                abrirMontoInicialCaja();
+            }
         } else {
-            alert("⚠️ Recuerda que para poder registrar ventas o cortes en este turno deberás iniciar la caja desde el panel superior en 'Corte de Caja'.");
+            alert("⚠️ Recuerda que para poder registrar ventas o cortes en este turno deberás iniciar la caja desde el panel superior.");
             if (typeof actualizarIndicadorTurnoUI === 'function') actualizarIndicadorTurnoUI();
         }
-    }, 500); // Pequeño delay para dejar cargar la pantalla
+    }, 500);
 };
 // ====================================================================
 // 📊 MÓDULO DE HISTORIAL Y ANÁLISIS DE TURNOS CERRADOS
