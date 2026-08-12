@@ -5,10 +5,7 @@ const pb = new PocketBase('https://sexy-starling.pikapod.net');
 pb.autoCancellation(false);
 
 // ====================================================================
-// === 2. ADAPTADOR FIREBASE -> POCKETBASE (CON MOCHILA OFFLINE 🎒☁️) ===
-// ====================================================================
-// ====================================================================
-// === 2. ADAPTADOR FIREBASE -> POCKETBASE (MOTOR INMORTAL 🎒☁️) ===
+// === 2. ADAPTADOR POCKETBASE (MOTOR BLINDADO ANTI-RESET Y ANTI-CLONES) ===
 // ====================================================================
 const db = {
     enablePersistence: () => Promise.resolve(),
@@ -17,8 +14,8 @@ const db = {
             get: async function() {
                 try {
                     let records = await pb.collection(colName).getFullList({ requestKey: null });
-                    let mapa = {}; records.forEach(r => mapa[r.doc_id] = r);
-                    return { forEach: (cb) => Object.values(mapa).forEach(r => cb({ id: r.doc_id, data: () => r.data })) };
+                    let mapa = {}; records.forEach(r => mapa[r.doc_id || r.id] = r);
+                    return { forEach: (cb) => Object.values(mapa).forEach(r => cb({ id: r.doc_id || r.id, data: () => r.data || r })) };
                 } catch(e) { console.error(e); return { forEach: ()=>{} }; }
             },
             
@@ -30,18 +27,30 @@ const db = {
                     try {
                         let cache = await pb.collection(colName).getFullList({ requestKey: null });
                         let mapa = {}; 
-                        cache.forEach(r => mapa[r.doc_id] = r);
+                        cache.forEach(r => {
+                            let key = r.doc_id || r.id;
+                            mapa[key] = r;
+                        });
                         cache = Object.values(mapa); 
-                        let emit = () => { callback({ forEach: (cb) => cache.forEach(r => cb({ id: r.doc_id, data: () => r.data })) }); };
+                        let emit = () => { 
+                            callback({ 
+                                forEach: (cb) => cache.forEach(r => {
+                                    let key = r.doc_id || r.id;
+                                    let dataObj = (r.data && typeof r.data === 'object') ? r.data : r;
+                                    cb({ id: key, data: () => dataObj });
+                                }) 
+                            }); 
+                        };
                         emit(); 
                         
                         pb.collection(colName).subscribe('*', function(e) {
+                            let key = e.record.doc_id || e.record.id;
                             if (e.action === 'create' || e.action === 'update') {
-                                let idx = cache.findIndex(x => x.doc_id === e.record.doc_id);
+                                let idx = cache.findIndex(x => (x.doc_id || x.id) === key);
                                 if (idx > -1) cache[idx] = e.record; 
                                 else cache.push(e.record); 
                             } else if (e.action === 'delete') {
-                                cache = cache.filter(x => x.doc_id !== e.record.doc_id);
+                                cache = cache.filter(x => (x.doc_id || x.id) !== key);
                             }
                             emit();
                         });
@@ -59,74 +68,51 @@ const db = {
                     get: async function() {
                         try {
                             let records = await pb.collection(colName).getFullList({ requestKey: null });
-                            let mapa = {}; records.forEach(r => mapa[r.doc_id] = r);
+                            let mapa = {}; records.forEach(r => mapa[r.doc_id || r.id] = r);
                             let unicos = Object.values(mapa);
                             unicos.sort((a, b) => {
-                                let valA = a.data[field], valB = b.data[field];
+                                let dataA = a.data || a, dataB = b.data || b;
+                                let valA = dataA[field], valB = dataB[field];
                                 if (valA < valB) return direction === 'desc' ? 1 : -1;
                                 if (valA > valB) return direction === 'desc' ? -1 : 1;
                                 return 0;
                             });
-                            return { forEach: (cb) => unicos.forEach(r => cb({ id: r.doc_id, data: () => r.data })) };
+                            return { forEach: (cb) => unicos.forEach(r => cb({ id: r.doc_id || r.id, data: () => r.data || r })) };
                         } catch(e) { return { forEach: ()=>{} }; }
                     }
                 };
             },
             
             doc: function(docId) {
-                docId = String(docId);
+                docId = String(docId).trim();
                 return {
                     set: async function(dataObj) {
                         try {
-                            let record = null;
-                            try { record = await pb.collection(colName).getFirstListItem(`id="${docId}" || doc_id="${docId}"`); } catch (e) {}
+                            // 🌟 ESTAMPA DE TIEMPO OBLIGATORIA EN CADA GUARDADO
+                            dataObj.updatedAt = Date.now();
 
-                            if (colName === "inventario") {
-                                let tiempoLocal = dataObj.updatedAt || 0;
-                                if (record && record.data) {
-                                    let nube = record.data;
-                                    let tiempoNube = nube.updatedAt || 0;
-                                    if (tiempoNube > tiempoLocal) {
-                                        dataObj.nom = nube.nom;
-                                        dataObj.cos = nube.cos;
-                                        dataObj.iva = nube.iva;
-                                        dataObj.pv = nube.pv;
-                                        dataObj.pm = nube.pm;
-                                        dataObj.gan = nube.gan;
-                                        dataObj.dep = nube.dep;
-                                        dataObj.updatedAt = nube.updatedAt;
-                                        dataObj.stock = (typeof inv !== 'undefined' && inv[docId]) ? inv[docId].stock : nube.stock;
-                                        dataObj.sold_without_stock = (typeof inv !== 'undefined' && inv[docId]) ? inv[docId].sold_without_stock : nube.sold_without_stock;
-
-                                        if(typeof inv !== 'undefined') {
-                                            inv[docId] = dataObj;
-                                            localStorage.setItem("pos_precision_v6", JSON.stringify(inv));
-                                        }
-                                    } else { dataObj.updatedAt = Date.now(); }
-                                } else { dataObj.updatedAt = Date.now(); }
+                            if (colName === "inventario" && typeof inv !== 'undefined') {
+                                inv[docId] = dataObj;
+                                try { localStorage.setItem("pos_precision_v6", JSON.stringify(inv)); } catch(e){}
                             }
-                                
+
+                            let record = null;
+                            try { 
+                                record = await pb.collection(colName).getFirstListItem(`doc_id="${docId}"`); 
+                            } catch (e) {}
+
+                            let payload = {
+                                doc_id: docId,
+                                data: dataObj
+                            };
+
                             if (record) {
-                                return await pb.collection(colName).update(record.id, { doc_id: docId, data: dataObj });
+                                return await pb.collection(colName).update(record.id, payload);
                             } else {
-                                // 🌟 AQUÍ OCURRE LA MAGIA ANTI-CLONES
-                                let idLimpio = String(docId).trim().toLowerCase().replace(/[^a-z0-9]/g, '');
-                                if (idLimpio.length < 15) {
-                                    idLimpio = idLimpio.padEnd(15, 'x'); 
-                                } else if (idLimpio.length > 15) {
-                                    idLimpio = idLimpio.substring(0, 15); 
-                                }
-                                
-                                return await pb.collection(colName).create({ id: idLimpio, doc_id: docId, data: dataObj });
+                                // 🌟 SIN PADDING DE 'x': PocketBase genera su ID interno limpio
+                                return await pb.collection(colName).create(payload);
                             }
                         } catch (e) {
-                            if (e.status === 404) {
-                                try { 
-                                    let idLimpio = String(docId).trim().toLowerCase().replace(/[^a-z0-9]/g, '').padEnd(15, 'x').substring(0, 15);
-                                    return await pb.collection(colName).create({ id: idLimpio, doc_id: docId, data: dataObj }); 
-                                }
-                                catch (eFatal) { throw eFatal; } 
-                            }
                             console.warn(`⏳ Sin conexión. Guardando en mochila offline: [${colName}] -> ${docId}`);
                             let mochila = JSON.parse(localStorage.getItem("pos_mochila")) || [];
                             mochila = mochila.filter(m => !(m.col === colName && m.id === docId));
@@ -138,7 +124,7 @@ const db = {
                     delete: async function() {
                         try {
                             let record = await pb.collection(colName).getFirstListItem(`doc_id="${docId}"`);
-                            return pb.collection(colName).delete(record.id);
+                            return await pb.collection(colName).delete(record.id);
                         } catch (e) { console.warn("Doc no existe:", docId); }
                     },
                     onSnapshot: async function(callback) {
@@ -149,11 +135,11 @@ const db = {
                             intentandoDoc = true;
                             try {
                                 let record = await pb.collection(colName).getFirstListItem(`doc_id="${docId}"`);
-                                emit(true, record.data);
+                                emit(true, record.data || record);
                                 pb.collection(colName).subscribe('*', function(e) {
-                                    if (e.record.doc_id === docId) {
+                                    if ((e.record.doc_id || e.record.id) === docId) {
                                         if (e.action === 'delete') emit(false, {});
-                                        else emit(true, e.record.data);
+                                        else emit(true, e.record.data || e.record);
                                     }
                                 });
                             } catch (e) { 
@@ -169,6 +155,44 @@ const db = {
         };
     }
 };
+
+// ==========================================
+// 📦 DESCONTAR STOCK CORREGIDO (CON TIMESTAMP)
+// ==========================================
+function descontarStock(cod, cant) { 
+    let itemOriginal = inv[cod] || {}; 
+    let codMaestro = (itemOriginal.grupo && inv[itemOriginal.grupo]) ? itemOriginal.grupo : cod;
+    let itemMaestro = inv[codMaestro] || itemOriginal;
+    
+    if(!itemMaestro) return; 
+    
+    if (typeof itemMaestro.stock !== 'object' || itemMaestro.stock === null) {
+        let stockNumerico = parseFloat(itemMaestro.stock) || parseFloat(itemMaestro.existencia) || parseFloat(itemMaestro.can) || 0;
+        itemMaestro.stock = {};
+        itemMaestro.stock[sucursalActual] = stockNumerico;
+    }
+
+    if(!itemMaestro.sold_without_stock) itemMaestro.sold_without_stock = {}; 
+    
+    let disp = Math.max(0, parseFloat(itemMaestro.stock[sucursalActual]) || 0); 
+    let cantRestar = parseFloat(cant) || 0;
+
+    if(disp >= cantRestar) { 
+        itemMaestro.stock[sucursalActual] = parseFloat((disp - cantRestar).toFixed(3)); 
+    } else { 
+        let fal = cantRestar - disp; 
+        itemMaestro.stock[sucursalActual] = 0; 
+        itemMaestro.sold_without_stock[sucursalActual] = parseFloat(((parseFloat(itemMaestro.sold_without_stock[sucursalActual]) || 0) + fal).toFixed(3)); 
+    } 
+    
+    // 🌟 SELLO DE TIEMPO CLAVE
+    itemMaestro.updatedAt = Date.now();
+    inv[codMaestro] = itemMaestro;
+    
+    if(typeof db !== 'undefined') {
+        db.collection("inventario").doc(String(codMaestro)).set(itemMaestro).catch(e => console.error("Error al restar stock:", e));
+    }
+}
 // ====================================================================
 // === EL CARTERO SILENCIOSO BLINDADO (OFFLINE SYNC) ===
 // ====================================================================
@@ -294,17 +318,13 @@ try {
 db.collection("inventario").onSnapshot((querySnapshot) => {
     querySnapshot.forEach((doc) => { 
         let rawNube = typeof doc.data === 'function' ? doc.data() : doc;
-        
-        // 1. Extraemos los datos reales desempaquetando la propiedad 'data'
         let datosNube = (rawNube.data && typeof rawNube.data === 'object') ? rawNube.data : rawNube;
         
-        // 2. Usamos el doc_id real del producto ("1", "40") en lugar del ID interno de PocketBase
         let codKey = rawNube.doc_id || datosNube.doc_id || doc.id;
         if (!codKey) return;
 
         let datosLocales = inv[codKey];
 
-        // 3. Si el cambio local es más NUEVO que el de la nube, protegemos precios y actualizamos stock
         if (datosLocales && datosLocales.updatedAt && datosNube.updatedAt) {
             if (datosLocales.updatedAt > datosNube.updatedAt) {
                 datosLocales.stock = datosNube.stock || {};
@@ -313,7 +333,6 @@ db.collection("inventario").onSnapshot((querySnapshot) => {
             }
         }
 
-        // 4. Asignamos los datos limpios a la clave real del producto
         inv[codKey] = datosNube; 
     });
     
