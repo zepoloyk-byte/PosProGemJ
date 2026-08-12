@@ -7,6 +7,12 @@ pb.autoCancellation(false);
 // ====================================================================
 // === 2. ADAPTADOR POCKETBASE (MOTOR BLINDADO ANTI-RESET Y ANTI-CLONES) ===
 // ====================================================================
+// ====================================================================
+// === 2. ADAPTADOR POCKETBASE (MOTOR BLINDADO ANTI-RESET Y ANTI-CLONES) ===
+// ====================================================================
+// ====================================================================
+// === ADAPTADOR FIREBASE -> POCKETBASE (SINTAXIS Y LLAVES VERIFICADAS) ===
+// ====================================================================
 const db = {
     enablePersistence: () => Promise.resolve(),
     collection: function(colName) {
@@ -27,11 +33,9 @@ const db = {
                     try {
                         let cache = await pb.collection(colName).getFullList({ requestKey: null });
                         let mapa = {}; 
-                        cache.forEach(r => {
-                            let key = r.doc_id || r.id;
-                            mapa[key] = r;
-                        });
+                        cache.forEach(r => { let key = r.doc_id || r.id; mapa[key] = r; });
                         cache = Object.values(mapa); 
+                        
                         let emit = () => { 
                             callback({ 
                                 forEach: (cb) => cache.forEach(r => {
@@ -56,8 +60,12 @@ const db = {
                         });
                     } catch (e) { 
                         intentando = false;
-                        console.warn(`📡 Sin internet para radar de [${colName}]. Reintentando en 5s...`);
-                        setTimeout(iniciarRadar, 5000); 
+                        if (e.status === 404 || e.status === 403) {
+                            console.warn(`⚠️ Radar de [${colName}] pausado. Revisa permisos (API Rules) o si la colección existe.`);
+                        } else {
+                            console.warn(`📡 Sin internet para radar de [${colName}]. Reintentando en 5s...`);
+                            setTimeout(iniciarRadar, 5000); 
+                        }
                     }
                 };
                 iniciarRadar();
@@ -84,78 +92,98 @@ const db = {
             },
             
             doc: function(docId) {
-                docId = String(docId).trim();
-                return {
-                    set: async function(dataObj) {
-                        try {
-                            // 🌟 ESTAMPA DE TIEMPO OBLIGATORIA EN CADA GUARDADO
-                            dataObj.updatedAt = Date.now();
-
-                            if (colName === "inventario" && typeof inv !== 'undefined') {
-                                inv[docId] = dataObj;
-                                try { localStorage.setItem("pos_precision_v6", JSON.stringify(inv)); } catch(e){}
-                            }
-
-                            let record = null;
-                            try { 
-                                record = await pb.collection(colName).getFirstListItem(`doc_id="${docId}"`); 
-                            } catch (e) {}
-
-                            let payload = {
-                                doc_id: docId,
-                                data: dataObj
-                            };
-
-                            if (record) {
-                                return await pb.collection(colName).update(record.id, payload);
-                            } else {
-                                // 🌟 SIN PADDING DE 'x': PocketBase genera su ID interno limpio
-                                return await pb.collection(colName).create(payload);
-                            }
-                        } catch (e) {
-                            console.warn(`⏳ Sin conexión. Guardando en mochila offline: [${colName}] -> ${docId}`);
-                            let mochila = JSON.parse(localStorage.getItem("pos_mochila")) || [];
-                            mochila = mochila.filter(m => !(m.col === colName && m.id === docId));
-                            mochila.push({ col: colName, id: docId, data: dataObj });
-                            localStorage.setItem("pos_mochila", JSON.stringify(mochila));
-                            return true; 
-                        }
-                    },
-                    delete: async function() {
-                        try {
-                            let record = await pb.collection(colName).getFirstListItem(`doc_id="${docId}"`);
-                            return await pb.collection(colName).delete(record.id);
-                        } catch (e) { console.warn("Doc no existe:", docId); }
-                    },
-                    onSnapshot: async function(callback) {
-                        let emit = (exists, data) => callback({ exists, data: () => data });
-                        let intentandoDoc = false;
-                        let iniciarRadarDoc = async () => {
-                            if(intentandoDoc) return;
-                            intentandoDoc = true;
-                            try {
-                                let record = await pb.collection(colName).getFirstListItem(`doc_id="${docId}"`);
-                                emit(true, record.data || record);
-                                pb.collection(colName).subscribe('*', function(e) {
-                                    if ((e.record.doc_id || e.record.id) === docId) {
-                                        if (e.action === 'delete') emit(false, {});
-                                        else emit(true, e.record.data || e.record);
-                                    }
-                                });
-                            } catch (e) { 
-                                intentandoDoc = false;
-                                if(e.status === 404) { emit(false, {}); } 
-                                else { setTimeout(iniciarRadarDoc, 5000); } 
-                            }
-                        };
-                        iniciarRadarDoc();
-                    }
-                };
+    docId = String(docId).trim();
+    return {
+        set: async function(dataObj) {
+            dataObj.updatedAt = Date.now();
+            
+            // 1. Guardado visual inmediato (RAM)
+            if (colName === "inventario" && typeof inv !== 'undefined') {
+                inv[docId] = dataObj;
+                try { localStorage.setItem("pos_precision_v6", JSON.stringify(inv)); } catch(e){}
             }
+
+            let reintentos = 3;
+            for (let i = 1; i <= reintentos; i++) {
+                try {
+                    // LLAVE ÚNICA: Evita que PocketBase bloquee las ventas rápidas
+                    let llaveUnica = `${colName}_${docId}_${Date.now()}_${Math.random()}`;
+
+                    let record = null;
+                    try { 
+                        record = await pb.collection(colName).getFirstListItem(`doc_id="${docId}"`, { requestKey: llaveUnica + "_busca" }); 
+                    } catch (e) {}
+
+                    let limpio = JSON.parse(JSON.stringify(dataObj));
+                    delete limpio.id; delete limpio.collectionId; delete limpio.collectionName; 
+                    delete limpio.created; delete limpio.updated;
+                    if (limpio.data) delete limpio.data;
+
+                    let payload = {
+                        doc_id: docId,
+                        data: limpio
+                    };
+
+                    if (record) {
+                        await pb.collection(colName).update(record.id, payload, { requestKey: llaveUnica + "_upd" });
+                    } else {
+                        await pb.collection(colName).create(payload, { requestKey: llaveUnica + "_cre" });
+                    }
+                    
+                    return true; 
+
+                } catch (error) {
+                    let esSuperpuesta = (error.isAbort || error.status === 0 || JSON.stringify(error.response || {}) === "{}");
+                    
+                    // Reintento silencioso en caso de choque
+                    if (esSuperpuesta && i < reintentos) {
+                        await new Promise(resolve => setTimeout(resolve, 300));
+                        continue; 
+                    }
+
+                    // 🌟 MODO SILENCIOSO: Va a la mochila sin molestar con alertas
+                    let motivo = error.response ? JSON.stringify(error.response.data || error.response) : error.message;
+                    console.warn(`📦 Guardado en Mochila Offline [${colName} -> ${docId}]. Motivo: ${motivo || 'Fallo de red'}`);
+                    
+                    let mochila = JSON.parse(localStorage.getItem("pos_mochila")) || [];
+                    mochila = mochila.filter(m => !(m.col === colName && m.id === docId));
+                    mochila.push({ col: colName, id: docId, data: dataObj });
+                    localStorage.setItem("pos_mochila", JSON.stringify(mochila));
+                    
+                    return false; 
+                }
+            }
+        },
+
+        onSnapshot: async function(callback) {
+            let emit = (exists, data) => callback({ exists, data: () => data });
+            let intentandoDoc = false;
+            let iniciarRadarDoc = async () => {
+                if(intentandoDoc) return;
+                intentandoDoc = true;
+                try {
+                    let record = await pb.collection(colName).getFirstListItem(`doc_id="${docId}"`);
+                    emit(true, record.data || record);
+                    pb.collection(colName).subscribe('*', function(e) {
+                        if ((e.record.doc_id || e.record.id) === docId) {
+                            if (e.action === 'delete') emit(false, {});
+                            else emit(true, e.record.data || e.record);
+                        }
+                    });
+                } catch (e) { 
+                    intentandoDoc = false;
+                    if(e.status === 404) { emit(false, {}); } 
+                    else { setTimeout(iniciarRadarDoc, 5000); } 
+                }
+            };
+            iniciarRadarDoc();
+        }
+    };
+}
         };
     }
 };
-
+                            
 // ==========================================
 // 📦 DESCONTAR STOCK CORREGIDO (CON TIMESTAMP)
 // ==========================================
@@ -164,20 +192,21 @@ function descontarStock(cod, cant) {
     let codMaestro = (itemOriginal.grupo && inv[itemOriginal.grupo]) ? itemOriginal.grupo : cod;
     let itemMaestro = inv[codMaestro] || itemOriginal;
     
-    if(!itemMaestro) return; 
+    if (!itemMaestro) return; 
     
-    if (typeof itemMaestro.stock !== 'object' || itemMaestro.stock === null) {
+    // Normalizamos el objeto de stock por sucursal
+    if (typeof itemMaestro.stock !== 'object' || itemMaestro.stock === null || Array.isArray(itemMaestro.stock)) {
         let stockNumerico = parseFloat(itemMaestro.stock) || parseFloat(itemMaestro.existencia) || parseFloat(itemMaestro.can) || 0;
         itemMaestro.stock = {};
         itemMaestro.stock[sucursalActual] = stockNumerico;
     }
 
-    if(!itemMaestro.sold_without_stock) itemMaestro.sold_without_stock = {}; 
+    if (!itemMaestro.sold_without_stock) itemMaestro.sold_without_stock = {}; 
     
     let disp = Math.max(0, parseFloat(itemMaestro.stock[sucursalActual]) || 0); 
     let cantRestar = parseFloat(cant) || 0;
 
-    if(disp >= cantRestar) { 
+    if (disp >= cantRestar) { 
         itemMaestro.stock[sucursalActual] = parseFloat((disp - cantRestar).toFixed(3)); 
     } else { 
         let fal = cantRestar - disp; 
@@ -185,16 +214,19 @@ function descontarStock(cod, cant) {
         itemMaestro.sold_without_stock[sucursalActual] = parseFloat(((parseFloat(itemMaestro.sold_without_stock[sucursalActual]) || 0) + fal).toFixed(3)); 
     } 
     
-    // 🌟 SELLO DE TIEMPO CLAVE
+    // 🌟 MARCA DE TIEMPO OBLIGATORIA: Invalida el caché viejo de la nube
     itemMaestro.updatedAt = Date.now();
     inv[codMaestro] = itemMaestro;
     
-    if(typeof db !== 'undefined') {
-        db.collection("inventario").doc(String(codMaestro)).set(itemMaestro).catch(e => console.error("Error al restar stock:", e));
+    // Guardado directo en PocketBase
+    if (typeof db !== 'undefined') {
+        db.collection("inventario").doc(String(codMaestro)).set(itemMaestro)
+            .then(() => console.log(`✅ Stock de [${codMaestro}] actualizado en la nube.`))
+            .catch(e => console.error("❌ Error al guardar venta en la nube:", e));
     }
 }
 // ====================================================================
-// === EL CARTERO SILENCIOSO BLINDADO (OFFLINE SYNC) ===
+// === EL CARTERO SILENCIOSO BLINDADO (OFFLINE SYNC CORREGIDO) ===
 // ====================================================================
 let tiempoInactividad = 0;
 let revisarPorInactividad = null;
@@ -203,31 +235,60 @@ let vaciandoMochila = false;
 async function vaciarMochilaRezagada() {
     if (!navigator.onLine || vaciandoMochila) return;
     vaciandoMochila = true; 
+    
     try {
         let mochila = JSON.parse(localStorage.getItem("pos_mochila")) || [];
-        if (mochila.length > 0) {
-            mochila.forEach(tarea => {
-                if (tarea.col === 'inventario' && typeof inv !== 'undefined') inv[tarea.id] = tarea.data;
-            });
-            if (typeof renderI === "function") renderI(); 
-        }
+        if (mochila.length === 0) return;
+
+        let clientePB = typeof pb !== 'undefined' ? pb : (typeof db !== 'undefined' ? db : null);
+        if (!clientePB) return;
+
         while (mochila.length > 0 && navigator.onLine) {
             let tarea = mochila[0];
+            
+            // 1. Mapeo de colecciones obsoletas para evitar Error 404
+            let colLimpia = tarea.col === 'productos' ? 'inventario' : tarea.col;
+            let docId = String(tarea.id).trim();
+
             try {
-                let record;
-                try { record = await pb.collection(tarea.col).getFirstListItem(`doc_id="${tarea.id}"`); } catch(e){}
+                let record = null;
+                try { 
+                    record = await clientePB.collection(colLimpia).getFirstListItem(`doc_id="${docId}"`); 
+                } catch(e){}
+
+                // 2. Limpieza de metadatos internos
+                let dataObj = tarea.data || {};
+                let limpio = typeof dataObj === 'object' ? JSON.parse(JSON.stringify(dataObj)) : {};
+                delete limpio.id; delete limpio.collectionId; delete limpio.collectionName; 
+                delete limpio.created; delete limpio.updated;
+
+                // 3. Empaquetado esparcido para actualizar columnas reales de PocketBase
+                let payload = {
+                    ...limpio,
+                    doc_id: docId,
+                    data: limpio
+                };
+
                 if (record) {
-                    await pb.collection(tarea.col).update(record.id, { doc_id: tarea.id, data: tarea.data });
+                    await clientePB.collection(colLimpia).update(record.id, payload);
                 } else {
-                    await pb.collection(tarea.col).create({ doc_id: tarea.id, data: tarea.data });
+                    await clientePB.collection(colLimpia).create(payload);
                 }
+
+                // 4. Si tuvo éxito, lo quitamos de la cola
                 mochila.shift(); 
                 localStorage.setItem("pos_mochila", JSON.stringify(mochila));
-                console.log(`✅ Cartero: Paquete rezagado sincronizado (${tarea.col})`);
+                console.log(`✅ Cartero: Paquete rezagado sincronizado (${colLimpia} -> ${docId})`);
+
             } catch(e) {
-                break; 
+                console.warn(`⚠️ Cartero: Paquete descartado por error de formato en [${colLimpia} -> ${docId}]:`, e);
+                // 🚀 CLAVE ANTI-BLOQUEO: Si el paquete da error (ej. 400/404), se descarta para NO trabar la cola
+                mochila.shift(); 
+                localStorage.setItem("pos_mochila", JSON.stringify(mochila));
             }
         }
+    } catch(errGeneral) {
+        console.error("Error general en el cartero silencioso:", errGeneral);
     } finally {
         vaciandoMochila = false; 
     }
@@ -317,36 +378,23 @@ try {
 // 📡 RADAR DE INVENTARIO EN TIEMPO REAL (CON FILTRO DE PRIORIDAD LOCAL)
 db.collection("inventario").onSnapshot((querySnapshot) => {
     querySnapshot.forEach((doc) => { 
-        let rawNube = typeof doc.data === 'function' ? doc.data() : doc;
-        let datosNube = (rawNube.data && typeof rawNube.data === 'object') ? rawNube.data : rawNube;
-        
-        let codKey = rawNube.doc_id || datosNube.doc_id || doc.id;
-        if (!codKey) return;
+        let idLimpio = String(doc.id).trim();
+        let datosNube = normalizarProducto(doc.data());
+        let datosLocales = inv[idLimpio] ? normalizarProducto(inv[idLimpio]) : null;
 
-        let datosLocales = inv[codKey];
-
-        if (datosLocales && datosLocales.updatedAt && datosNube.updatedAt) {
-            if (datosLocales.updatedAt > datosNube.updatedAt) {
-                datosLocales.stock = datosNube.stock || {};
-                datosLocales.sold_without_stock = datosNube.sold_without_stock || {};
-                return; 
-            }
+        // Protección de cambios locales recientes
+        if (datosLocales && datosLocales.updatedAt > datosNube.updatedAt) {
+            datosLocales.stock = datosNube.stock;
+            datosLocales.sold_without_stock = datosNube.sold_without_stock;
+            inv[idLimpio] = datosLocales;
+            return;
         }
 
-        inv[codKey] = datosNube; 
+        inv[idLimpio] = datosNube; 
     });
     
-    console.log("📦 Inventario sincronizado (Prioridad de precio local activada).");
-    
-    try {
-        localStorage.setItem("pos_precision_v6", JSON.stringify(inv));
-    } catch (error) {
-        console.warn("⚠️ Memoria local llena. El inventario vive en la nube.");
-    }
-    
-    if (typeof tabActual !== 'undefined' && tabActual === 'i-tab' && typeof renderI === 'function') {
-        renderI(); 
-    }
+    localStorage.setItem("pos_precision_v6", JSON.stringify(inv));
+    if (typeof tabActual !== 'undefined' && tabActual === 'i-tab' && typeof renderI === 'function') renderI(); 
 });
 
 // Usuarios
@@ -1467,62 +1515,6 @@ function abrirAjusteStock(cod) {
     setTimeout(() => document.getElementById('ajuste_nuevo_stock').focus(), 100);
 }
 
-window.guardarAjusteStock = function() {
-    let nuevoStock = parseFloat(document.getElementById('ajuste_nuevo_stock').value);
-    let pin = document.getElementById('ajuste_admin_pin').value;
-    
-    if (isNaN(nuevoStock) || nuevoStock < 0) return alert("⚠️ Cantidad inválida.");
-    
-    if (usuariosData["Admin"] && usuariosData["Admin"].pin === pin) {
-        
-        let pO = inv[codAjusteStock] || {};
-        let codMaestro = (pO.grupo && inv[pO.grupo]) ? pO.grupo : codAjusteStock;
-        let pMaestro = inv[codMaestro] || pO;
-
-        let claveSuc = typeof sucursalActual !== 'undefined' ? sucursalActual : "Matriz";
-
-        let stockAntesReal = 0;
-        if (pMaestro.stock && typeof pMaestro.stock === 'object' && !Array.isArray(pMaestro.stock)) {
-            stockAntesReal = parseFloat(pMaestro.stock[claveSuc]) || 0;
-        } else {
-            stockAntesReal = parseFloat(pMaestro.stock) || parseFloat(pMaestro.existencia) || parseFloat(pMaestro.can) || 0;
-            pMaestro.stock = {};
-        }
-
-        let stockDespuesReal = parseFloat(nuevoStock.toFixed(3));
-        let diferencia = parseFloat((stockDespuesReal - stockAntesReal).toFixed(3));
-
-        if (typeof pMaestro.stock !== 'object' || pMaestro.stock === null) {
-            pMaestro.stock = {};
-        }
-        
-        pMaestro.stock[claveSuc] = stockDespuesReal;
-        
-        try { localStorage.setItem("pos_precision_v6", JSON.stringify(inv)); } catch (e) {}
-
-        // 🌟 EL PARCHE MÁGICO: Rellenamos con 'x' hasta llegar a 15 caracteres EXACTOS
-        let docIdFinal = String(codMaestro).padEnd(15, 'x').substring(0, 15);
-        let objetoParaGuardar = { doc_id: String(codMaestro), data: pMaestro };
-        
-        db.collection("inventario").doc(docIdFinal).set(objetoParaGuardar, { merge: true })
-        .then(() => {
-            if (typeof registrarEnKardex === 'function') {
-                registrarEnKardex(codAjusteStock, pO.nom, "AJUSTE", diferencia, pO.pv || 0, pO.cos || 0, stockAntesReal, stockDespuesReal);
-            }
-            document.getElementById('modalAjusteStock').style.display = 'none';
-            alert("✅ Stock ajustado y guardado correctamente.");
-            if (typeof renderTablaInventario === 'function') renderTablaInventario();
-            if (typeof renderI === 'function') renderI(); 
-        }).catch((e) => {
-            console.error(e);
-            alert("❌ Error con la nube al ajustar: " + e.message);
-        });
-    } else {
-        alert("❌ PIN Incorrecto.");
-        document.getElementById('ajuste_admin_pin').value = '';
-        document.getElementById('ajuste_admin_pin').focus();
-    }
-};
 
 function abrirAuthReiniciarInv() {
     document.getElementById('auth_reiniciar_pin').value = '';
@@ -2244,15 +2236,21 @@ window.confirmarVenta = async function(cambioFinal = 0) {
         // 🌟 PROCESAMIENTO DEL CARRITO CON EL MOTOR DE PROMOCIONES EXACTO 🌟
         for (let x of carV) { 
             let pOriginal = inv[x.cod] || {}; 
-            if(pOriginal.tipo === 'kit') { 
-                if(pOriginal.comp) pOriginal.comp.forEach(c => { if(typeof descontarStock === 'function') descontarStock(c.cod, (c.can || 1) * (x.can || 1)); }); 
-            } else { 
-                if(typeof descontarStock === 'function') descontarStock(x.cod, x.can || 1); 
-            }
-
-            // Reglas Maestro-Espejo
+            
+            // 1. Identificamos al Maestro ANTES de tocar el stock
             let codMaestro = x.maestro_cod || (pOriginal.grupo && inv[pOriginal.grupo] ? pOriginal.grupo : x.cod);
             let pMaestro = inv[codMaestro] || pOriginal;
+
+            // 2. Descontamos el stock directamente a la cuenta del Maestro
+            if(pOriginal.tipo === 'kit') { 
+                if(pOriginal.comp) pOriginal.comp.forEach(c => { 
+                    // Si el kit tiene un componente que también es espejo, buscamos su maestro
+                    let compMaestro = (inv[c.cod] && inv[c.cod].grupo && inv[inv[c.cod].grupo]) ? inv[c.cod].grupo : c.cod;
+                    if(typeof descontarStock === 'function') descontarStock(compMaestro, (c.can || 1) * (x.can || 1)); 
+                }); 
+            } else { 
+                if(typeof descontarStock === 'function') descontarStock(codMaestro, x.can || 1); 
+            }
             
             let minM = pMaestro.md || 10; 
             let precioVentaNormal = pMaestro.pv || 0;
@@ -2313,10 +2311,8 @@ window.confirmarVenta = async function(cambioFinal = 0) {
             sumaTotalCobrada += subCobrado;
             let printName = (x.nom || 'Producto').substring(0,15); 
             
-            // IMPRIMIR PRECIO NORMAL
             itemsTicketHtml += `<tr><td style="vertical-align:top;">${x.can||1}</td><td>${printName}</td><td style="text-align:right">$${subtotalNormal.toFixed(2)}</td></tr>`;
             
-            // SI HUBO DESCUENTO SE IMPRIME DEBAJO DEL PRODUCTO AFECTADO
             if (subtotalNormal > subCobrado + 0.01) {
                 let ahorroItem = subtotalNormal - subCobrado;
                 if(etiquetaDescuento === "") {
@@ -2328,7 +2324,10 @@ window.confirmarVenta = async function(cambioFinal = 0) {
 
             detallesParaGuardar.push({ cod: x.cod, nom: x.nom || 'Producto', can: x.can || 1, subtotal: subCobrado, pv: precioVentaNormal, dep: pOriginal.dep || "General" });
             
-            if (typeof db !== 'undefined' && x.cod) { db.collection("inventario").doc(x.cod).set(inv[x.cod] || {nom: x.nom}).catch(e => console.warn("Inventario a mochila offline.")); }
+            // 3. Subimos a la nube a quien verdaderamente perdió stock: El MAESTRO
+            if (typeof db !== 'undefined' && codMaestro) { 
+                db.collection("inventario").doc(codMaestro).set(inv[codMaestro] || pMaestro).catch(e => console.warn("Inventario a mochila offline.")); 
+            }
         }
 
         // Descuento global residual (si por decimales el total cobrado sigue difiriendo)
@@ -2855,6 +2854,42 @@ window.guardarProductoEnNube = async function(codigoReal, objetoProducto) {
         console.error("Error guardando producto en nube:", codigoReal, e);
     }
 };
+// ====================================================================
+// 🧹 SANITIZADOR UNIFICADO DE TIPOS DE DATOS (BLINDAJE DE RAM Y NUBE)
+// ====================================================================
+function normalizarProducto(p) {
+    if (!p || typeof p !== 'object') p = {};
+
+    // 1. Forzar que stock sea SIEMPRE un Objeto por sucursales
+    if (typeof p.stock !== 'object' || p.stock === null || Array.isArray(p.stock)) {
+        let valNumerico = parseFloat(p.stock) || parseFloat(p.existencia) || 0;
+        p.stock = {};
+        p.stock[sucursalActual || "Matriz"] = valNumerico;
+    }
+
+    // 2. Forzar que sold_without_stock sea Objeto
+    if (typeof p.sold_without_stock !== 'object' || p.sold_without_stock === null || Array.isArray(p.sold_without_stock)) {
+        p.sold_without_stock = {};
+    }
+
+    // 3. Forzar números estrictos en precios y costos
+    p.pv = parseFloat(p.pv) || 0;
+    p.cos = parseFloat(p.cos) || 0;
+    p.pm = parseFloat(p.pm) || p.pv;
+    p.gan = parseFloat(p.gan) || 0;
+    p.iva = parseFloat(p.iva) || 0;
+
+    // 4. Forzar que updatedAt sea un Timestamp válido
+    p.updatedAt = parseInt(p.updatedAt) || Date.now();
+
+    // 5. Arreglos y texto
+    p.nom = String(p.nom || "Producto Sin Nombre").trim();
+    p.dep = String(p.dep || "General").trim();
+    p.tipo = String(p.tipo || "pieza").trim();
+    p.comp = Array.isArray(p.comp) ? p.comp : [];
+
+    return p;
+}
 
 // ==========================================
 // 📦 LÓGICA DE COMPRAS DE PROVEEDORES
@@ -2913,9 +2948,8 @@ window.finalizarCompra = async function() {
 window.procesarGuardadoEInventario = async function(totalCompra, metodoNombre, metaPago) {
     let prov = document.getElementById('c_proveedor') ? document.getElementById('c_proveedor').value.trim() : "";
     let esInventarioInicial = document.getElementById('c_inventario_inicial') ? document.getElementById('c_inventario_inicial').checked : false;
-    let claveSuc = typeof sucursalActual !== 'undefined' ? sucursalActual : "Matriz";
-    let sucLimpia = String(claveSuc).replace(/📍/g, '').trim(); 
 
+    // --- 1. Lógica para actualizar existencias y costos ---
     for (let x of carC) { 
         try {
             let prod = inv[x.cod];
@@ -2924,150 +2958,180 @@ window.procesarGuardadoEInventario = async function(totalCompra, metodoNombre, m
                     let codComp = c.cod; 
                     let maestroComp = typeof obtenerProductoMaestro === 'function' ? obtenerProductoMaestro(codComp) : inv[codComp];
                     let cantTotalAumentar = (c.can || 1) * x.can; 
-                    
                     if (maestroComp) {
-                        if (typeof maestroComp.stock !== 'object' || maestroComp.stock === null) {
-                            let viejoStock = parseFloat(maestroComp.stock) || parseFloat(maestroComp.existencia) || 0;
-                            maestroComp.stock = {}; 
-                            maestroComp.stock[claveSuc] = viejoStock;
-                        }
-                        maestroComp.stock[claveSuc] = parseFloat(((maestroComp.stock[claveSuc] || 0) + cantTotalAumentar).toFixed(3));
-                        
+                        if (!maestroComp.stock) maestroComp.stock = {};
+                        maestroComp.stock[sucursalActual] = (maestroComp.stock[sucursalActual] || 0) + cantTotalAumentar;
+                        maestroComp.updatedAt = Date.now();
                         let docIdAActualizar = maestroComp === inv[codComp] ? codComp : inv[codComp].grupo;
-                        await window.guardarProductoEnNube(docIdAActualizar, maestroComp);
+                        if (typeof db !== 'undefined') await db.collection("inventario").doc(String(docIdAActualizar)).set(maestroComp); 
                     }
                 }
             } else if (prod) {
                 let maestro = typeof obtenerProductoMaestro === 'function' ? obtenerProductoMaestro(x.cod) : inv[x.cod];
-                let stockAntesReal = 0;
                 
-                if (typeof maestro.stock === 'object' && maestro.stock !== null && !Array.isArray(maestro.stock)) {
-                    stockAntesReal = parseFloat(maestro.stock[claveSuc]) || 0;
+                // 📸 FOTOGRAFÍA 1: Lectura blindada del stock antes de recibir la compra
+                let stockAntesReal = 0;
+                if (maestro.stock && typeof maestro.stock === 'object') {
+                    stockAntesReal = parseFloat(maestro.stock[sucursalActual]) || 0;
                 } else {
                     stockAntesReal = parseFloat(maestro.stock) || parseFloat(maestro.existencia) || parseFloat(maestro.can) || 0;
-                    maestro.stock = {};
                 }
                 if (stockAntesReal < 0) stockAntesReal = 0;
 
-                let cantComprada = parseFloat(x.can) || 0;
-                let stockDespuesReal = parseFloat((stockAntesReal + cantComprada).toFixed(3));
+                // 📸 FOTOGRAFÍA 2: Sumamos lo que acaba de llegar en la compra
+                let stockDespuesReal = stockAntesReal + parseFloat(x.can);
 
-                if (typeof maestro.stock !== 'object' || maestro.stock === null) maestro.stock = {};
-                maestro.stock[claveSuc] = stockDespuesReal; 
+                if (!maestro.stock) maestro.stock = {}; 
+                maestro.stock[sucursalActual] = stockDespuesReal; 
                 
+                let conceptoKardex = esInventarioInicial ? "CARGA INICIAL" : "COMPRA";
+                
+                // 🌟 ENVIAMOS LAS FOTOS AL KARDEX
                 if (typeof registrarEnKardex === 'function') {
-                    registrarEnKardex(x.cod, prod.nom, esInventarioInicial ? "CARGA INICIAL" : "COMPRA", cantComprada, x.pre || prod.pv, x.cos || prod.cos, stockAntesReal, stockDespuesReal);
+                    registrarEnKardex(
+                        x.cod, 
+                        prod.nom, 
+                        conceptoKardex, 
+                        x.can, 
+                        x.pre || prod.pv, 
+                        x.cos || prod.cos, 
+                        stockAntesReal, 
+                        stockDespuesReal
+                    );
                 }
 
-                let costoCompraUnitarioBase = x.cos_base !== undefined ? parseFloat(x.cos_base) : (x.cos !== undefined ? parseFloat(x.cos / (1 + ((prod.iva||0) / 100))) : 0);
-                if (x.cos_base !== undefined && x.iva !== undefined) prod.iva = x.iva; 
+                let costoCompraUnitarioBase = 0;
+                if (x.cos_base !== undefined) { 
+                    costoCompraUnitarioBase = parseFloat(x.cos_base); 
+                    if (x.iva !== undefined) prod.iva = x.iva; 
+                } else if (x.cos !== undefined) { 
+                    costoCompraUnitarioBase = parseFloat(x.cos / (1 + ((prod.iva||0) / 100))); 
+                }
 
                 if (costoCompraUnitarioBase > 0) {
                     let costoHistorico = prod.cos_promedio !== undefined ? parseFloat(prod.cos_promedio) : (parseFloat(prod.cos) || 0);
                     let valorViejo = stockAntesReal * costoHistorico;
-                    let valorNuevo = cantComprada * costoCompraUnitarioBase;
-                    prod.cos_promedio = parseFloat(((valorViejo + valorNuevo) / (stockAntesReal + cantComprada)).toFixed(2));
+                    let valorNuevo = x.can * costoCompraUnitarioBase;
+                    let piezasTotales = stockAntesReal + x.can;
+
+                    let costoPromedio = (valorViejo + valorNuevo) / piezasTotales;
+                    
+                    prod.cos_promedio = parseFloat(costoPromedio.toFixed(2));
                     prod.cos = parseFloat(costoCompraUnitarioBase.toFixed(2));
                 }
 
                 if (x.pre !== undefined) {
                     if (x.solo_sucursal) {
                         if (!prod.pre_sucursales) prod.pre_sucursales = {}; 
-                        prod.pre_sucursales[claveSuc] = parseFloat(x.pre);
+                        prod.pre_sucursales[sucursalActual] = parseFloat(x.pre);
                     } else {
                         prod.pv = parseFloat(x.pre); 
-                        if (prod.pre_sucursales && prod.pre_sucursales[claveSuc] !== undefined) delete prod.pre_sucursales[claveSuc];
+                        if (prod.pre_sucursales && prod.pre_sucursales[sucursalActual] !== undefined) delete prod.pre_sucursales[sucursalActual];
                     }
-                    prod.updatedAt = Date.now(); 
                 }
-
-                if (maestro !== prod) {
-                    await window.guardarProductoEnNube(x.cod, prod);
-                    await window.guardarProductoEnNube(prod.grupo, maestro);
-                } else {
-                    await window.guardarProductoEnNube(x.cod, prod);
+                
+                prod.updatedAt = Date.now(); 
+                if (maestro !== prod) maestro.updatedAt = Date.now();
+                
+                if (typeof db !== 'undefined') {
+                    await db.collection("inventario").doc(String(x.cod)).set(prod);
+                    if (maestro !== prod) {
+                        await db.collection("inventario").doc(String(prod.grupo)).set(maestro);
+                    }
                 }
             }
-        } catch (errorItem) { 
-            console.error("Error en item: ", x.cod, errorItem); 
+        } catch (errorItem) {
+            console.error("Error aislando producto: ", x.cod, errorItem);
         }
     }
     
+    // --- 2. Guardado de datos original usando el objeto 'db' ---
     try { localStorage.setItem("pos_precision_v6", JSON.stringify(inv)); } catch(e) {}
-    
     let idCompra = Date.now();
+    
     let objetoCompra = { 
         id: idCompra, 
         doc_id: String(idCompra), 
-        id_sesion_caja: (window.sesionCajaActual ? window.sesionCajaActual.id : null),
-        fecha: (typeof getFechaLocal === 'function' ? getFechaLocal() : new Date().toISOString().split('T')[0]), 
+        fecha: typeof getFechaLocal === 'function' ? getFechaLocal() : new Date().toISOString().split('T')[0], 
         hora: new Date().toLocaleTimeString(), 
-        cajero: typeof usuarioActual !== 'undefined' ? usuarioActual : 'Admin', 
-        sucursal: sucLimpia, 
+        cajero: usuarioActual, 
+        sucursal: sucursalActual, 
         proveedor: prov || "General", 
         metodo: metodoNombre, 
         total: totalCompra, 
-        items: carC, 
+        items: carC,
         ...metaPago 
     };
     
     if (typeof compras === 'undefined') window.compras = [];
     compras.push(objetoCompra); 
-    if (compras.length > 50) compras = compras.slice(-50);
     try { localStorage.setItem("pos_compras_local", JSON.stringify(compras)); } catch(e) {}
-
-    // --- AUDITORÍA Y REGISTRO DE COMPRAS ---
-    let clientePB = typeof pb !== 'undefined' ? pb : (typeof db !== 'undefined' ? db : null);
-    if (clientePB) {
-        await clientePB.collection("compras").create(objetoCompra).catch(e => console.error("Error registrando compra:", e));
+    
+    if (typeof db !== 'undefined') {
+        await db.collection("compras").doc(String(idCompra)).set(objetoCompra).catch(e => console.error("Error Nube Compras: ", e));
     }
 
+    // --- 💥 3. PARCHE DE AUDITORÍA CONTABLE (Descuento real de efectivo) ---
     if (metaPago && metaPago.metodo === "Mixto Especial" && metaPago.cajas_afectadas) {
         let cajas = metaPago.cajas_afectadas;
+        
         for (let cajeroAfectado of Object.keys(cajas)) {
             let montoRetirado = parseFloat(cajas[cajeroAfectado]) || 0;
+            
             if (montoRetirado > 0 && cajeroAfectado !== "Banco_Directo") {
                 let idMov = Date.now() + Math.floor(Math.random() * 1000); 
+                
                 let nuevoRetiro = {
-                    id: idMov, 
-                    id_sesion_caja: (window.sesionCajaActual ? window.sesionCajaActual.id : null),
-                    fecha: (typeof getFechaLocal === 'function' ? getFechaLocal() : new Date().toISOString().split('T')[0]),
-                    hora: new Date().toLocaleTimeString(), 
+                    id: idMov,
+                    fecha: typeof getFechaLocal === 'function' ? getFechaLocal() : new Date().toISOString().split('T')[0],
+                    hora: new Date().toLocaleTimeString(),
                     cajero: cajeroAfectado, 
-                    sucursal: sucLimpia, 
-                    tipo: 'Retiro', 
+                    sucursal: sucursalActual,
+                    tipo: 'Retiro',
                     monto: montoRetirado,
                     motivo: `COMPRA MIXTA ESP. (Fondo tomado por Admin para proveedor: ${prov || "General"})`
                 };
-                if (typeof movimientos !== 'undefined') { 
-                    movimientos.push(nuevoRetiro); 
-                    try { localStorage.setItem("pos_movimientos_v1", JSON.stringify(movimientos)); } catch(e) {} 
+                
+                if (typeof movimientos !== 'undefined') {
+                    movimientos.push(nuevoRetiro);
+                    try { localStorage.setItem("pos_movimientos_v1", JSON.stringify(movimientos)); } catch(e) {}
                 }
-                if (clientePB) {
-                    await clientePB.collection("movimientos").create(nuevoRetiro).catch(e => console.error("Error registrando retiro:", e));
+                
+                if (typeof db !== 'undefined') {
+                    await db.collection("movimientos").doc(String(idMov)).set(nuevoRetiro)
+                        .catch(e => console.error("Error registrando retiro de auditoría:", e));
                 }
             }
         }
     }
 
+    // --- 4. Anotar la deuda en la libreta del proveedor ---
     if (metaPago && metaPago.es_credito && metaPago.monto_credito > 0) {
         let nombreProv = prov || "Proveedor General";
-        let montoCredito = parseFloat(metaPago.monto_credito.toFixed(2));
+        
         if (typeof proveedores === 'undefined') window.proveedores = {};
-        if (!proveedores[nombreProv]) { proveedores[nombreProv] = { sucursal: sucLimpia, saldo: 0, historial: [] }; }
-        proveedores[nombreProv].saldo = parseFloat(((proveedores[nombreProv].saldo || 0) + montoCredito).toFixed(2));
-        proveedores[nombreProv].historial = proveedores[nombreProv].historial || [];
+        if (!proveedores[nombreProv]) {
+            proveedores[nombreProv] = { sucursal: sucursalActual, saldo: 0, historial: [] };
+        }
+        
+        proveedores[nombreProv].saldo = (proveedores[nombreProv].saldo || 0) + metaPago.monto_credito;
+        
+        if (!proveedores[nombreProv].historial) proveedores[nombreProv].historial = [];
         proveedores[nombreProv].historial.push({ 
-            fecha: (typeof getFechaLocal === 'function' ? getFechaLocal() : new Date().toISOString().split('T')[0]), 
+            fecha: typeof getFechaLocal === 'function' ? getFechaLocal() : new Date().toISOString().split('T')[0], 
             hora: new Date().toLocaleTimeString(), 
             tipo: 'Compra', 
-            monto: montoCredito, 
+            monto: metaPago.monto_credito, 
             detalle: `Folio Ticket Nube: ${idCompra}` 
         });
+
         try { localStorage.setItem("pos_proveedores_v1", JSON.stringify(proveedores)); } catch(e) {}
+        if (typeof db !== 'undefined') await db.collection("proveedores").doc(nombreProv).set(proveedores[nombreProv]);
+        
         if (typeof renderProveedores === 'function') renderProveedores();
     }
 
+    // --- 5. Limpieza del carrito ---
     carC = []; 
     if (typeof renderC === 'function') renderC(); 
     if (typeof renderI === 'function') renderI(); 
