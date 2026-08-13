@@ -1,6 +1,7 @@
 <!DOCTYPE html>
 <html lang="es">
 <head>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/all.min.css">
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>POS Precision v14 - Sistema Pro Completo</title>
@@ -83,13 +84,14 @@
                 padding-top: 15px !important;
             }
         }
+        
     </style>
 </head>
 <body>
 
 <div id="login-screen">
     <div class="login-box">
-        <h2 style="margin-top:0; color:var(--p)">🔐 Iniciar Sesión</h2>
+        <h2 style="margin-top:0; color:var(--p)"><i class="fa-solid fa-right-to-bracket"></i> Iniciar Sesión</h2>
         <label style="font-weight:bold; font-size:12px; color:#666">USUARIO</label>
         <select id="login_user"></select>
         <label style="font-weight:bold; font-size:12px; color:#666">PIN DE ACCESO</label>
@@ -106,11 +108,11 @@
     <button class="t-btn" id="btn_i-tab" onclick="changeTab(event, 'i-tab')">INVENTARIO [F3]</button>
     <button class="t-btn" id="btn_cli-tab" onclick="changeTab(event, 'cli-tab')">CLIENTES</button>
     <button class="t-btn" id="btn_pro-tab" onclick="changeTab(event, 'pro-tab')">PROMOCIONES</button>
-    <button class="t-btn" id="btn_audi-tab" onclick="changeTab(event, 'audi-tab')" style="background:#dc3545; color:white; font-weight:bold;">🕵️ AUDITORÍAS</button>
-    <button class="t-btn" id="btn_rec-tab" onclick="changeTab(event, 'rec-tab')" style="background:#0dcaf0; color:#000; font-weight:bold;">📱 RECARGAS</button>
-    <button class="t-btn" id="btn_r-tab" onclick="changeTab(event, 'r-tab')" style="background:var(--warning); color:#000;">📊 DASHBOARD</button>
-    <button id="btn_kardex-tab" class="t-btn" onclick="changeTab(event, 'kardex-tab')">📊 KARDEX</button>
-    <button class="t-btn" id="btn_u-tab" onclick="changeTab(event, 'u-tab')" style="background:var(--d); color:white;">⚙️ AJUSTES</button>
+    <button class="t-btn" id="btn_audi-tab" onclick="changeTab(event, 'audi-tab')" style="background:#dc3545; color:white; font-weight:bold;"><i class="fa-solid fa-clipboard-check"></i> AUDITORÍAS</button>
+    <button class="t-btn" id="btn_rec-tab" onclick="changeTab(event, 'rec-tab')" style="background:#0dcaf0; color:#000; font-weight:bold;"><i class="fa-solid fa-mobile-screen-button"></i> RECARGAS</button>
+    <button class="t-btn" id="btn_r-tab" onclick="changeTab(event, 'r-tab')" style="background:var(--warning); color:#000;"><i class="fa-solid fa-chart-pie"></i> DASHBOARD</button>
+    <button id="btn_kardex-tab" class="t-btn" onclick="changeTab(event, 'kardex-tab')"><i class="fa-solid fa-boxes-stacked"></i> KARDEX</button>
+    <button class="t-btn" id="btn_u-tab" onclick="changeTab(event, 'u-tab')" style="background:var(--d); color:white;"><i class="fa-solid fa-gear"></i> AJUSTES</button>
     
     <div style="margin-left:auto; display:flex; gap:15px; align-items:center;">
         <div id="live_clock" style="color:#aaa; font-size:12px; font-weight:bold; margin-right:10px;"></div>
@@ -212,21 +214,21 @@
         <div class="panel-izq">
             <div style="display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 15px; align-items: center;">
                 <input type="text" id="v_cod" autocomplete="off" placeholder="ESCANEÉ CÓDIGO PRODUCTO..." onkeypress="handleVenta(event)" autofocus style="flex: 1 1 150px; height: 40px; box-sizing: border-box; padding: 0 10px; font-size: 14px; border: 1px solid #ccc; border-radius: 4px;">
-                <button class="no-print" onclick="abrirEscanerCamara()" style="background: #28a745; color: white; border: none; border-radius: 4px; height: 40px; padding: 0 15px; cursor: pointer; font-size: 18px; box-shadow: 0 1px 3px rgba(0,0,0,0.2); white-space: nowrap;" title="Escanear con Cámara">📷</button>
-                <button class="btn-search" onclick="abrirBuscador()" style="height: 40px; padding: 0 15px; font-size: 13px; border-radius: 4px; border: none; cursor: pointer; white-space: nowrap;">🔍 BUSCAR [F10]</button>
+                <button class="no-print" onclick="abrirEscanerCamara()" style="background: #28a745; color: white; border: none; border-radius: 4px; height: 40px; padding: 0 15px; cursor: pointer; font-size: 18px; box-shadow: 0 1px 3px rgba(0,0,0,0.2); white-space: nowrap;" title="Escanear con Cámara"><i class="fa-solid fa-camera"></i></button>
+                <button class="btn-search" onclick="abrirBuscador()" style="height: 40px; padding: 0 15px; font-size: 13px; border-radius: 4px; border: none; cursor: pointer; white-space: nowrap;"><i class="fa-solid fa-magnifying-glass"></i> BUSCAR [F10]</button>
             </div>
             <div style="display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; background: #fdfdfd; padding: 10px; border-radius: 8px; border: 1px solid #eee; margin-bottom: 15px; gap: 10px;">
                 <div style="display: flex; flex-wrap: wrap; gap: 8px;">
-                    <button style="background:var(--warning); border:none; padding:8px 15px; border-radius:5px; font-weight:bold; cursor:pointer; white-space: nowrap;" onclick="preguntarPausar()">⏸️ Pausar [F8]</button>
-                    <button style="background:var(--info); color:white; border:none; padding:8px 15px; border-radius:5px; font-weight:bold; cursor:pointer; white-space: nowrap;" onclick="abrirPausadas()">📋 Ver Pausadas [F7] (<span id="count_pausadas">0</span>)</button>
-                    <button style="background:#dc3545; color:white; border:none; padding:8px 15px; border-radius:5px; font-weight:bold; cursor:pointer; white-space: nowrap;" onclick="registrarGasto()">💸 Registrar Gasto</button>
+                    <button style="background:var(--warning); border:none; padding:8px 15px; border-radius:5px; font-weight:bold; cursor:pointer; white-space: nowrap;" onclick="preguntarPausar()"><i class="fa-solid fa-pause"></i> Pausar [F8]</button>
+                    <button style="background:var(--info); color:white; border:none; padding:8px 15px; border-radius:5px; font-weight:bold; cursor:pointer; white-space: nowrap;" onclick="abrirPausadas()"><i class="fa-solid fa-list-check"></i> Ver Pausadas [F7] (<span id="count_pausadas">0</span>)</button>
+                    <button style="background:#dc3545; color:white; border:none; padding:8px 15px; border-radius:5px; font-weight:bold; cursor:pointer; white-space: nowrap;" onclick="registrarGasto()"><i class="fa-solid fa-money-bill-trend-up"></i> Registrar Gasto</button>
                     <div id="alertaRevisionContenedor" style="display: none; margin: 10px 0;">
     <button id="btnIrARevision" onclick="abrirRevisionAsignada()" class="btn-animado-alerta" style="background-color: #e67e22; color: white; border: none; padding: 12px 20px; font-weight: bold; border-radius: 5px; cursor: pointer; width: 100%; box-shadow: 0 4px 15px rgba(230,126,34,0.4);">
         🚨 TIENES (1) REVISIÓN DE INVENTARIO ASIGNADA ¡DAR CLIC AQUÍ!
     </button>
 </div>
                 </div>
-                <button style="background:var(--danger); color:white; border:none; padding:8px 15px; border-radius:5px; font-weight:bold; cursor:pointer; white-space: nowrap;" onclick="abrirVisorTickets()">🧾 Historial [F9]</button>
+                <button style="background:var(--danger); color:white; border:none; padding:8px 15px; border-radius:5px; font-weight:bold; cursor:pointer; white-space: nowrap;" onclick="abrirVisorTickets()"><i class="fa-solid fa-clock-rotate-left"></i> Historial [F9]</button>
             </div>
             <table class="tabla-pos">
                 <thead><tr><th>Producto</th><th>Cant/Peso</th><th>Precio</th><th>Subtotal</th><th></th></tr></thead>
@@ -237,7 +239,10 @@
             <div id="v_mayoreo_status" onclick="window.toggleMayoreo()" style="font-size:11px; padding:6px 12px; border-radius:20px; font-weight:bold; margin-bottom:15px; background: #444; color: #bbb;">MAYOREO: DESACTIVADO</div>
             <div class="sub-total">TOTAL VENTA (<span class="lbl-suc-act">MATRIZ</span>)</div>
             <div class="total-big" style="margin-bottom: 15px;">$<span id="v_total">0.00</span></div>
-            <button class="btn-final" style="background:var(--s); height: 70px; font-size: 22px; margin-bottom: 15px; box-shadow: 0 4px 15px rgba(40,167,69,0.4);" onclick="abrirCobro()">💵 COBRAR [F12]</button>
+            <div>
+<i class="fa-solid fa-cart-shopping"></i> Total Artículos: <span id="total_articulos">0</span>
+</div>
+            <button class="btn-final" style="background:var(--s); height: 70px; font-size: 22px; margin-bottom: 15px; box-shadow: 0 4px 15px rgba(40,167,69,0.4);" onclick="abrirCobro()"><i class="fa-solid fa-cash-register"></i> COBRAR [F12]</button>
             <p style="color:#777; font-size: 12px; margin-top:20px; text-align: right;"><b>[F10]</b> Buscar | <b>[F4]</b> Mayoreo <br><b>[F8]</b> Pausar | <b>[F9]</b> Historial</p>
         </div>
     </div>
@@ -1641,7 +1646,7 @@
     
 </script>
 
-<script src="app.js?v=43"></script>
+<script src="app.js?v=44"></script>
 <!-- ================= MODAL DE ARQUEO DE CAJA ================= -->
 <div id="modalArqueo" class="modal" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.6); z-index: 9999; align-items: center; justify-content: center;">
     <div style="background: #fff; width: 95%; max-width: 600px; border-radius: 12px; overflow: hidden; box-shadow: 0 5px 15px rgba(0,0,0,0.3); display: flex; flex-direction: column; max-height: 95vh;">

@@ -521,13 +521,45 @@ db.collection("compras_pausadas").onSnapshot((querySnapshot) => {
     if (typeof actualizarBadgeComprasPausadas === 'function') actualizarBadgeComprasPausadas();
 });
 
-// Ventas Pausadas
-db.collection("pausadas").onSnapshot((querySnapshot) => {
-    pausadas = [];
-    querySnapshot.forEach((doc) => { pausadas.push(doc.data()); });
-    actualizarContadorPausadas();
-});
 
+// =========================================================
+// 🟢 RADAR ÚNICO DE VENTAS PAUSADAS
+// CONSERVA TODAS LAS SUCURSALES
+// =========================================================
+
+db.collection("pausadas").onSnapshot((querySnapshot) => {
+
+    console.log("📡 RADAR PAUSADAS ACTIVADO");
+    console.log("📡 SNAPSHOT:", querySnapshot);
+
+    let nuevasPausadas = [];
+
+    if (!querySnapshot) return;
+
+    querySnapshot.forEach((doc) => {
+
+        console.log("📄 DOC:", doc);
+
+        let venta =
+            typeof doc.data === "function"
+                ? doc.data()
+                : doc;
+
+        console.log("📦 VENTA:", venta);
+
+        if (!venta) return;
+
+        nuevasPausadas.push(venta);
+
+    });
+
+    console.log("📊 RECIBIDAS:", nuevasPausadas);
+
+    // IMPORTANTE:
+    // TEMPORALMENTE NO TOCAR pausadas
+    // pausadas = nuevasPausadas;
+
+});
 // Configuración de Ticket
 db.collection("config").doc("ticket").onSnapshot((doc) => {
     if (doc.exists) {
@@ -545,21 +577,29 @@ db.collection("promociones").onSnapshot((querySnapshot) => {
     renderPromos(); 
 });
 // 📡 RADAR DE KARDEX EN TIEMPO REAL
-let historialKardex = []; // ¡AQUÍ ESTABA EL ERROR! Faltaba declarar esta variable global
-db.collection("kardex").onSnapshot((querySnapshot) => {
-    historialKardex = [];
-    querySnapshot.forEach((doc) => { 
-        historialKardex.push(doc.data()); 
+let historialKardex = []; // Variable global reparada
+
+// 🔒 CANDADO ANTI-CLONES: Evita el Error 503 de servidor saturado
+if (window.radarKardexActivo) {
+    console.warn("⚠️ El radar de Kardex ya estaba activo. Evitando clonación.");
+} else {
+    window.radarKardexActivo = true; // Marcamos que ya está encendido
+
+    db.collection("kardex").onSnapshot((querySnapshot) => {
+        historialKardex = [];
+        querySnapshot.forEach((doc) => { 
+            historialKardex.push(doc.data()); 
+        });
+        
+        // Ordenamos para que lo más nuevo salga primero
+        historialKardex.sort((a, b) => b.timestamp - a.timestamp);
+        console.log("📊 Historial de Kardex sincronizado.");
+        
+        if (typeof tabActual !== 'undefined' && tabActual === 'kardex-tab' && typeof window.renderKardex === 'function') {
+            window.renderKardex(); 
+        }
     });
-    
-    // Ordenamos para que lo más nuevo salga primero
-    historialKardex.sort((a, b) => b.timestamp - a.timestamp);
-    console.log("📊 Historial de Kardex sincronizado.");
-    
-    if (tabActual === 'kardex-tab' && typeof window.renderKardex === 'function') {
-        window.renderKardex(); 
-    }
-});
+}
 
 // ====================================================================
 // === FUNCIONES PRINCIPALES Y UTILIDADES ===
@@ -581,10 +621,10 @@ function updateClock() {
         // Inyectamos el diseño directo con colores modernos
         clockEl.innerHTML = `
             <div style="font-size: 11px; color: #a0aec0; letter-spacing: 1px; margin-bottom: 3px; white-space: nowrap;">
-                📅 ${fecha}
+                <i class="fa-regular fa-calendar-days"></i> ${fecha}
             </div>
             <div style="font-size: 16px; font-weight: bold; color: #00d2ff; letter-spacing: 1px; white-space: nowrap; text-shadow: 0 0 5px rgba(0, 210, 255, 0.4);">
-                🕒 ${hora}
+                <i class="fa-regular fa-clock"></i> ${hora}
             </div>
         `;
     }
@@ -874,7 +914,7 @@ window.intentarLogin = function() {
 
             try {
                 // 1. PREGUNTAMOS A POCKETBASE SI HAY UN TURNO ABIERTO EN ESTA SUCURSAL
-                let urlSesion = `https://sexy-starling.pikapod.net/api/collections/sesiones_caja/records?filter=(estado='abierta'%20&&%20sucursal='${sucNombre}')&sort=-created&limit=1&_t=${Date.now()}`;
+                let urlSesion = `https://sexy-starling.pikapod.net/api/collections/cajas_sesiones/records?filter=(estado='abierta'%20%26%26%20sucursal='${sucNombre}')&sort=-created&limit=1&_t=${Date.now()}`;
                 let res = await fetch(urlSesion, { cache: 'no-store' });
                 
                 if (res.ok) {
@@ -1469,7 +1509,7 @@ window.descontarStock = function(cod, cantidad) {
                     tipo: tipoOriginal // 🔥 Mantenemos el tipo siempre
                 };
 
-                db.collection("productos").doc(String(cod)).set(payload, { merge: true }).catch(e => {});
+                db.collection("inventario").doc(String(cod)).set(payload, { merge: true }).catch(e => {});
                 db.collection("inventario").doc(String(cod)).set(payload, { merge: true }).catch(e => {});
             } 
             // Método B: Si usas DB local / PocketBase / Alternativa
@@ -1482,15 +1522,15 @@ window.descontarStock = function(cod, cantidad) {
 
                 if (typeof db.collection === 'function') {
                     // Usamos UPDATE si existe para no destruir campos
-                    if (typeof db.collection("productos").doc(String(cod)).update === 'function') {
-                        db.collection("productos").doc(String(cod)).update(datosActualizados).catch(() => {
-                            db.collection("productos").doc(String(cod)).set(p, { merge: true });
+                    if (typeof db.collection("inventario").doc(String(cod)).update === 'function') {
+                        db.collection("inventario").doc(String(cod)).update(datosActualizados).catch(() => {
+                            db.collection("inventario").doc(String(cod)).set(p, { merge: true });
                         });
                         db.collection("inventario").doc(String(cod)).update(datosActualizados).catch(() => {
                             db.collection("inventario").doc(String(cod)).set(p, { merge: true });
                         });
                     } else {
-                        db.collection("productos").doc(String(cod)).set(p, { merge: true }).catch(e => {});
+                        db.collection("inventario").doc(String(cod)).set(p, { merge: true }).catch(e => {});
                         db.collection("inventario").doc(String(cod)).set(p, { merge: true }).catch(e => {});
                     }
                 }
@@ -1917,7 +1957,7 @@ window.renderV = function() {
                 totalDOM.parentNode.appendChild(divContador);
             }
         }
-        if (divContador) divContador.innerText = `🛒 Total Artículos: ${Math.round(totalArticulos * 100) / 100}`;
+        if (divContador) divContador.innerHTML = `<i class="fa-solid fa-cart-shopping"></i> Total Artículos: ${Math.round(totalArticulos * 100) / 100}`;
 
     } catch(err) { console.error("Error renderizando lista:", err); }
 };
@@ -2469,70 +2509,795 @@ function abrirGranel(c) {
 }
 
 // Pausadas
+// =========================================================
+// 🛑 INICIO DEL BLOQUE MAESTRO DE VENTAS PAUSADAS
+// =========================================================
+
+// =========================================================
+// 🛑 VENTAS PAUSADAS
+// =========================================================
+
 function preguntarPausar() { 
     if(carV.length === 0) return; 
     let n = prompt("Nombre venta pausada:", nombreVentaActual || "Cliente "+(pausadas.length+1)); 
     if(n) { 
-        let idPausada = Date.now(); 
-        let nuevaPausada = { id: idPausada, nom: n, total: document.getElementById('v_total').innerText, items: [...carV], sucursal: sucursalActual }; 
-        pausadas.push(nuevaPausada); localStorage.setItem("pos_pausadas_v6", JSON.stringify(pausadas)); 
-        if (typeof db !== 'undefined') db.collection("pausadas").doc(String(idPausada)).set(nuevaPausada);
-        carV = []; forceWholesale = false;
+        let idNuevo = String(Date.now());
+        let idPausada = window.idVentaPausadaActual ? window.idVentaPausadaActual : idNuevo; 
+        
+        // Conservamos todas las propiedades originales y aseguramos 'can', 'cant' y 'cantidad'
+        let itemsLimpios = carV.map(item => {
+            let q = item.can || item.cant || item.cantidad || 1;
+            return {
+                ...item,
+                can: q,
+                cant: q,
+                cantidad: q
+            };
+        });
+
+        let nuevaPausada = { 
+            id: String(idPausada), 
+            nom: n, 
+            total: document.getElementById('v_total').innerText, 
+            items: itemsLimpios, 
+            sucursal: typeof sucursalActual !== 'undefined' ? sucursalActual : "Matriz" 
+        }; 
+        
+        pausadas = pausadas.filter(p => String(p.id) !== String(idPausada)); 
+        pausadas.push(nuevaPausada); 
+        localStorage.setItem("pos_pausadas_v6", JSON.stringify(pausadas)); 
+        
+        try { 
+            if (typeof db !== 'undefined') {
+                if (typeof db.collection("pausadas").create === 'function') {
+                    db.collection("pausadas").create(nuevaPausada).catch(() => {
+                        if(typeof db.collection("pausadas").update === 'function') {
+                            db.collection("pausadas").update(String(idPausada), nuevaPausada);
+                        }
+                    });
+                } else if (db.collection("pausadas").doc) {
+                    db.collection("pausadas").doc(String(idPausada)).set(nuevaPausada);
+                }
+            }
+        } catch(e) { console.error("Error al subir a la nube:", e); }
+        
+        carV = []; 
+        forceWholesale = false; 
+        window.idVentaPausadaActual = null;
         let badgeMayoreo = document.getElementById('v_mayoreo_status');
-        if(badgeMayoreo) { badgeMayoreo.innerText = "MAYOREO: DESACTIVADO"; badgeMayoreo.style.background = "#444"; badgeMayoreo.style.color = "#bbb"; }
-        window.renderV(); actualizarContadorPausadas(); 
+        if(badgeMayoreo) { 
+            badgeMayoreo.innerText = "MAYOREO: DESACTIVADO"; 
+            badgeMayoreo.style.background = "#444"; 
+            badgeMayoreo.style.color = "#bbb"; 
+        }
+        window.renderV(); 
+        actualizarContadorPausadas(); 
     } 
-    setTimeout(() => { let inputEscaner = document.getElementById('v_cod'); if(inputEscaner) { inputEscaner.value = ''; inputEscaner.focus(); } }, 150);
-}
-let pausadasFiltradas = []; let focusPausadaIndex = 0; let idxPausadaAEliminar = -1;
-function abrirPausadas() { 
-    if (!Array.isArray(pausadas)) pausadas = [];
-    if (carV && carV.length > 0) {
-        if (confirm("⚠️ TIENES UNA VENTA EN CURSO.\n\n¿Deseas poner esta venta en PAUSA primero?")) { preguntarPausar(); if (carV.length > 0) return; } else return;
-    }
-    pausadasFiltradas = pausadas.map((p, i) => ({...p, idx: i})).filter(p => !p.sucursal || p.sucursal === sucursalActual); 
-    if (pausadasFiltradas.length === 0) return alert("📋 No tienes ninguna venta en espera.");
-    focusPausadaIndex = 0; renderTablaPausadas(); document.getElementById('modalPausadas').style.display = 'block'; 
-}
-function renderTablaPausadas() {
-    let html = pausadasFiltradas.map((p, index) => {
-        let isFocused = index === focusPausadaIndex; let bgRow = isFocused ? 'background:#e0f0ff; border-left: 4px solid var(--info);' : '';
-        return `<tr style="cursor:pointer; ${bgRow}" onclick="retomarVenta(${p.idx})">
-            <td>${isFocused ? '👉 ' : ''}<b>${p.nom || 'Venta'}</b></td>
-            <td>${(p.items || []).length} art.</td><td>$${parseFloat(p.total || 0).toFixed(2)}</td>
-            <td><button style="background:var(--danger); color:white; border:none; padding:5px 10px; border-radius:5px;" onclick="event.stopPropagation(); eliminarPausada(${p.idx})">✕</button></td>
-        </tr>`;
-    }).join('');
-    document.getElementById('p_lista').innerHTML = html;
-}
-function retomarVenta(i) { 
-    let ventaRecuperada = pausadas[i]; carV = ventaRecuperada.items; nombreVentaActual = ventaRecuperada.nom; 
-    pausadas.splice(i,1); localStorage.setItem("pos_pausadas_v6", JSON.stringify(pausadas)); 
-    if(ventaRecuperada && ventaRecuperada.id && typeof db !== 'undefined') db.collection("pausadas").doc(String(ventaRecuperada.id)).delete();
-    window.renderV(); cerrarModales(); actualizarContadorPausadas(); 
-}
-function eliminarPausada(idx) {
-    idxPausadaAEliminar = idx; document.getElementById('auth_pausada_user').innerText = usuarioActual; document.getElementById('auth_pausada_pin').value = '';
-    document.getElementById('modalAuthPausada').style.display = 'block'; setTimeout(() => document.getElementById('auth_pausada_pin').focus(), 100);
-}
-function confirmarEliminarPausada() {
-    let pinIngresado = document.getElementById('auth_pausada_pin').value;
-    let pinCajero = usuariosData[usuarioActual] ? usuariosData[usuarioActual].pin : null; let pinAdmin = usuariosData["Admin"] ? usuariosData["Admin"].pin : null;
-    if (pinIngresado === pinCajero || pinIngresado === pinAdmin) {
-        let ventaAEliminar = pausadas[idxPausadaAEliminar]; 
-        pausadas.splice(idxPausadaAEliminar, 1); localStorage.setItem("pos_pausadas_v6", JSON.stringify(pausadas)); actualizarContadorPausadas();
-        if(ventaAEliminar && ventaAEliminar.id && typeof db !== 'undefined') db.collection("pausadas").doc(String(ventaAEliminar.id)).delete();
-        pausadasFiltradas = pausadas.map((p, i) => ({...p, idx: i})).filter(p => p.sucursal === sucursalActual);
-        focusPausadaIndex = 0; renderTablaPausadas();
-        document.getElementById('modalAuthPausada').style.display = 'none'; 
-        if(pausadasFiltradas.length === 0) cerrarModales();
-    } else { alert("❌ PIN Incorrecto."); document.getElementById('auth_pausada_pin').value = ''; document.getElementById('auth_pausada_pin').focus(); }
-}
-function actualizarContadorPausadas() {
-    let lbl = document.getElementById('count_pausadas'); if (!lbl) return;
-    if (Array.isArray(pausadas)) lbl.innerText = pausadas.filter(p => p.sucursal === sucursalActual).length; else { pausadas = []; lbl.innerText = "0"; }
+    setTimeout(() => { 
+        let inputEscaner = document.getElementById('v_cod'); 
+        if(inputEscaner) { inputEscaner.value = ''; inputEscaner.focus(); } 
+    }, 150);
 }
 
+
+// =========================================================
+// VARIABLES
+// =========================================================
+
+let pausadasFiltradas = [];
+
+let focusPausadaIndex = 0;
+
+let idPausadaAEliminar = null;
+
+
+
+// =========================================================
+// ABRIR PAUSADAS
+// =========================================================
+
+function abrirPausadas() { 
+
+    if(!Array.isArray(pausadas)) {
+        pausadas = [];
+    }
+
+
+    // -----------------------------------------------------
+    // QUITAR DUPLICADOS
+    // -----------------------------------------------------
+
+    let mapa =
+        new Map();
+
+
+    pausadas.forEach(p => {
+
+        if(!p) return;
+
+        if(!p.id) {
+
+            p.id =
+                String(Date.now()) +
+                Math.random();
+
+        }
+
+        mapa.set(
+            String(p.id),
+            p
+        );
+
+    });
+
+
+    pausadas =
+        Array.from(
+            mapa.values()
+        );
+
+
+    // -----------------------------------------------------
+    // VENTA EN CURSO
+    // -----------------------------------------------------
+
+    if(carV && carV.length > 0) {
+
+        if(
+            confirm(
+                "⚠️ TIENES UNA VENTA EN CURSO.\n\n" +
+                "¿Deseas poner esta venta en PAUSA primero?"
+            )
+        ) {
+
+            preguntarPausar();
+
+        }
+
+        return;
+    }
+
+
+    // -----------------------------------------------------
+    // SUCURSAL
+    // -----------------------------------------------------
+
+    let sucLimpia =
+        String(
+            typeof sucursalActual !== 'undefined'
+                ? sucursalActual
+                : ''
+        )
+        .replace(/📍/g, '')
+        .trim();
+
+
+    // -----------------------------------------------------
+    // FILTRAR
+    // -----------------------------------------------------
+
+    pausadasFiltradas =
+        pausadas.filter(p => {
+
+            if(!p) return false;
+
+            if(p.nom === "FANTASMA") {
+                return false;
+            }
+
+            if(
+                !p.sucursal ||
+                String(p.sucursal)
+                    .replace(/📍/g, '')
+                    .trim() === sucLimpia
+            ) {
+
+                return true;
+
+            }
+
+            return false;
+
+        });
+
+
+    if(
+        pausadasFiltradas.length === 0
+    ) {
+
+        return alert(
+            "📋 No tienes ninguna venta en espera."
+        );
+
+    }
+
+
+    focusPausadaIndex = 0;
+
+    renderTablaPausadas();
+
+
+    let modal =
+        document.getElementById(
+            'modalPausadas'
+        );
+
+
+    if(modal) {
+
+        modal.style.display =
+            'block';
+
+    }
+
+}
+
+
+
+// =========================================================
+// TABLA
+// =========================================================
+
+function renderTablaPausadas() {
+
+    let html =
+        pausadasFiltradas
+            .map((p, index) => {
+
+                let isFocused =
+                    index === focusPausadaIndex;
+
+
+                let bgRow =
+                    isFocused
+                        ? 'background:#e0f0ff; border-left: 4px solid var(--info);'
+                        : '';
+
+
+                return `
+                    <tr
+                        style="cursor:pointer; ${bgRow}"
+                        onclick="retomarVenta('${String(p.id)}')"
+                    >
+
+                        <td>
+                            ${isFocused ? '👉 ' : ''}
+                            <b>
+                                ${p.nom || 'Venta'}
+                            </b>
+                        </td>
+
+                        <td>
+                            ${(p.items || []).length} art.
+                        </td>
+
+                        <td>
+                            $${parseFloat(
+                                p.total || 0
+                            ).toFixed(2)}
+                        </td>
+
+                        <td>
+
+                            <button
+                                style="
+                                    background:var(--danger);
+                                    color:white;
+                                    border:none;
+                                    padding:5px 10px;
+                                    border-radius:5px;
+                                "
+                                onclick="
+                                    event.stopPropagation();
+                                    eliminarPausada('${String(p.id)}')
+                                "
+                            >
+                                ✕
+                            </button>
+
+                        </td>
+
+                    </tr>
+                `;
+
+            })
+            .join('');
+
+
+    let lista =
+        document.getElementById(
+            'p_lista'
+        );
+
+
+    if(lista) {
+        lista.innerHTML = html;
+    }
+
+}
+
+
+
+// =========================================================
+// RETOMAR VENTA
+// =========================================================
+
+function retomarVenta(idBuscar) { 
+
+    let i =
+        pausadas.findIndex(
+            p =>
+                String(p.id) ===
+                String(idBuscar)
+        );
+
+
+    if(i === -1) return;
+
+
+    let ventaRecuperada =
+        pausadas[i];
+
+
+    // -----------------------------------------------------
+    // RECUPERAR PRODUCTOS
+    // -----------------------------------------------------
+
+    carV =
+        Array.isArray(
+            ventaRecuperada.items
+        )
+            ? ventaRecuperada.items
+            : [];
+
+
+    // -----------------------------------------------------
+    // RECUPERAR NOMBRE
+    // -----------------------------------------------------
+
+    nombreVentaActual =
+        ventaRecuperada.nom ||
+        "Venta";
+
+
+    // -----------------------------------------------------
+    // CONSERVAR ID
+    // -----------------------------------------------------
+
+    window.idVentaPausadaActual =
+        String(
+            ventaRecuperada.id
+        );
+
+
+    // -----------------------------------------------------
+    // QUITAR LOCALMENTE
+    //
+    // ESTO ES IMPORTANTE.
+    //
+    // Mientras la venta está siendo trabajada,
+    // NO debe existir dentro de "pausadas".
+    // -----------------------------------------------------
+
+    pausadas.splice(
+        i,
+        1
+    );
+
+
+    localStorage.setItem(
+        "pos_pausadas_v6",
+        JSON.stringify(pausadas)
+    );
+
+
+    // -----------------------------------------------------
+    // ELIMINAR REALMENTE DE LA NUBE
+    //
+    // YA NO USAMOS FANTASMA PARA RETOMAR.
+    // -----------------------------------------------------
+
+    try {
+
+        if(typeof db !== 'undefined') {
+
+            let documento =
+                db
+                    .collection("pausadas")
+                    .doc(
+                        String(
+                            ventaRecuperada.id
+                        )
+                    );
+
+
+            if(
+                documento &&
+                typeof documento.delete === 'function'
+            ) {
+
+                documento
+                    .delete()
+                    .catch(e => {
+
+                        console.error(
+                            "❌ Error eliminando pausa al retomarla:",
+                            e
+                        );
+
+                    });
+
+            }
+
+        }
+
+    } catch(e) {
+
+        console.error(
+            "❌ Error al retirar venta pausada:",
+            e
+        );
+
+    }
+
+
+    // -----------------------------------------------------
+    // ACTUALIZAR
+    // -----------------------------------------------------
+
+    window.renderV();
+
+    cerrarModales();
+
+    actualizarContadorPausadas();
+
+}
+
+
+
+// =========================================================
+// ELIMINAR PAUSADA
+// =========================================================
+
+function eliminarPausada(idTarget) {
+
+    idPausadaAEliminar =
+        String(idTarget);
+
+
+    let usuarioElemento =
+        document.getElementById(
+            'auth_pausada_user'
+        );
+
+
+    if(usuarioElemento) {
+
+        usuarioElemento.innerText =
+            typeof usuarioActual !== 'undefined'
+                ? usuarioActual
+                : 'Cajero';
+
+    }
+
+
+    let pinElemento =
+        document.getElementById(
+            'auth_pausada_pin'
+        );
+
+
+    if(pinElemento) {
+        pinElemento.value = '';
+    }
+
+
+    let modal =
+        document.getElementById(
+            'modalAuthPausada'
+        );
+
+
+    if(modal) {
+
+        modal.style.display =
+            'block';
+
+    }
+
+
+    setTimeout(() => {
+
+        if(pinElemento) {
+            pinElemento.focus();
+        }
+
+    }, 100);
+
+}
+
+
+
+// =========================================================
+// CONFIRMAR ELIMINAR
+// =========================================================
+
+function confirmarEliminarPausada() {
+
+    let pinIngresado =
+        document.getElementById(
+            'auth_pausada_pin'
+        ).value;
+
+
+    let pinCajero =
+        usuariosData[usuarioActual]
+            ? usuariosData[usuarioActual].pin
+            : null;
+
+
+    let pinAdmin =
+        usuariosData["Admin"]
+            ? usuariosData["Admin"].pin
+            : null;
+
+
+    if(
+        pinIngresado !== pinCajero &&
+        pinIngresado !== pinAdmin
+    ) {
+
+        alert(
+            "❌ PIN Incorrecto."
+        );
+
+
+        document.getElementById(
+            'auth_pausada_pin'
+        ).value = '';
+
+
+        document.getElementById(
+            'auth_pausada_pin'
+        ).focus();
+
+
+        return;
+
+    }
+
+
+    let i =
+        pausadas.findIndex(
+            p =>
+                String(p.id) ===
+                String(idPausadaAEliminar)
+        );
+
+
+    if(i !== -1) {
+
+        let ventaAEliminar =
+            pausadas[i];
+
+
+        pausadas.splice(
+            i,
+            1
+        );
+
+
+        localStorage.setItem(
+            "pos_pausadas_v6",
+            JSON.stringify(pausadas)
+        );
+
+
+        // -------------------------------------------------
+        // BORRAR DE LA NUBE
+        // -------------------------------------------------
+
+        try {
+
+            if(
+                ventaAEliminar &&
+                typeof db !== 'undefined'
+            ) {
+
+                let documento =
+                    db
+                        .collection("pausadas")
+                        .doc(
+                            String(
+                                ventaAEliminar.id
+                            )
+                        );
+
+
+                if(
+                    documento &&
+                    typeof documento.delete === 'function'
+                ) {
+
+                    documento
+                        .delete()
+                        .catch(e => {
+
+                            console.error(
+                                "❌ Error eliminando venta:",
+                                e
+                            );
+
+                        });
+
+                }
+
+            }
+
+        } catch(e) {
+
+            console.error(
+                "❌ Error eliminando de la nube:",
+                e
+            );
+
+        }
+
+    }
+
+
+    actualizarContadorPausadas();
+
+
+    // -----------------------------------------------------
+    // VOLVER A FILTRAR
+    // -----------------------------------------------------
+
+    let sucLimpia =
+        String(
+            typeof sucursalActual !== 'undefined'
+                ? sucursalActual
+                : ''
+        )
+        .replace(/📍/g, '')
+        .trim();
+
+
+    pausadasFiltradas =
+        pausadas.filter(p => {
+
+            if(!p) return false;
+
+            if(p.nom === "FANTASMA") {
+                return false;
+            }
+
+            if(!p.sucursal) {
+                return true;
+            }
+
+            return (
+                String(p.sucursal)
+                    .replace(/📍/g, '')
+                    .trim()
+                ===
+                sucLimpia
+            );
+
+        });
+
+
+    focusPausadaIndex = 0;
+
+    renderTablaPausadas();
+
+
+    let modal =
+        document.getElementById(
+            'modalAuthPausada'
+        );
+
+
+    if(modal) {
+        modal.style.display = 'none';
+    }
+
+
+    if(
+        pausadasFiltradas.length === 0
+    ) {
+
+        cerrarModales();
+
+    }
+
+}
+
+
+
+// =========================================================
+// CONTADOR
+// =========================================================
+
+function actualizarContadorPausadas() {
+
+    let lbl =
+        document.getElementById(
+            'count_pausadas'
+        );
+
+
+    if(!lbl) return;
+
+
+    let mapa =
+        new Map();
+
+
+    pausadas.forEach(p => {
+
+        if(
+            p &&
+            p.id
+        ) {
+
+            mapa.set(
+                String(p.id),
+                p
+            );
+
+        }
+
+    });
+
+
+    pausadas =
+        Array.from(
+            mapa.values()
+        );
+
+
+    let sucLimpia =
+        String(
+            typeof sucursalActual !== 'undefined'
+                ? sucursalActual
+                : ''
+        )
+        .replace(/📍/g, '')
+        .trim();
+
+
+    lbl.innerText =
+        pausadas.filter(p => {
+
+            if(!p) return false;
+
+            if(p.nom === "FANTASMA") {
+                return false;
+            }
+
+            if(!p.sucursal) {
+                return true;
+            }
+
+            return (
+                String(p.sucursal)
+                    .replace(/📍/g, '')
+                    .trim()
+                ===
+                sucLimpia
+            );
+
+        }).length;
+
+}
+
+
+
+
+// =========================================================
+// 🛑 FIN DEL BLOQUE MAESTRO DE VENTAS PAUSADAS
+// =========================================================
 // ====================================================================
 // === MÓDULO DE COMPRAS (C-TAB) ===
 // ====================================================================
@@ -5634,7 +6399,7 @@ window.registrarEnKardex = function(productoCod, productoNom, tipoMov, cantidad,
 window.renderKardex = function() {
     try {
         console.log("Intentando dibujar el Kardex...");
-        let selectSuc = document.getElementById('kardex_sucursal');
+        let selectSuc = document.getElementById('kardex');
         
         // Protegemos la variable por si listaSucursales no existe aún
         let sucursalesSeguras = [];
@@ -5671,62 +6436,6 @@ try {
     window.historialKardex = []; 
 }
 
-// 2. FUNCIÓN BLINDADA PARA REGISTRAR MOVIMIENTOS
-window.registrarEnKardex = function(codigo, nombre, tipo, cantidad, precio, costo, stockAntes, stockDespues) {
-    try {
-        // Limpiamos la sucursal de emojis para evitar errores en base de datos
-        let sucReal = String(typeof sucursalActual !== 'undefined' ? sucursalActual : "Matriz").replace(/📍/g, '').trim();
-        let usrReal = typeof usuarioActual !== 'undefined' ? usuarioActual : "Admin";
-        
-        let nuevoRegistro = {
-            id: Date.now() + Math.floor(Math.random() * 1000),
-            fecha: (typeof getFechaLocal === 'function' ? getFechaLocal() : new Date().toISOString().split('T')[0]),
-            hora: new Date().toLocaleTimeString(),
-            codigo: codigo,
-            nombre: nombre,
-            tipo: tipo,
-            cantidad: cantidad,
-            precio: precio,
-            costo: costo,
-            stock_antes: stockAntes,
-            stock_despues: stockDespues,
-            sucursal: sucReal,
-            cajero: usrReal
-        };
-
-        // Verificación de seguridad por si la variable se borró
-        if (typeof window.historialKardex === 'undefined' || !Array.isArray(window.historialKardex)) {
-            window.historialKardex = [];
-        }
-        
-        // Agregamos el nuevo movimiento hasta arriba de la lista
-        window.historialKardex.unshift(nuevoRegistro); 
-        
-        // Dieta estricta: Solo guardamos los últimos 500 registros para que tu sistema vuele
-        if (window.historialKardex.length > 500) {
-            window.historialKardex = window.historialKardex.slice(0, 500);
-        }
-        
-        // Guardamos en la memoria local
-        try {
-            localStorage.setItem("pos_kardex_v1", JSON.stringify(window.historialKardex));
-        } catch(e) { console.warn("No se pudo guardar el Kardex en la memoria local."); }
-
-        // ☁️ Subimos a la nube
-        if (typeof db !== 'undefined') {
-            db.collection("kardex").doc(String(nuevoRegistro.id)).set(nuevoRegistro)
-              .catch(e => console.error("Error al subir Kardex a la nube:", e));
-        }
-        
-        // Actualizamos la tabla visualmente si está abierta
-        if (typeof window.filtrarKardex === 'function') {
-            window.filtrarKardex();
-        }
-
-    } catch (error) {
-        console.error("❌ Error mortal en registrarEnKardex:", error);
-    }
-};
 
 // Filtrar el Kardex según los inputs del usuario
 window.filtrarKardex = function() {
