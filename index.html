@@ -111,7 +111,7 @@
     <button class="t-btn" id="btn_audi-tab" onclick="changeTab(event, 'audi-tab')" style="background:#dc3545; color:white; font-weight:bold;"><i class="fa-solid fa-clipboard-check"></i> AUDITORÍAS</button>
     <button class="t-btn" id="btn_rec-tab" onclick="changeTab(event, 'rec-tab')" style="background:#0dcaf0; color:#000; font-weight:bold;"><i class="fa-solid fa-mobile-screen-button"></i> RECARGAS</button>
     <button class="t-btn" id="btn_r-tab" onclick="changeTab(event, 'r-tab')" style="background:var(--warning); color:#000;"><i class="fa-solid fa-chart-pie"></i> DASHBOARD</button>
-    <button id="btn_kardex-tab" class="t-btn" onclick="changeTab(event, 'kardex-tab')"><i class="fa-solid fa-boxes-stacked"></i> KARDEX</button>
+    <button id="btn_kardex-tab" class="t-btn" onclick="changeTab(event, 'kardex-tab'); if(typeof window.renderKardex === 'function') window.renderKardex();"><i class="fa-solid fa-boxes-stacked"></i> KARDEX</button>
     <button class="t-btn" id="btn_u-tab" onclick="changeTab(event, 'u-tab')" style="background:var(--d); color:white;"><i class="fa-solid fa-gear"></i> AJUSTES</button>
     
     <div style="margin-left:auto; display:flex; gap:15px; align-items:center;">
@@ -482,42 +482,74 @@
             </div>
         </div>
 
-       <!-- 📊 2. BARRA DE FILTROS DE FECHAS (MODIFICADO PARA MÓVIL) -->
-<div style="display:flex; gap:10px; margin-bottom: 20px; background: white; padding: 15px; border-radius: 10px; align-items:center; box-shadow: 0 4px 6px rgba(0,0,0,0.05); flex-wrap: wrap;">
+      <!-- ========================================== -->
+<!-- 🎛️ FILTROS DEL DASHBOARD (4 EN LÍNEA)      -->
+<!-- ========================================== -->
+<div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 15px; width: 100%; margin-bottom: 20px;">
     
-    <!-- Fechas: 50% y 50% -->
-    <div style="flex: 1 1 45%; min-width:120px;">
-        <label style="font-size:11px; font-weight:bold; color:#666">FECHA INICIO:</label>
-        <input type="date" id="corte_fecha_inicio" onchange="renderCorte()" style="width: 100%; box-sizing: border-box;">
-    </div>
-    <div style="flex: 1 1 45%; min-width:120px;">
-        <label style="font-size:11px; font-weight:bold; color:#666">FECHA FIN:</label>
-        <input type="date" id="corte_fecha_fin" onchange="renderCorte()" style="width: 100%; box-sizing: border-box;">
+    <!-- 1. Fecha Inicio -->
+    <div style="display: flex; flex-direction: column;">
+        <label style="font-size: 11px; font-weight: bold; color: #666; text-transform: uppercase; margin-bottom: 5px;">FECHA INICIO:</label>
+        <input type="date" id="corte_fecha_inicio" onchange="calcularTotalesCorte()" style="padding: 10px; border: 1px solid #ccc; border-radius: 6px; font-size: 14px; outline: none; width: 100%; box-sizing: border-box; font-family: inherit;">
     </div>
 
-    <!-- Filtros de listas: 100% de ancho para no verse amontonados -->
-    <div style="flex: 1 1 100%;">
-        <label style="font-size:11px; font-weight:bold; color:#666">CAJERO:</label>
-        <select id="corte_cajero" onchange="renderCorte()" style="width: 100%; box-sizing: border-box;"><option value="">Todos los cajeros</option></select>
-    </div>
-    <div style="flex: 1 1 100%;">
-        <label style="font-size:11px; font-weight:bold; color:#666">SUCURSAL:</label>
-        <select id="corte_sucursal" onchange="renderCorte()" style="width: 100%; box-sizing: border-box;"><option value="">Todas (Global)</option></select>
+    <!-- 2. Fecha Fin -->
+    <div style="display: flex; flex-direction: column;">
+        <label style="font-size: 11px; font-weight: bold; color: #666; text-transform: uppercase; margin-bottom: 5px;">FECHA FIN:</label>
+        <input type="date" id="corte_fecha_fin" onchange="calcularTotalesCorte()" style="padding: 10px; border: 1px solid #ccc; border-radius: 6px; font-size: 14px; outline: none; width: 100%; box-sizing: border-box; font-family: inherit;">
     </div>
 
-    <!-- 🌟 BOTONES DE ANÁLISIS LADO A LADO 🌟 -->
-    <div style="width:100%; display: flex; gap: 8px;">
-        <!-- Quitamos el min-width de 250px y ajustamos el padding y fuente -->
-        <button class="btn-search" style="padding: 12px 5px; background:var(--p); flex: 1; min-width: 0; font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;" onclick="renderCorte()">📊 ANALIZAR (LOCAL)</button>
-        <button class="btn-search" id="btn_analizar_nube" style="padding: 12px 5px; background:var(--info); flex: 1; min-width: 0; font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;" onclick="descargarVentasNube()">☁️ DESCARGAR NUBE</button>
+    <!-- 3. Cajero -->
+    <div style="display: flex; flex-direction: column;">
+        <label style="font-size: 11px; font-weight: bold; color: #666; text-transform: uppercase; margin-bottom: 5px;">CAJERO:</label>
+        <select id="corte_cajero" onchange="cambiarTipoCorte()" style="padding: 10px; border: 1px solid #ccc; border-radius: 6px; font-size: 14px; background: white; outline: none; width: 100%; box-sizing: border-box; cursor: pointer;">
+            <option value="">Todos los cajeros</option>
+        </select>
     </div>
+
+    <!-- 4. Sucursal -->
+    <div style="display: flex; flex-direction: column;">
+        <label style="font-size: 11px; font-weight: bold; color: #666; text-transform: uppercase; margin-bottom: 5px;">SUCURSAL:</label>
+        <select id="corte_sucursal" onchange="calcularTotalesCorte()" style="padding: 10px; border: 1px solid #ccc; border-radius: 6px; font-size: 14px; background: white; outline: none; width: 100%; box-sizing: border-box; cursor: pointer;">
+            <option value="">Todas (Global)</option>
+        </select>
+    </div>
+
 </div>
 
-        <div style="display: flex; gap: 10px; margin-bottom: 20px; flex-wrap: wrap;" class="no-print">
-            <button onclick="abrirCancelacionMovimientos()" style="flex:1; background:#dc3545; color:white; border:none; padding:10px; border-radius:5px; font-weight:bold; cursor:pointer;">🗑️ Anular Movimiento</button>
-            <button onclick="registrarPrecorte()" style="flex:1; background:#17a2b8; color:white; border:none; padding:10px; border-radius:5px; font-weight:bold; cursor:pointer;">✂️ Hacer Precorte</button>
-            <button onclick="abrirCorteCaja()" style="flex:1; background:var(--danger); color:white; border:none; padding:10px; border-radius:5px; font-weight:bold; cursor:pointer; font-size:16px;">🛑 CERRAR CAJA (Corte Z)</button>
-        </div>
+    <!-- ========================================== -->
+<!-- 🎛️ PANEL DE CONTROL DE BOTONES (DASHBOARD) -->
+<!-- ========================================== -->
+
+<!-- Fila 1: Botones de Análisis (Se apilan en celular automáticamente) -->
+<div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; margin-top: 20px; margin-bottom: 12px;">
+    
+    <button class="btn-final" style="background: var(--p, #0d6efd); color: white; width: 100%; font-size: 15px; padding: 12px; font-weight: bold; border: none; border-radius: 8px; cursor: pointer; box-shadow: 0 4px 6px rgba(0,0,0,0.1); transition: 0.2s;" onclick="calcularTotalesCorte()">
+        📊 ANALIZAR (LOCAL)
+    </button>
+
+    <button id="btn_analizar_nube" class="btn-final" style="background: #17a2b8; color: white; width: 100%; font-size: 15px; padding: 12px; font-weight: bold; border: none; border-radius: 8px; cursor: pointer; box-shadow: 0 4px 6px rgba(0,0,0,0.1); transition: 0.2s;" onclick="descargarVentasNube()">
+        ☁️ DESCARGAR DE LA NUBE
+    </button>
+
+</div>
+
+<!-- Fila 2: Botones de Acción Operativa (Inteligentes para celular) -->
+<div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 12px; margin-bottom: 25px;">
+    
+    <button class="btn-final" style="background: #6c757d; color: white; width: 100%; font-size: 14px; padding: 12px; font-weight: bold; border: none; border-radius: 8px; cursor: pointer; box-shadow: 0 4px 6px rgba(0,0,0,0.1);" onclick="abrirCancelacionMovimientos()">
+        🗑️ Anular Movimiento
+    </button>
+
+    <button class="btn-final" style="background: #fd7e14; color: white; width: 100%; font-size: 14px; padding: 12px; font-weight: bold; border: none; border-radius: 8px; cursor: pointer; box-shadow: 0 4px 6px rgba(0,0,0,0.1);" onclick="registrarPrecorte()">
+        ✂️ Hacer Precorte
+    </button>
+
+    <button class="btn-final" style="background: #dc3545; color: white; width: 100%; font-size: 14px; padding: 12px; font-weight: bold; border: none; border-radius: 8px; cursor: pointer; box-shadow: 0 4px 6px rgba(0,0,0,0.2);" onclick="abrirCorteCaja()">
+        ⭕ CERRAR CAJA (Corte Z)
+    </button>
+
+</div>
 
         <div class="kpi-grid" style="display:grid; grid-template-columns: repeat(4, 1fr); gap:15px; margin-bottom: 20px;">
             <div style="background:white; padding:20px; border-radius:10px; border-left: 5px solid #007bff; box-shadow: 0 2px 5px rgba(0,0,0,0.05);">
@@ -1646,7 +1678,7 @@
     
 </script>
 
-<script src="app.js?v=44"></script>
+<script src="app.js?v=45"></script>
 <!-- ================= MODAL DE ARQUEO DE CAJA ================= -->
 <div id="modalArqueo" class="modal" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.6); z-index: 9999; align-items: center; justify-content: center;">
     <div style="background: #fff; width: 95%; max-width: 600px; border-radius: 12px; overflow: hidden; box-shadow: 0 5px 15px rgba(0,0,0,0.3); display: flex; flex-direction: column; max-height: 95vh;">
