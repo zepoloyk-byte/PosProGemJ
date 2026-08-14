@@ -2289,7 +2289,6 @@ async function actualizarAcumuladorDiario(venta, esAnulacion = false) {
 // ====================================================================
 // 🛒 CONFIRMAR VENTA (CONECTADA AL ACUMULADOR)
 // ====================================================================
-// 💳 VENTA CONECTADA A TERMINAL FÍSICA Y CRÉDITOS
 window.confirmarVenta = async function(cambioFinal = 0) {
     try {
         let tot = parseFloat(document.getElementById('v_total').innerText); 
@@ -2302,17 +2301,60 @@ window.confirmarVenta = async function(cambioFinal = 0) {
         let sumaEntregada = 0;
         let nombresClientes = [];
 
+        // 🌟 1. CREAMOS EL ID DE LA VENTA AQUÍ ARRIBA (UNO SOLO PARA TODO) 🌟
+        let idVentaNueva = Date.now() + Math.floor(Math.random()*1000);
+
         if (Array.isArray(pagosActuales) && pagosActuales.length > 0) {
             for (let p of pagosActuales) {
                 sumaEntregada += (parseFloat(p.montoEntregado) || parseFloat(p.montoAplicado) || 0);
-                if(p.metodo === 'Crédito') {
-                    let c = clientes[p.cliente_tel];
-                    if(!c) return alert("Error: Cliente no encontrado.");
-                    if((c.saldo + p.montoAplicado) > (c.limite || 0)) { 
+                
+                let metodoLimpio = p.metodo ? p.metodo.trim().toLowerCase() : '';
+                
+                if(metodoLimpio === 'crédito' || metodoLimpio === 'credito') {
+                    
+                    let telCliente = p.cliente_tel || (typeof window.telVentaActual !== 'undefined' ? window.telVentaActual : null);
+                    
+                    if (!telCliente || !clientes[telCliente]) {
+                        let nombrePantalla = typeof window.nombreVentaActual !== 'undefined' ? window.nombreVentaActual : '';
+                        let clienteRescatado = Object.values(clientes).find(cl => cl.nom === nombrePantalla);
+                        if (clienteRescatado) {
+                            telCliente = clienteRescatado.tel || clienteRescatado.id;
+                        } else {
+                            alert("⚠️ ALERTA: No se encontró la cuenta del cliente para sumarle el crédito. Selecciona un cliente de la lista.");
+                            return;
+                        }
+                    }
+
+                    let c = clientes[telCliente];
+                    let montoDeuda = parseFloat(p.montoAplicado) || 0;
+                    
+                    if((c.saldo + montoDeuda) > (c.limite || 0) && (c.limite || 0) > 0) { 
                         if(!confirm(`⚠️ El cliente ${c.nom} superará su límite de crédito. ¿Autorizar?`)) return; 
                     }
-                    c.saldo += p.montoAplicado;
-                    if (typeof db !== 'undefined') { db.collection("clientes").doc(p.cliente_tel).set(c).catch(e => console.warn("Cliente a mochila offline.")); }
+                    
+                    c.saldo = (parseFloat(c.saldo) || 0) + montoDeuda;
+                    if (typeof sucursalActual !== 'undefined') { c.sucursal_ultima_compra = sucursalActual; }
+
+                    if (!c.historial) c.historial = [];
+                    let fechaHoy = (typeof getFechaLocal === 'function') ? getFechaLocal() : new Date().toISOString().split('T')[0];
+                    let horaActual = new Date().toLocaleTimeString();
+                    
+                    // 🌟 2. USAMOS EL MISMO ID PARA EL HISTORIAL DEL CLIENTE 🌟
+                    c.historial.push({
+                        detalle: "Ticket #" + idVentaNueva,
+                        fecha: fechaHoy,
+                        hora: horaActual,
+                        id_venta: idVentaNueva,
+                        monto: montoDeuda,
+                        tipo: "Cargo (Compra)"
+                    });
+
+                    if (typeof db !== 'undefined') { 
+                        db.collection("clientes").doc(String(telCliente)).set(c)
+                          .then(() => console.log(`✅ Deuda y Ticket de $${montoDeuda} guardados en ${c.nom}`))
+                          .catch(e => console.warn("Error subiendo deuda a la nube.", e)); 
+                    }
+                    
                     nombresClientes.push(c.nom);
                 }
             }
@@ -2324,25 +2366,21 @@ window.confirmarVenta = async function(cambioFinal = 0) {
         let cambioReal = totalPagado - tot;
         if (cambioReal < 0) cambioReal = 0;
 
-        let nomClienteTicket = nombresClientes.length > 0 ? nombresClientes.join(', ') : "Público General";
+        let clienteGlobal = (typeof window.nombreVentaActual !== 'undefined' && window.nombreVentaActual !== "") ? window.nombreVentaActual : "Público General";
+        let nomClienteTicket = nombresClientes.length > 0 ? nombresClientes.join(', ') : clienteGlobal;
         let metodosStr = (pagosActuales.length > 0) ? pagosActuales.map(p => p.metodo).join(' + ') : 'Efectivo';
 
         let hoy = (typeof getFechaLocal === 'function') ? getFechaLocal() : new Date().toISOString().split('T')[0];
         let itemsTicketHtml = ''; let detallesParaGuardar = [];
         let sumaTotalCobrada = 0;
 
-        // 🌟 PROCESAMIENTO DEL CARRITO CON EL MOTOR DE PROMOCIONES EXACTO 🌟
         for (let x of carV) { 
             let pOriginal = inv[x.cod] || {}; 
-            
-            // 1. Identificamos al Maestro ANTES de tocar el stock
             let codMaestro = x.maestro_cod || (pOriginal.grupo && inv[pOriginal.grupo] ? pOriginal.grupo : x.cod);
             let pMaestro = inv[codMaestro] || pOriginal;
 
-            // 2. Descontamos el stock directamente a la cuenta del Maestro
             if(pOriginal.tipo === 'kit') { 
                 if(pOriginal.comp) pOriginal.comp.forEach(c => { 
-                    // Si el kit tiene un componente que también es espejo, buscamos su maestro
                     let compMaestro = (inv[c.cod] && inv[c.cod].grupo && inv[inv[c.cod].grupo]) ? inv[c.cod].grupo : c.cod;
                     if(typeof descontarStock === 'function') descontarStock(compMaestro, (c.can || 1) * (x.can || 1)); 
                 }); 
@@ -2422,13 +2460,11 @@ window.confirmarVenta = async function(cambioFinal = 0) {
 
             detallesParaGuardar.push({ cod: x.cod, nom: x.nom || 'Producto', can: x.can || 1, subtotal: subCobrado, pv: precioVentaNormal, dep: pOriginal.dep || "General" });
             
-            // 3. Subimos a la nube a quien verdaderamente perdió stock: El MAESTRO
             if (typeof db !== 'undefined' && codMaestro) { 
                 db.collection("inventario").doc(codMaestro).set(inv[codMaestro] || pMaestro).catch(e => console.warn("Inventario a mochila offline.")); 
             }
         }
 
-        // Descuento global residual (si por decimales el total cobrado sigue difiriendo)
         if (sumaTotalCobrada > (tot + 0.01)) {
             let ahorroGlobal = sumaTotalCobrada - tot;
             itemsTicketHtml += `<tr><td colspan="2" style="text-align:right;"><b>DESC. REDONDEO:</b></td><td style="text-align:right;">-$${ahorroGlobal.toFixed(2)}</td></tr>`;
@@ -2458,10 +2494,11 @@ window.confirmarVenta = async function(cambioFinal = 0) {
         let elCajero = document.getElementById('ticket_cajero');
         if (elCajero) elCajero.innerText = usr;
         
-        let idVentaNueva = Date.now() + Math.floor(Math.random()*1000);
+        // 🌟 3. AQUÍ YA NO CREAMOS EL ID, USAMOS EL DE ARRIBA 🌟
         let nuevaVenta = { 
             id: idVentaNueva, fecha: hoy, hora: new Date().toLocaleTimeString(), 
             cajero: usr, sucursal: suc, total: tot, 
+            nom: nomClienteTicket,
             metodo: metodosStr, pagos: pagosActuales, 
             recibido: totalPagado, cambio: cambioReal,    
             items: carV.map(x=>x.nom||'').join(','), detalles: detallesParaGuardar, anulada: false 
@@ -2482,7 +2519,7 @@ window.confirmarVenta = async function(cambioFinal = 0) {
         if(badgeMayoreo) { badgeMayoreo.innerText = "MAYOREO: DESACTIVADO"; badgeMayoreo.style.background = "#444"; badgeMayoreo.style.color = "#bbb"; }
 
         if(typeof window.renderV === "function") window.renderV(); else if(typeof renderV === "function") renderV();
-        
+        if(typeof window.renderClientes === "function") window.renderClientes();
         let modalCobro = document.getElementById('modalCobro');
         if (modalCobro) modalCobro.style.display = 'none'; 
         
@@ -5511,420 +5548,170 @@ async function abrirVisorTickets() {
 let ultimaFechaVisor = "";
 
 async function filtrarVisorTickets() {
-
     console.log("🔎 ===== INICIO FILTRO VISOR =====");
 
     let searchInput = document.getElementById('visor_search');
     let dateInput = document.getElementById('visor_date');
 
-    let txt = searchInput
-        ? searchInput.value.toLowerCase().trim()
-        : '';
-
-    let selectedDate = dateInput
-        ? dateInput.value
-        : '';
-
-    let terms = txt
-        ? txt.split(/\s+/)
-        : [];
-
-    console.log("📅 Fecha seleccionada:", selectedDate);
-    console.log("🏪 Sucursal actual:", sucursalActual);
-    console.log("📦 Ventas actualmente en memoria:", ventas.length);
-
+    let txt = searchInput ? searchInput.value.toLowerCase().trim() : '';
+    let selectedDate = dateInput ? dateInput.value : '';
+    let terms = txt ? txt.split(/\s+/) : [];
 
     // =====================================================
     // DESCARGAR DÍA DESDE LA NUBE
     // =====================================================
-
-    if (
-        selectedDate !== '' &&
-        typeof pb !== 'undefined'
-    ) {
-
+    if (selectedDate !== '' && typeof pb !== 'undefined') {
         if (selectedDate !== ultimaFechaVisor) {
-
             ultimaFechaVisor = selectedDate;
-
-            let counterEl =
-                document.getElementById('visor_counter');
-
-            if (counterEl) {
-                counterEl.innerText = "⚡...";
-            }
+            let counterEl = document.getElementById('visor_counter');
+            if (counterEl) counterEl.innerText = "⚡...";
 
             try {
-
-                console.log(
-                    "☁️ Descargando ventas del día:",
-                    selectedDate
-                );
-
-                let records =
-                    await pb
-                        .collection('ventas')
-                        .getFullList({
-                            filter: `data.fecha ~ "${selectedDate}"`,
-                            requestKey: null
-                        });
-
-                console.log(
-                    "☁️ Registros recibidos:",
-                    records.length
-                );
-
-                console.log(
-    "🔬 PRIMER REGISTRO RAW DE POCKETBASE:",
-    records[0]
-);
-
-console.log(
-    "🔬 PRIMER REGISTRO DATA:",
-    records[0] ? records[0].data : null
-);
-
-records.forEach(r => {
-
-    let ticketNube = {
-    ...(r.data || {}),
-    id: r.doc_id || r.id || (r.data && r.data.id)
-};
-
-                    if (!ticketNube) return;
-
-                    let existe =
-                        ventas.some(v =>
-                            String(v.id) ===
-                            String(ticketNube.id)
-                        );
-
-                    if (!existe) {
-
-                        ventas.push(
-                            ticketNube
-                        );
-
-                    }
-
+                let records = await pb.collection('ventas').getFullList({
+                    filter: `data.fecha ~ "${selectedDate}"`,
+                    requestKey: null
                 });
 
-                console.log(
-                    "📦 Ventas después de descarga:",
-                    ventas.length
-                );
+                records.forEach(r => {
+                    // 🛡️ Mapeo blindado para evitar tickets corruptos
+                    let ticketNube = {
+                        ...(r.data || r),
+                        id: r.doc_id || r.id || (r.data && r.data.id)
+                    };
 
+                    // 🛡️ Si el ticket no tiene ID, lo descartamos (evita el "undefined")
+                    if (!ticketNube || !ticketNube.id) return;
+
+                    let existe = ventas.some(v => String(v.id) === String(ticketNube.id));
+                    if (!existe) {
+                        ventas.push(ticketNube);
+                    }
+                });
             } catch (e) {
+                console.error("❌ Error descargando día:", e);
+            }
+        }
+    }
 
-                console.error(
-                    "❌ Error descargando día:",
-                    e
-                );
+    // =====================================================
+    // UNIFICAR TODAS LAS FUENTES Y ELIMINAR DUPLICADOS
+    // =====================================================
+    let todasLasVentas = [];
+    let idsVistos = new Set(); // 🛡️ Doble candado anti-duplicados
 
+    ventas.forEach(v => {
+        if (v && v.id && !idsVistos.has(String(v.id))) {
+            idsVistos.add(String(v.id));
+            todasLasVentas.push(v);
+        }
+    });
+
+    if (window.ventasHistoricasTemporales && Array.isArray(window.ventasHistoricasTemporales)) {
+        window.ventasHistoricasTemporales.forEach(t => {
+            if (t && t.id && !idsVistos.has(String(t.id))) {
+                idsVistos.add(String(t.id));
+                todasLasVentas.push(t);
+            }
+        });
+    }
+
+    // =====================================================
+    // FILTRO DE SUCURSAL Y FECHA
+    // =====================================================
+    const limpiarSucursal = valor => String(valor || "").replace(/📍/g, "").trim().toLowerCase();
+    const sucursalFiltro = limpiarSucursal(typeof sucursalActual !== "undefined" ? sucursalActual : "");
+
+    let resultado = todasLasVentas.filter(v => {
+        let sucVenta = limpiarSucursal(v.sucursal);
+        return (!sucVenta || sucursalFiltro === "todas" || sucVenta === sucursalFiltro);
+    });
+
+    if (selectedDate !== '') {
+        resultado = resultado.filter(v => {
+            if (!v.fecha) return false;
+            return (String(v.fecha).trim() === selectedDate);
+        });
+    }
+
+    // =====================================================
+    // FILTRO DE BÚSQUEDA (CON CAJERO Y CRÉDITOS RESTAURADOS)
+    // =====================================================
+    if (terms.length > 0) {
+        resultado = resultado.filter(v => {
+            
+            // Rescate del nombre del cliente
+            let clientStr = v.cliente || v.nom || 'Público';
+            if (clientStr === 'Público' || clientStr === 'Público General') {
+                if (v.cliente_tel && typeof clientes !== 'undefined' && clientes[v.cliente_tel]) {
+                    clientStr = clientes[v.cliente_tel].nom;
+                } else if (v.pagos && Array.isArray(v.pagos)) {
+                    let pCred = v.pagos.find(p => p.metodo && p.metodo.toLowerCase().includes('crédit'));
+                    if (pCred && pCred.cliente_tel && typeof clientes !== 'undefined' && clientes[pCred.cliente_tel]) {
+                        clientStr = clientes[pCred.cliente_tel].nom;
+                    }
+                }
             }
 
+            let productosStr = "";
+            if (v.detalles && Array.isArray(v.detalles)) {
+                productosStr = v.detalles.map(d => `${d.cod || ''} ${d.nom || ''} ${d.cod_maestro || ''}`).join(" ");
+            } else if (v.items) {
+                productosStr = v.items;
+            }
+
+            // 🌟 AQUI ESTA LA CORRECCIÓN: Le devolvimos la hora y el cajero al buscador
+            let textoBuscable = `
+                ${v.id || ''}
+                ${v.fecha || ''}
+                ${v.hora || ''}
+                ${clientStr}
+                ${v.cajero || ''}
+                ${v.metodo || ''}
+                ${productosStr}
+            `.toLowerCase();
+
+            return terms.every(t => textoBuscable.includes(t));
+        });
+    }
+
+    // =====================================================
+    // ASIGNAR UNA SOLA VEZ E INYECTAR NOMBRE PARA EL TICKET
+    // =====================================================
+    visorIndices = resultado.map((v, idx) => {
+        let nombreRecuperado = v.cliente || v.nom;
+        
+        if (!nombreRecuperado || nombreRecuperado === "Público General") {
+            if (v.cliente_tel && typeof clientes !== 'undefined' && clientes[v.cliente_tel]) {
+                nombreRecuperado = clientes[v.cliente_tel].nom;
+            } else if (v.pagos && Array.isArray(v.pagos)) {
+                let pCredito = v.pagos.find(p => p.metodo && p.metodo.toLowerCase().includes('crédit'));
+                if (pCredito && pCredito.cliente_tel && typeof clientes !== 'undefined' && clientes[pCredito.cliente_tel]) {
+                    nombreRecuperado = clientes[pCredito.cliente_tel].nom;
+                }
+            }
         }
 
-    }
-
-
-    // =====================================================
-    // UNIFICAR TODAS LAS FUENTES
-    // =====================================================
-
-    let todasLasVentas = [
-        ...ventas
-    ];
-
-
-    if (
-        window.ventasHistoricasTemporales &&
-        Array.isArray(
-            window.ventasHistoricasTemporales
-        )
-    ) {
-
-        window.ventasHistoricasTemporales.forEach(t => {
-
-            if (!t) return;
-
-            let existe =
-                todasLasVentas.some(v =>
-                    String(v.id) ===
-                    String(t.id)
-                );
-
-            if (!existe) {
-
-                todasLasVentas.push(t);
-
-            }
-
-        });
-
-    }
-
-
-    console.log(
-        "📊 TOTAL ANTES DE FILTROS:",
-        todasLasVentas.length
-    );
-
-
-    // =====================================================
-    // NORMALIZAR SUCURSAL
-    // =====================================================
-
-    const limpiarSucursal = valor =>
-        String(valor || "")
-            .replace(/📍/g, "")
-            .trim()
-            .toLowerCase();
-
-
-    const sucursalFiltro =
-        limpiarSucursal(
-            typeof sucursalActual !== "undefined"
-                ? sucursalActual
-                : ""
-        );
-
-
-    console.log(
-        "🏪 SUCURSAL NORMALIZADA:",
-        sucursalFiltro
-    );
-
-
-    // =====================================================
-    // FILTRO DE SUCURSAL
-    // =====================================================
-
-    let resultado =
-        todasLasVentas.filter(v => {
-
-            let sucVenta =
-                limpiarSucursal(v.sucursal);
-
-            return (
-                !sucVenta ||
-                sucursalFiltro === "todas" ||
-                sucVenta === sucursalFiltro
-            );
-
-        });
-
-
-    console.log(
-        "🏪 Después del filtro de sucursal:",
-        resultado.length
-    );
-
-
-    // =====================================================
-    // FILTRO DE FECHA
-    // ==================================================
-    console.log(
-    "📅 EJEMPLOS DE FECHAS DESPUÉS DE SUCURSAL:",
-    resultado.slice(0, 20).map(v => ({
-        id: v.id,
-        fecha: v.fecha,
-        fechaTipo: typeof v.fecha,
-        sucursal: v.sucursal,
-        objeto: v
-    }))
-);
-    if (selectedDate !== '') {
-
-    resultado =
-        resultado.filter(v => {
-
-            if (!v.fecha) return false;
-
-            let fechaVenta =
-                String(v.fecha)
-                    .trim();
-
-            return (
-                fechaVenta === selectedDate
-            );
-
-        });
-
-}
-
-
-   console.log(
-    "📅 VENTAS QUE SOBREVIVIERON LA FECHA:",
-    resultado.length
-);
-
-console.table(
-    resultado.slice(0, 10).map(v => ({
-        id: v.id,
-        fecha: v.fecha,
-        sucursal: v.sucursal,
-        total: v.total
-    }))
-);
-
-
-    // =====================================================
-    // FILTRO DE BÚSQUEDA
-    // =====================================================
-
-    if (terms.length > 0) {
-
-        resultado =
-            resultado.filter(v => {
-
-                let clientStr =
-                    v.cliente_tel &&
-                    clientes[v.cliente_tel]
-                        ? clientes[v.cliente_tel].nom
-                        : 'Público';
-
-
-                let productosStr = "";
-
-
-                if (
-                    v.detalles &&
-                    Array.isArray(v.detalles)
-                ) {
-
-                    productosStr =
-                        v.detalles
-                            .map(d =>
-                                `${d.cod || ''}
-                                 ${d.nom || ''}
-                                 ${d.cod_maestro || ''}`
-                            )
-                            .join(" ");
-
-                } else if (v.items) {
-
-                    productosStr =
-                        v.items;
-
-                }
-
-
-                let textoBuscable =
-                    `
-                    ${v.id || ''}
-                    ${v.fecha || ''}
-                    ${v.hora || ''}
-                    ${clientStr}
-                    ${v.cajero || ''}
-                    ${v.metodo || ''}
-                    ${productosStr}
-                    `
-                    .toLowerCase();
-
-
-                return terms.every(t =>
-                    textoBuscable.includes(t)
-                );
-
-            });
-
-    }
-
-
-    console.log(
-        "🔎 Después del filtro de búsqueda:",
-        resultado.length
-    );
-
-
-    // =====================================================
-    // ASIGNAR UNA SOLA VEZ
-    // =====================================================
-
-    visorIndices =
-        resultado.map((v, idx) => ({
-
+        return {
             ...v,
-
+            cliente: nombreRecuperado || "Público General",
+            nom: nombreRecuperado || "Público General",
             indexGlobal: idx
-
-        }));
-
-
-    console.log(
-        "🎯 VISORINDICES FINAL:",
-        visorIndices.length
-    );
-
-    console.log(
-        "🎯 PRIMER TICKET:",
-        visorIndices[0]
-    );
-
+        };
+    });
 
     // =====================================================
     // RENDER
     // =====================================================
-
     if (visorIndices.length === 0) {
-
-        console.warn(
-            "⚠️ EL VISOR QUEDÓ VACÍO"
-        );
-
-        document.getElementById(
-            'visor_counter'
-        ).innerText = "0 / 0";
-
-        document.getElementById(
-            'visor_fecha'
-        ).innerText = "Vacío";
-
-        document.getElementById(
-            'visor_items'
-        ).innerHTML =
-            `<tr>
-                <td colspan="3">
-                    N/A
-                </td>
-            </tr>`;
-
-        document.getElementById(
-            'visor_total'
-        ).innerText = "0.00";
-
-        if (
-            document.getElementById(
-                'btn_anular_visor'
-            )
-        ) {
-
-            document.getElementById(
-                'btn_anular_visor'
-            ).disabled = true;
-
-        }
-
+        let counter = document.getElementById('visor_counter'); if(counter) counter.innerText = "0 / 0";
+        let vFecha = document.getElementById('visor_fecha'); if(vFecha) vFecha.innerText = "Vacío";
+        let vItems = document.getElementById('visor_items'); if(vItems) vItems.innerHTML = `<tr><td colspan="3">N/A</td></tr>`;
+        let vTotal = document.getElementById('visor_total'); if(vTotal) vTotal.innerText = "0.00";
+        let btnAnular = document.getElementById('btn_anular_visor'); if(btnAnular) btnAnular.disabled = true;
     } else {
-
-        console.log(
-            "🎨 ENVIANDO A RENDER:",
-            visorIndices.length
-        );
-
-        currentVisorPos =
-            visorIndices.length - 1;
-
-        renderVisorActivo();
-
+        currentVisorPos = visorIndices.length - 1;
+        if(typeof renderVisorActivo === 'function') renderVisorActivo();
     }
-
-
-    console.log(
-        "🏁 ===== FIN FILTRO VISOR ====="
-    );
-
 }
 function navVisor(dir) { let n = currentVisorPos + dir; if(n >= 0 && n < visorIndices.length) { currentVisorPos = n; renderVisorActivo(); } }
 
@@ -5932,9 +5719,10 @@ function renderVisorActivo() {
     if (visorIndices.length === 0) return; 
     let v = visorIndices[currentVisorPos]; 
     document.getElementById('visor_counter').innerText = (currentVisorPos + 1) + " / " + visorIndices.length;
-    let clientStr = v.cliente_tel ? (clientes[v.cliente_tel] ? clientes[v.cliente_tel].nom : 'Cliente') : 'Público General';
-    document.getElementById('visor_fecha').innerText = `${v.fecha||''} ${v.hora||''} - ${v.sucursal||''}\nTicket ID: ${v.id}\nCliente: ${clientStr}`;
+    // ✅ LÓGICA REFACCIONADA (Lee directamente la propiedad ya procesada)
+    let clientStr = v.cliente || v.nom || 'Público General';
     
+    document.getElementById('visor_fecha').innerText = `${v.fecha||''} ${v.hora||''} - ${v.sucursal||''}\nTicket ID: ${v.id}\nCliente: ${clientStr}`;
     let html = '';
     let sumaTotalCobrada = 0;
 
@@ -6843,21 +6631,61 @@ function seleccionarBusqueda(cod) {
     else { cerrarModales(); if (tabActual === 'v-tab') { document.getElementById('v_cod').value = cod; handleVenta({key:'Enter'}); } else if (tabActual === 'pro-tab') { document.getElementById('pr_cod').value = cod; verificarProdPromo(); } else if (tabActual === 'k-tab') { document.getElementById('k_comp_cod').value = cod; } }
 }
 
-let escanerCamara = null; let destinoActualEscaner = 'ventas'; 
-function abrirEscanerCamara(destino = 'ventas') {
-    destinoActualEscaner = destino; document.getElementById('modal_escaner').style.display = 'flex';
-    escanerCamara = new Html5QrcodeScanner("lector_camara", { fps: 10, qrbox: { width: 250, height: 120 }, rememberLastUsedCamera: true }, false);
-    escanerCamara.render((texto) => {
-        cerrarEscanerCamara();
-        try { let ctx = new (window.AudioContext || window.webkitAudioContext)(); let osc = ctx.createOscillator(); let gain = ctx.createGain(); osc.type = 'sine'; osc.frequency.value = 880; gain.gain.setValueAtTime(1, ctx.currentTime); gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.15); osc.connect(gain); gain.connect(ctx.destination); osc.start(); osc.stop(ctx.currentTime + 0.15); } catch(e){}
-        if (destinoActualEscaner === 'compras' && document.getElementById('c_cod')) { document.getElementById('c_cod').value = texto; handleCompraScan({ key: 'Enter' }); } 
-        else if (destinoActualEscaner === 'transferencias' && document.getElementById('t_cod')) { document.getElementById('t_cod').value = texto; addTransferToList(); } 
-        else if (destinoActualEscaner === 'caja' && document.getElementById('caja_codigo')) { document.getElementById('caja_codigo').value = texto; buscarProdCaja(); } 
-        else if (document.getElementById('v_cod')) { document.getElementById('v_cod').value = texto; handleVenta({ key: 'Enter' }); }
-    }, () => {});
-}
-function cerrarEscanerCamara() { document.getElementById('modal_escaner').style.display = 'none'; if (escanerCamara) { escanerCamara.clear(); escanerCamara = null; } }
+// ==========================================
+// 📸 MOTOR DEL ESCÁNER DE CÁMARA (GLOBAL)
+// ==========================================
+window.escanerCamara = null; 
+window.destinoActualEscaner = 'ventas'; 
 
+window.abrirEscanerCamara = function(destino = 'ventas') {
+    console.log("📸 Abriendo cámara para:", destino);
+    window.destinoActualEscaner = destino; 
+    let modalC = document.getElementById('modal_escaner');
+    
+    if (!modalC) {
+        alert("⚠️ ¡Falta el contenedor HTML del Escáner (modal_escaner)!");
+        return;
+    }
+    
+    modalC.style.display = 'flex';
+    
+    if (window.escanerCamara) { 
+        window.escanerCamara.clear(); 
+    }
+
+    window.escanerCamara = new Html5QrcodeScanner(
+        "lector_camara", 
+        { fps: 10, qrbox: { width: 250, height: 120 }, rememberLastUsedCamera: true }, 
+        false
+    );
+    
+    window.escanerCamara.render((texto) => {
+        window.cerrarEscanerCamara();
+        
+        // Sonido de Beep
+        try { let ctx = new (window.AudioContext || window.webkitAudioContext)(); let osc = ctx.createOscillator(); let gain = ctx.createGain(); osc.type = 'sine'; osc.frequency.value = 880; gain.gain.setValueAtTime(1, ctx.currentTime); gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.15); osc.connect(gain); gain.connect(ctx.destination); osc.start(); osc.stop(ctx.currentTime + 0.15); } catch(e){}
+        
+        if (window.destinoActualEscaner === 'compras' && document.getElementById('c_cod')) { 
+            document.getElementById('c_cod').value = texto; 
+            handleCompraScan({ key: 'Enter' }); 
+        } else if (window.destinoActualEscaner === 'transferencias' && document.getElementById('t_cod')) { 
+            document.getElementById('t_cod').value = texto; 
+            addTransferToList(); 
+        } else if (window.destinoActualEscaner === 'caja' && document.getElementById('caja_codigo')) { 
+            document.getElementById('caja_codigo').value = texto; 
+            buscarProdCaja(); 
+        } else if (document.getElementById('v_cod')) { 
+            document.getElementById('v_cod').value = texto; 
+            handleVenta({ key: 'Enter' }); 
+        }
+    }, () => {});
+};
+
+window.cerrarEscanerCamara = function() { 
+    let modalC = document.getElementById('modal_escaner');
+    if (modalC) modalC.style.display = 'none'; 
+    if (window.escanerCamara) { window.escanerCamara.clear(); window.escanerCamara = null; } 
+};
 // ====================================================================
 // === TECLADO GLOBAL (ATAJOS Y NAVEGACIÓN) ===
 // ====================================================================
@@ -10026,7 +9854,7 @@ window.cargarSesionCajaActiva = async function() {
         let sucReal = String(typeof sucursalActual !== 'undefined' ? sucursalActual : "Matriz").replace(/📍/g, '').trim();
         let usrReal = typeof usuarioActual !== 'undefined' ? usuarioActual : '';
 
-        // 1. Buscamos cualquier caja abierta en esta sucursal (usando el limpiador de PocketBase)
+        // 1. Buscamos cualquier caja abierta en esta sucursal
         let records = await pb.collection('cajas_sesiones').getFullList({
             filter: pb.filter("estado = 'abierta' && (sucursal ~ {:suc} || sucursal = {:sucRaw})", {
                 suc: sucReal,
@@ -10037,23 +9865,39 @@ window.cargarSesionCajaActiva = async function() {
         });
 
         if (records && records.length > 0) {
-            // Si el admin está revisando o si la caja le pertenece al usuario actual
-            let sesionCoincidente = records.find(r => r.cajero === usrReal) || records[0];
+            // 🌟 CORRECCIÓN: Búsqueda estricta. Cero asignaciones forzadas.
+            let sesionCoincidente = records.find(r => r.cajero === usrReal);
             
-            window.sesionCajaActual = sesionCoincidente;
-            localStorage.setItem("pos_sesion_activa", JSON.stringify(sesionCoincidente));
+            // 🛡️ Opcional: Si necesitas que el Admin pueda ver la caja de otros, descomenta la siguiente línea:
+            // if (!sesionCoincidente && usrReal.toLowerCase() === 'admin') sesionCoincidente = records[0];
+
+            if (sesionCoincidente) {
+                // Es su turno, lo cargamos en memoria
+                window.sesionCajaActual = sesionCoincidente;
+                localStorage.setItem("pos_sesion_activa", JSON.stringify(sesionCoincidente));
+            } else {
+                // Hay turnos abiertos, pero NINGUNO le pertenece a este cajero.
+                window.sesionCajaActual = null;
+                localStorage.removeItem("pos_sesion_activa");
+            }
         } else {
+            // No hay ninguna caja abierta en la sucursal
             window.sesionCajaActual = null;
             localStorage.removeItem("pos_sesion_activa");
         }
     } catch (e) {
         console.error("Error al sincronizar turno desde la nube:", e);
         
-        // Paracaídas Local
+        // Paracaídas Local (Solo cargamos si el cajero guardado coincide con el actual)
         let sesionGuardada = localStorage.getItem("pos_sesion_activa");
         if (sesionGuardada) {
             try {
-                window.sesionCajaActual = JSON.parse(sesionGuardada);
+                let parseada = JSON.parse(sesionGuardada);
+                if (parseada.cajero === usrReal) {
+                    window.sesionCajaActual = parseada;
+                } else {
+                    window.sesionCajaActual = null;
+                }
             } catch(err) {
                 window.sesionCajaActual = null;
             }
