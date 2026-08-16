@@ -6401,133 +6401,52 @@ function seleccionarBusqueda(cod) {
     else { cerrarModales(); if (tabActual === 'v-tab') { document.getElementById('v_cod').value = cod; handleVenta({key:'Enter'}); } else if (tabActual === 'pro-tab') { document.getElementById('pr_cod').value = cod; verificarProdPromo(); } else if (tabActual === 'k-tab') { document.getElementById('k_comp_cod').value = cod; } }
 }
 
-// ==========================================
-// 📸 MOTOR DEL ESCÁNER DE CÁMARA (GLOBAL)
-// ==========================================
-// =========================================================================
-// 📸 CONTROLADOR DE ESCÁNER DE CÁMARA (RESILIENTE A HARDWARE)
-// =========================================================================
-window.abrirEscanerCamara = function(destino) {
-    if (!destino) destino = 'ventas';
-    console.log("📸 Solicitando cámara para:", destino);
-    window.destinoActualEscaner = destino;
+// ====================================================================
+// 📸 ESCÁNER DE CÓDIGOS DE BARRAS PARA CELULARES (FINAL)
+// ====================================================================
+let html5QrcodeScanner = null;
 
-    var modalC = document.getElementById('modal_escaner');
-    if (!modalC) {
-        alert("⚠️ Falta el contenedor HTML modal_escaner en la página.");
+window.abrirEscanerCamara = function(destinoInputId = 'v_cod') {
+    let modal = document.getElementById('modal-camara');
+    
+    if(!modal) {
+        console.error("Falta el HTML de la cámara");
         return;
     }
 
-    if (typeof Html5Qrcode === 'undefined') {
-        alert("⚠️ La librería Html5Qrcode no está disponible.");
-        return;
-    }
+    // Forzamos la aparición de la pantalla negra por encima de todo
+    modal.style.setProperty('display', 'flex', 'important');
+    modal.style.setProperty('z-index', '999999', 'important');
 
-    // 1. Apagar instancia previa si existía
-    if (window.html5QrCodeInstance) {
-        window.html5QrCodeInstance.stop().then(function() {
-            window.html5QrCodeInstance.clear();
-            window.html5QrCodeInstance = null;
-            iniciarLector();
-        }).catch(function() {
-            window.html5QrCodeInstance = null;
-            iniciarLector();
-        });
-    } else {
-        iniciarLector();
-    }
+    try {
+        // Iniciamos el escáner
+        html5QrcodeScanner = new Html5QrcodeScanner(
+            "lector-qr", { fps: 10, qrbox: { width: 250, height: 150 } });
 
-    function iniciarLector() {
-        // 2. Comprobar si existen cámaras físicas conectadas
-        Html5Qrcode.getCameras().then(function(cameras) {
-            if (!cameras || cameras.length === 0) {
-                alert("📷 No se detectó ninguna cámara en este equipo.\n\n• En PC de escritorio: Conecta una webcam por USB.\n• En Laptop: Revisa que la cámara esté activa en la configuración de privacidad.");
-                return;
+        html5QrcodeScanner.render((codigoEscaneado) => {
+            let input = document.getElementById(destinoInputId);
+            if(input) {
+                input.value = codigoEscaneado;
+                // Simulamos el "Enter" para buscar el producto
+                input.dispatchEvent(new KeyboardEvent('keypress', { key: 'Enter' }));
             }
-
-            modalC.style.display = 'flex';
-
-            // Seleccionar cámara trasera si está disponible (móviles) o la primera webcam
-            var camId = cameras[0].id;
-            for (var i = 0; i < cameras.length; i++) {
-                var label = (cameras[i].label || '').toLowerCase();
-                if (label.indexOf('back') !== -1 || label.indexOf('trasera') !== -1 || label.indexOf('rear') !== -1) {
-                    camId = cameras[i].id;
-                    break;
-                }
-            }
-
-            window.html5QrCodeInstance = new Html5Qrcode("lector_camara");
-            var config = { fps: 15, qrbox: { width: 280, height: 150 } };
-
-            window.html5QrCodeInstance.start(
-                camId,
-                config,
-                function(texto) {
-                    console.log("✅ Código detectado:", texto);
-
-                    // Sonido Beep
-                    try {
-                        var AudioCtx = window.AudioContext || window.webkitAudioContext;
-                        if (AudioCtx) {
-                            var ctx = new AudioCtx();
-                            var osc = ctx.createOscillator();
-                            var gain = ctx.createGain();
-                            osc.type = 'sine';
-                            osc.frequency.value = 880;
-                            gain.gain.setValueAtTime(1, ctx.currentTime);
-                            gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.15);
-                            osc.connect(gain);
-                            gain.connect(ctx.destination);
-                            osc.start();
-                            osc.stop(ctx.currentTime + 0.15);
-                        }
-                    } catch (e) {}
-
-                    window.cerrarEscanerCamara();
-
-                    // Asignación de código al módulo activo
-                    if (window.destinoActualEscaner === 'compras' && document.getElementById('c_cod')) {
-                        document.getElementById('c_cod').value = texto;
-                        if (typeof handleCompraScan === 'function') handleCompraScan({ key: 'Enter' });
-                    } else if (window.destinoActualEscaner === 'transferencias' && document.getElementById('t_cod')) {
-                        document.getElementById('t_cod').value = texto;
-                        if (typeof addTransferToList === 'function') addTransferToList();
-                    } else if (window.destinoActualEscaner === 'caja' && document.getElementById('caja_codigo')) {
-                        document.getElementById('caja_codigo').value = texto;
-                        if (typeof buscarProdCaja === 'function') buscarProdCaja();
-                    } else if (document.getElementById('v_cod')) {
-                        document.getElementById('v_cod').value = texto;
-                        if (typeof handleVenta === 'function') handleVenta({ key: 'Enter' });
-                    }
-                },
-                function(errorMessage) {
-                    // Escaneo continuo sin coincidencia (silencioso)
-                }
-            ).catch(function(err) {
-                console.error("❌ Error al iniciar stream de video:", err);
-                alert("⚠️ No fue posible activar la cámara: " + (err.message || err));
-                window.cerrarEscanerCamara();
-            });
-
-        }).catch(function(err) {
-            console.error("❌ Error consultando dispositivos de video:", err);
-            alert("📷 No hay acceso a dispositivos de cámara en este navegador.");
+            cerrarEscanerCamara();
+        }, (error) => {
+            // Ignoramos la estática visual
         });
+        
+    } catch (e) {
+        console.error("Error al encender cámara: ", e);
     }
 };
 
 window.cerrarEscanerCamara = function() {
-    var modalC = document.getElementById('modal_escaner');
-    if (modalC) modalC.style.display = 'none';
-
-    if (window.html5QrCodeInstance) {
-        window.html5QrCodeInstance.stop().then(function() {
-            window.html5QrCodeInstance.clear();
-            window.html5QrCodeInstance = null;
-        }).catch(function() {
-            window.html5QrCodeInstance = null;
-        });
+    let modal = document.getElementById('modal-camara');
+    if(modal) modal.style.setProperty('display', 'none', 'important');
+    
+    if(html5QrcodeScanner) {
+        html5QrcodeScanner.clear().catch(e => console.error("Error al apagar:", e));
+        html5QrcodeScanner = null;
     }
 };
 

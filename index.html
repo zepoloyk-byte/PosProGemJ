@@ -1630,10 +1630,10 @@
         });
     }
     
-    
+   
 </script>
 
-<script src="app.js?v=45"></script>
+<script src="app.js?v=46"></script>
 <!-- ================= MODAL DE ARQUEO DE CAJA ================= -->
 <div id="modalArqueo" class="modal" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.6); z-index: 9999; align-items: center; justify-content: center;">
     <div style="background: #fff; width: 95%; max-width: 600px; border-radius: 12px; overflow: hidden; box-shadow: 0 5px 15px rgba(0,0,0,0.3); display: flex; flex-direction: column; max-height: 95vh;">
@@ -1851,6 +1851,17 @@
 
     </div>
 
+</div>
+ <!-- 🎥 PANTALLA NEGRA DE LA CÁMARA (Se sobrepone a todo) -->
+<div id="modal-camara" style="display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.9); z-index:9999; flex-direction:column; justify-content:center; align-items:center;">
+    <div style="background:white; padding:15px; border-radius:10px; width:90%; max-width:400px; text-align:center;">
+        <h3 style="margin-top:0; color:#333;">📷 Escanea el Código</h3>
+        
+        <!-- Aquí es donde se dibuja el video en vivo -->
+        <div id="lector-qr" style="width:100%; min-height:250px; margin-bottom:15px;"></div>
+        
+        <button onclick="cerrarEscanerCamara()" style="padding:10px 20px; background:#dc3545; color:white; border:none; border-radius:5px; font-weight:bold; cursor:pointer; width:100%;">Cancelar y Cerrar</button>
+    </div>
 </div>
 </body>
 </html>
