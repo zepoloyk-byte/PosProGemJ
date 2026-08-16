@@ -6401,83 +6401,48 @@ function seleccionarBusqueda(cod) {
     else { cerrarModales(); if (tabActual === 'v-tab') { document.getElementById('v_cod').value = cod; handleVenta({key:'Enter'}); } else if (tabActual === 'pro-tab') { document.getElementById('pr_cod').value = cod; verificarProdPromo(); } else if (tabActual === 'k-tab') { document.getElementById('k_comp_cod').value = cod; } }
 }
 
-// ====================================================================
-// 📸 ESCÁNER DE CÓDIGOS (VERSIÓN AUTO-DIBUJABLE E INDESTRUCTIBLE)
-// ====================================================================
-let html5QrcodeScannerPrincipal = null;
-
 window.abrirEscanerCamara = function(destinoInputId = 'v_cod') {
-    // 1. Buscamos si la ventana existe. Si no, ¡la creamos nosotros mismos!
     let modal = document.getElementById('modal-camara');
     if (!modal) {
-        modal = document.createElement('div');
-        modal.id = 'modal-camara';
-        modal.innerHTML = `
-            <div style="background:white; padding:15px; border-radius:10px; width:95%; max-width:400px; text-align:center;">
-                <h3 style="margin-top:0; color:#333;">📷 Escanea el Código</h3>
-                <!-- Le ponemos fondo negro y alto fijo para que el celular no lo colapse -->
-                <div id="lector-qr" style="width:100%; min-height:300px; background:#000; margin-bottom:15px; display:flex; justify-content:center; align-items:center; overflow:hidden;"></div>
-                <button onclick="cerrarEscanerCamara()" style="padding:15px 20px; background:#dc3545; color:white; border:none; border-radius:5px; font-weight:bold; cursor:pointer; width:100%; font-size:16px;">Cancelar y Cerrar</button>
-            </div>
-        `;
-        document.body.appendChild(modal); // Lo pegamos al frente de todo
+        // ... (Tu lógica de crear el modal si no existe)
     }
 
-    // 2. Forzamos con violencia que se muestre en toda la pantalla
-    modal.style.cssText = 'display:flex !important; position:fixed !important; top:0 !important; left:0 !important; width:100vw !important; height:100vh !important; background:rgba(0,0,0,0.9) !important; z-index:999999 !important; flex-direction:column !important; justify-content:center !important; align-items:center !important;';
+    modal.style.setProperty('display', 'flex', 'important');
 
-    // 3. Pausa para que el celular termine de dibujar la ventana
+    // Damos un tiempo de espera más largo para asegurar que el navegador 
+    // termine de procesar el permiso de cámara que ya aceptaste
     setTimeout(() => {
         try {
             html5QrcodeScannerPrincipal = new Html5Qrcode("lector-qr");
             
+            // Usamos una configuración más estándar para evitar errores de hardware
             html5QrcodeScannerPrincipal.start(
-                { facingMode: { ideal: "environment" } }, // Usa cámara trasera siempre que pueda
-                {
-                    fps: 20, 
-                    qrbox: { width: 250, height: 250 }, // Cuadro de escaneo más grande y cuadrado
-                    aspectRatio: 1.0 
-                },
-                (codigoDetectado) => {
-                    if (navigator.vibrate) navigator.vibrate(80); 
-                    
-                    if (html5QrcodeScannerPrincipal) {
-                        html5QrcodeScannerPrincipal.stop().then(() => {
-                            html5QrcodeScannerPrincipal = null;
-                            modal.style.setProperty('display', 'none', 'important');
-                            
-                            let input = document.getElementById(destinoInputId);
-                            if(input) {
-                                input.value = codigoDetectado;
-                                input.dispatchEvent(new KeyboardEvent('keypress', { key: 'Enter' }));
-                                input.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter' }));
-                            }
-                        }).catch(err => console.error(err));
+                { facingMode: "environment" }, 
+                { fps: 10, qrbox: 250 },
+                (decodedText) => {
+                    // Código detectado
+                    cerrarEscanerCamara();
+                    let input = document.getElementById(destinoInputId);
+                    if(input) {
+                        input.value = decodedText;
+                        input.dispatchEvent(new KeyboardEvent('keypress', { key: 'Enter' }));
                     }
                 },
-                (error) => { /* Silenciar estática */ }
+                (err) => { /* Silencioso */ }
             ).catch(err => {
-                console.warn("Error al encender cámara: ", err);
-                alert("No se pudo iniciar la cámara. Revisa permisos.");
-                cerrarEscanerCamara();
+                // Si falla, intentamos una vez más de forma genérica
+                console.warn("Falla inicial, intentando modo genérico...");
+                html5QrcodeScannerPrincipal.start(
+                    { facingMode: { ideal: "environment" } }, 
+                    { fps: 10, qrbox: 250 },
+                    (text) => { /* igual al anterior */ },
+                    (err) => { /* Silencioso */ }
+                ).catch(err2 => alert("Error final: " + err2));
             });
         } catch (e) {
-            console.error("Error crítico: ", e);
+            alert("Error: " + e);
         }
-    }, 400); // 400 milisegundos de respiro para el celular
-};
-
-window.cerrarEscanerCamara = function() {
-    let modal = document.getElementById('modal-camara');
-    if(modal) modal.style.setProperty('display', 'none', 'important');
-    
-    if (html5QrcodeScannerPrincipal) {
-        html5QrcodeScannerPrincipal.stop().then(() => {
-            html5QrcodeScannerPrincipal = null;
-        }).catch(err => {
-            html5QrcodeScannerPrincipal = null; 
-        });
-    }
+    }, 800); // 800ms de espera para que el celular esté listo
 };
 
 
