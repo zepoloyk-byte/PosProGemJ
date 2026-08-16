@@ -3178,7 +3178,7 @@ function handleCompraScan(e) {
                 alertPromo.innerHTML = `
                     <div style="display:flex; justify-content:space-between; align-items:center;">
                         <span>${txtPromo}</span>
-                        <button type="button" onclick="irEditarPromoDesdeCompras(${promoIndexReal})" style="background:#0d6efd; color:white; border:none; padding:7px 15px; border-radius:4px; font-weight:bold; cursor:pointer; box-shadow: 0 2px 4px rgba(0,0,0,0.2); transition: all 0.2s;">✏️ Editar/Eliminar Promo</button>
+                        <button type="button" onclick="irEditarPromoDesdeCompras(${promoIndexReal})" style="background:#0d6efd; color:white; border:none; padding:6px 14px; border-radius:4px; font-weight:bold; cursor:pointer; box-shadow: 0 2px 4px rgba(0,0,0,0.2); transition: all 0.2s;">✏️ Editar/Eliminar Promo</button>
                     </div>
                 `;
                 alertPromo.style.display = 'block';
@@ -6401,51 +6401,116 @@ function seleccionarBusqueda(cod) {
     else { cerrarModales(); if (tabActual === 'v-tab') { document.getElementById('v_cod').value = cod; handleVenta({key:'Enter'}); } else if (tabActual === 'pro-tab') { document.getElementById('pr_cod').value = cod; verificarProdPromo(); } else if (tabActual === 'k-tab') { document.getElementById('k_comp_cod').value = cod; } }
 }
 
+
+
+let html5QrcodeScannerPrincipal = null;
+
 window.abrirEscanerCamara = function(destinoInputId = 'v_cod') {
-    let modal = document.getElementById('modal-camara');
-    if (!modal) {
-        // ... (Tu lógica de crear el modal si no existe)
+    // ==========================================
+    // 🧹 1. BARREDORA: MATAMOS CUALQUIER CÁMARA ABIERTA
+    // ==========================================
+    if (typeof apagarCamaraCiego === 'function') {
+        try { apagarCamaraCiego(); } catch(e){}
+    }
+    if (html5QrcodeScannerPrincipal) {
+        try { html5QrcodeScannerPrincipal.stop(); } catch(e){}
+        html5QrcodeScannerPrincipal = null;
     }
 
-    modal.style.setProperty('display', 'flex', 'important');
+    // ==========================================
+    // 🖼️ 2. CONSTRUCCIÓN DE LA PANTALLA
+    // ==========================================
+    let modal = document.getElementById('modal-camara-ventas');
+    if (!modal) {
+        modal = document.createElement('div');
+        modal.id = 'modal-camara-ventas';
+        modal.innerHTML = `
+            <div style="background:white; padding:15px; border-radius:10px; width:95%; max-width:400px; text-align:center;">
+                <h3 style="margin-top:0; color:#333;">📷 Escanea el Código</h3>
+                <div id="lector-qr-ventas" style="width:100%; min-height:250px; background:#000; margin-bottom:10px;"></div>
+                
+                <div id="log-celular" style="background:#f8d7da; color:#721c24; font-size:12px; padding:10px; margin-bottom:15px; text-align:left; border-radius:5px; word-wrap:break-word;">
+                    Limpiando hardware...
+                </div>
 
-    // Damos un tiempo de espera más largo para asegurar que el navegador 
-    // termine de procesar el permiso de cámara que ya aceptaste
+                <button onclick="cerrarEscanerCamara()" style="padding:15px 20px; background:#dc3545; color:white; border:none; border-radius:5px; font-weight:bold; cursor:pointer; width:100%;">Cancelar y Cerrar</button>
+            </div>
+        `;
+        document.body.appendChild(modal);
+    }
+
+    modal.style.cssText = 'display:flex !important; position:fixed; top:0; left:0; width:100vw; height:100vh; background:rgba(0,0,0,0.9); z-index:999999; flex-direction:column; justify-content:center; align-items:center;';
+
+    let log = document.getElementById('log-celular');
+    log.innerHTML = "⏳ Ventana lista. Encendiendo motor...<br>";
+
+    // ==========================================
+    // 🚀 3. ENCENDIDO SEGURO
+    // ==========================================
     setTimeout(() => {
         try {
-            html5QrcodeScannerPrincipal = new Html5Qrcode("lector-qr");
+            html5QrcodeScannerPrincipal = new Html5Qrcode("lector-qr-ventas");
             
-            // Usamos una configuración más estándar para evitar errores de hardware
             html5QrcodeScannerPrincipal.start(
-                { facingMode: "environment" }, 
-                { fps: 10, qrbox: 250 },
-                (decodedText) => {
-                    // Código detectado
+                { facingMode: { ideal: "environment" } }, 
+                {
+                    fps: 15,
+                    qrbox: { width: 250, height: 150 },
+                    formatsToSupport: [ 
+                        Html5QrcodeSupportedFormats.EAN_13, 
+                        Html5QrcodeSupportedFormats.EAN_8, 
+                        Html5QrcodeSupportedFormats.CODE_128,
+                        Html5QrcodeSupportedFormats.UPC_A
+                    ]
+                },
+                (codigoDetectado) => {
+                    if (navigator.vibrate) navigator.vibrate(80);
                     cerrarEscanerCamara();
+                    
                     let input = document.getElementById(destinoInputId);
                     if(input) {
-                        input.value = decodedText;
+                        input.value = codigoDetectado;
                         input.dispatchEvent(new KeyboardEvent('keypress', { key: 'Enter' }));
+                        input.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter' }));
                     }
                 },
-                (err) => { /* Silencioso */ }
-            ).catch(err => {
-                // Si falla, intentamos una vez más de forma genérica
-                console.warn("Falla inicial, intentando modo genérico...");
-                html5QrcodeScannerPrincipal.start(
-                    { facingMode: { ideal: "environment" } }, 
-                    { fps: 10, qrbox: 250 },
-                    (text) => { /* igual al anterior */ },
-                    (err) => { /* Silencioso */ }
-                ).catch(err2 => alert("Error final: " + err2));
+                (error) => { /* Silenciar estática */ }
+            ).then(() => {
+                log.innerHTML += "✅ ¡Cámara conectada con éxito!<br>";
+                log.style.background = "#d4edda";
+                log.style.color = "#155724";
+            }).catch(err => {
+                log.innerHTML += `<br><b>🚨 ERROR:</b> ${err}`;
             });
         } catch (e) {
-            alert("Error: " + e);
+            log.innerHTML += `<br><b>💥 ERROR FATAL:</b> ${e}`;
         }
-    }, 800); // 800ms de espera para que el celular esté listo
+    }, 600); 
 };
 
-
+window.cerrarEscanerCamara = function() {
+    let modal = document.getElementById('modal-camara-ventas');
+    if(modal) modal.style.display = 'none';
+    
+    if (html5QrcodeScannerPrincipal) {
+        html5QrcodeScannerPrincipal.stop().then(() => {
+            html5QrcodeScannerPrincipal = null;
+        }).catch(err => {
+            html5QrcodeScannerPrincipal = null;
+        });
+    }
+};
+// ==========================================
+// 🛑 APAGADO DE EMERGENCIA AL SALIR / RECARGAR
+// ==========================================
+window.addEventListener('beforeunload', () => {
+    if (html5QrcodeScannerPrincipal) {
+        try { html5QrcodeScannerPrincipal.stop(); } catch(e){}
+    }
+    if (typeof apagarCamaraCiego === 'function') {
+        try { apagarCamaraCiego(); } catch(e){}
+    }
+});
 
 // ====================================================================
 // === TECLADO GLOBAL (ATAJOS Y NAVEGACIÓN) ===
