@@ -6452,7 +6452,7 @@ window.abrirEscanerCamara = function(destinoInputId = 'v_cod') {
             html5QrcodeScannerPrincipal = new Html5Qrcode("lector-qr-ventas");
             
             html5QrcodeScannerPrincipal.start(
-                { facingMode: { ideal: "environment" } }, 
+                { facingMode: "environment" }, 
                 {
                     fps: 15,
                     qrbox: { width: 250, height: 150 },
