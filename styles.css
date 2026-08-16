@@ -398,3 +398,168 @@ tbody tr { height: auto !important; }
     position: relative;
     z-index: 1;
 }
+/* ========================================= */
+/* 🌟 TEXTO MODERNO Y ELEGANTE (Tipo Apple)  */
+/* ========================================= */
+
+.panel-der, .panel-der small, .panel-der div {
+    color: #ffffff !important; /* Blanco puro */
+    text-shadow: 0px 2px 5px rgba(0,0,0,0.5) !important; /* Sombra muy sutil, casi invisible */
+    font-weight: 500 !important;
+}
+
+
+
+/* Contador de artículos: Botón de cristal (Glassmorphism) */
+#v_contador_articulos {
+    color: #ffffff !important;
+    background: rgba(255, 255, 255, 0.2) !important; /* Cristal blanco translúcido */
+    backdrop-filter: blur(5px); /* Efecto borroso elegante */
+    -webkit-backdrop-filter: blur(5px);
+    padding: 6px 16px !important;
+    border-radius: 20px !important; /* Bordes redonditos */
+    display: inline-block !important;
+    box-shadow: 0 4px 10px rgba(0,0,0,0.2) !important;
+    margin-top: 10px !important;
+    font-weight: normal !important;
+}
+/* ========================================= */
+/* 📢 MARQUESINA DE PROMOCIONES (Elegante)   */
+/* ========================================= */
+.promo-ticker-container {
+    background: #eff6ff; /* Fondo azul extra clarito para combinar */
+    color: #0d6efd; /* Texto en azul */
+    padding: 8px 0;
+    overflow: hidden;
+    white-space: nowrap;
+    font-size: 13px;
+    border-bottom: 1px solid #cce5ff;
+}
+
+.promo-ticker-text {
+    display: inline-block;
+    padding-left: 100%;
+    animation: marquee 200s linear infinite; /* Movimiento suave */
+}
+
+@keyframes marquee {
+    0% { transform: translate(0, 0); }
+    100% { transform: translate(-100%, 0); }
+}
+/* ========================================= */
+/* 🌟 1. MENÚ BLANCO MODERNO Y LIMPIO        */
+/* ========================================= */
+.tab {
+    background: #ffffff !important;
+    border-bottom: 2px solid #0d6efd !important;
+    display: flex;
+    overflow-x: auto;
+    padding: 0 !important;
+    margin: 0 !important;
+    box-shadow: none !important;
+}
+
+/* Forzamos a todos los botones a perder sus colores viejos y volverse limpios */
+.tab button, .tab .t-btn {
+    background: transparent !important;
+    background-color: transparent !important;
+    color: #666 !important; 
+    border: none !important;
+    padding: 15px 22px !important;
+    margin: 0 !important;
+    font-weight: 700 !important;
+    font-size: 13px !important;
+    letter-spacing: 0.5px;
+    cursor: pointer;
+    transition: all 0.2s ease !important;
+    border-bottom: 3px solid transparent !important;
+    margin-bottom: -2px !important; 
+}
+
+.tab button:hover, .tab .t-btn:hover {
+    color: #0d6efd !important;
+    background: rgba(13, 110, 253, 0.05) !important;
+}
+
+.tab button.active, .tab .t-btn.active {
+    background-color: transparent !important;
+    color: #0d6efd !important; 
+    border-bottom: 3px solid #0d6efd !important; 
+}
+
+/* ========================================= */
+/* 🌟 2. MARQUESINA DE PROMOCIONES           */
+/* ========================================= */
+.promo-ticker-container {
+    background: #002855 !important; 
+    color: #ffffff !important; 
+    padding: 10px 0 !important;
+    overflow: hidden !important;
+    white-space: nowrap !important;
+    font-size: 14px !important;
+    box-shadow: 0 4px 6px rgba(0,0,0,0.1) !important;
+    border: none !important;
+}
+
+.promo-ticker-text {
+    display: inline-block;
+    padding-left: 100%;
+    animation: marquee 50s linear infinite; 
+}
+
+@keyframes marquee {
+    0% { transform: translate(0, 0); }
+    100% { transform: translate(-100%, 0); }
+}
+
+/* ========================================= */
+/* 🌟 3. TEXTOS BLANCOS (PANEL DERECHO)      */
+/* ========================================= */
+.panel-der div:not(.promo-ticker-container), 
+.panel-der span:not(.promo-ticker-text), 
+.panel-der small, 
+.panel-der p {
+    color: #ffffff !important; 
+    text-shadow: 1px 2px 4px rgba(0,0,0,0.9), 0px 4px 10px rgba(0,0,0,0.8) !important;
+    font-weight: 600 !important;
+}
+
+/* ========================================= */
+/* 🌟 4. PRECIO AMARILLO Y BOTÓN AZUL        */
+/* ========================================= */
+#v_total, #v_signo {
+    color: #ffd700 !important; 
+    font-weight: 900 !important;
+    text-shadow: 2px 2px 4px rgba(0,0,0,0.9), 0px 5px 15px rgba(0,0,0,0.8) !important;
+}
+
+.panel-der button {
+    background: #0d6efd !important; 
+    border: 1px solid rgba(255,255,255,0.2) !important;
+    box-shadow: 0 4px 10px rgba(0,0,0,0.5) !important;
+    text-shadow: none !important;
+    color: #ffffff !important;
+    transition: transform 0.1s ease, background 0.2s ease !important;
+}
+
+.panel-der button:hover {
+    filter: brightness(1.2);
+    transform: scale(1.02);
+}
+
+/* ========================================= */
+/* 🌟 5. CONTADOR DE ARTÍCULOS (CRISTAL)     */
+/* ========================================= */
+#v_contador_articulos {
+    color: #ffffff !important;
+    background: rgba(0, 0, 0, 0.65) !important; 
+    backdrop-filter: blur(8px); 
+    -webkit-backdrop-filter: blur(8px);
+    padding: 6px 16px !important;
+    border-radius: 20px !important; 
+    border: 1px solid rgba(255,255,255,0.15) !important; 
+    display: inline-block !important;
+    box-shadow: 0 4px 15px rgba(0,0,0,0.4) !important;
+    margin-top: 10px !important;
+    text-shadow: none !important;
+}

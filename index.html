@@ -120,6 +120,11 @@
         <div style="color:#aaa; font-size:13px; font-weight:bold;">👤 <span id="ui_current_user">N/A</span> | <span style="cursor:pointer; color:var(--danger)" onclick="cerrarSesion()">Salir</span></div>
     </div>
 </div>
+<div class="promo-ticker-container" id="contenedor_ticker" style="display: none;">
+    <div class="promo-ticker-text" id="texto_ticker_promos">
+        <!-- El texto se inyectará automáticamente con JS -->
+    </div>
+</div>
 
 <div id="audi-tab" class="tabcontent" style="display:none; padding:20px; background:#f4f6f9; height: 100vh; overflow-y: auto;">
     <h2 style="margin-top:0; color:#343a40; border-bottom: 3px solid #dc3545; padding-bottom: 10px;">🕵️‍♂️ Panel de Auditoría: Inventarios Pendientes</h2>
@@ -238,10 +243,8 @@
         <div class="panel-der">
             <div id="v_mayoreo_status" onclick="window.toggleMayoreo()" style="font-size:11px; padding:6px 12px; border-radius:20px; font-weight:bold; margin-bottom:15px; background: #444; color: #bbb;">MAYOREO: DESACTIVADO</div>
             <div class="sub-total">TOTAL VENTA (<span class="lbl-suc-act">MATRIZ</span>)</div>
-            <div class="total-big" style="margin-bottom: 15px;">$<span id="v_total">0.00</span></div>
-            <div>
-<i class="fa-solid fa-cart-shopping"></i> Total Artículos: <span id="total_articulos">0</span>
-</div>
+           <div class="total-big" style="margin-bottom: 15px;"><span id="v_signo">$</span><span id="v_total">0.00</span></div>
+            
             <button class="btn-final" style="background:var(--s); height: 70px; font-size: 22px; margin-bottom: 15px; box-shadow: 0 4px 15px rgba(40,167,69,0.4);" onclick="abrirCobro()"><i class="fa-solid fa-cash-register"></i> COBRAR [F12]</button>
             <p style="color:#777; font-size: 12px; margin-top:20px; text-align: right;"><b>[F10]</b> Buscar | <b>[F4]</b> Mayoreo <br><b>[F8]</b> Pausar | <b>[F9]</b> Historial</p>
         </div>
@@ -279,7 +282,8 @@
                 <div><label>P. Venta</label><input type="number" id="c_pv" oninput="calcGananciaDesdeVenta()" onkeydown="focoC(event, 'c_pm', 'c_gan')"></div>
                 <div><label>P. Mayo</label><input type="number" id="c_pm" onkeydown="focoC(event, 'c_md', 'c_pv')"></div>
                 <div><label>Min Mayo</label><input type="number" id="c_md" value="10" onkeydown="focoC(event, 'c_cant', 'c_pm')"></div>
-                
+                <!-- 🌟 ALERTA DE PROMOCIONES EN COMPRAS -->
+<div id="c_promo_alert" style="display: none; background: #fff3cd; color: #856404; border: 1px solid #ffeeba; padding: 12px; margin-bottom: 15px; border-radius: 6px; box-shadow: 0 2px 4px rgba(0,0,0,0.05);"></div>
                 <div style="grid-column: span 3; background: #fff3cd; padding: 15px; border-radius: 8px; border: 1px solid #ffeeba;">
     
     <div style="display:flex; gap:15px; align-items:flex-end;">
@@ -323,14 +327,21 @@
             </table>
         </div>
         
+       
+    <!-- PANEL DERECHO DE COMPRAS -->
         <div class="panel-der">
             <div class="sub-total">CARGA A: <span class="lbl-suc-act">MATRIZ</span></div>
-            <div class="total-big" style="color:var(--warning)">$<span id="c_total_inv">0.00</span></div>
+            
+            <div class="total-big" style="margin-bottom: 15px;">
+                <span style="color: #ffd700 !important; font-weight: 900 !important; text-shadow: 2px 2px 4px rgba(0,0,0,0.9), 0px 5px 15px rgba(0,0,0,0.8) !important;">$</span><span id="c_total_inv" style="color: #ffd700 !important; font-weight: 900 !important; text-shadow: 2px 2px 4px rgba(0,0,0,0.9), 0px 5px 15px rgba(0,0,0,0.8) !important;">0.00</span>
+            </div>
+            
             <button class="btn-final" onclick="finalizarCompra()">FINALIZAR COMPRA [F12]</button>
         </div>
-    </div>
-</div>
+    </div> <!-- Cierra el contenedor de las dos columnas -->
+</div> <!-- Cierra la pestaña completa de Compras -->
 
+<!-- 👇 A PARTIR DE AQUÍ YA DEBE SEGUIR TU OTRA PESTAÑA (Por ejemplo, Proveedores o Inventario) 👇 -->
 <div id="prov-tab" class="tabcontent no-print">
     <div style="padding:25px;">
         <div style="display:flex; justify-content: space-between; align-items: center; margin-bottom:20px;">
@@ -823,68 +834,7 @@
                 <button class="btn-final" style="background:#20c997;" onclick="subirFondos()"><span id="btn_txt_fondos">💾 SUBIR Y APLICAR FOTOS</span></button>
             </div>
 
-<div id="kardex-tab" class="tabcontent" style="display:none; padding:20px; font-family:sans-serif;">
-    <div style="background:white; padding:20px; border-radius:8px; box-shadow:0 2px 10px rgba(0,0,0,0.1);">
-        <h2 style="color:var(--p); margin-top:0;">📊 Kardex de Inventario (Auditoría Global)</h2>
-        <p style="color:#666; font-size:14px;">Monitorea el rastro de cada producto: entradas, salidas, cambios de precio y stock.</p>
-        
-        <div style="display:flex; gap:15px; flex-wrap:wrap; margin-bottom:20px; background:#f8f9fa; padding:15px; border-radius:6px; align-items:flex-end;">
-            <div style="flex:2; min-width:200px;">
-                <label style="display:block; font-weight:bold; font-size:12px; margin-bottom:5px;">🔍 Buscar Producto:</label>
-                <input type="text" id="kardex_buscar" onkeyup="filtrarKardex()" placeholder="Código o Nombre del producto..." style="width:100%; padding:8px; border:1px solid #ccc; border-radius:4px; box-sizing:border-box;">
-            </div>
-            <div style="flex:1; min-width:130px;">
-                <label style="display:block; font-weight:bold; font-size:12px; margin-bottom:5px;">📅 Desde:</label>
-                <input type="date" id="kardex_fecha_ini" onchange="filtrarKardex()" style="width:100%; padding:8px; border:1px solid #ccc; border-radius:4px;">
-            </div>
-            <div style="flex:1; min-width:130px;">
-                <label style="display:block; font-weight:bold; font-size:12px; margin-bottom:5px;">📅 Hasta:</label>
-                <input type="date" id="kardex_fecha_fin" onchange="filtrarKardex()" style="width:100%; padding:8px; border:1px solid #ccc; border-radius:4px;">
-            </div>
-            <div style="flex:1; min-width:150px;">
-                <label style="display:block; font-weight:bold; font-size:12px; margin-bottom:5px;">📍 Sucursal:</label>
-                <select id="kardex_sucursal" onchange="filtrarKardex()" style="width:100%; padding:8px; border:1px solid #ccc; border-radius:4px;"></select>
-            </div>
-            <div style="flex:1; min-width:150px;">
-                <label style="display:block; font-weight:bold; font-size:12px; margin-bottom:5px;">⚙️ Tipo Mvto:</label>
-                <select id="kardex_tipo" onchange="filtrarKardex()" style="width:100%; padding:8px; border:1px solid #ccc; border-radius:4px;">
-                    <option value="">Todos</option>
-                    <option value="CARGA INICIAL">Carga Inicial</option>
-                    <option value="VENTA">Venta</option>
-                    <option value="COMPRA">Compra</option>
-                    <option value="TRANSFERENCIA (SALIDA)">Envío (Salida)</option>
-                    <option value="TRANSFERENCIA (ENTRADA)">Recepción (Entrada)</option>
-                    <option value="EDICIÓN">Edición Manual</option>
-                    <option value="AJUSTE">Ajuste de Stock</option>
-                    <option value="AUDITORÍA INVENTARIO">Auditoría</option>
-                    <option value="ANULACIÓN">Anulación de Venta</option>
-                </select>
-            </div>
-        </div>
 
-        <div style="overflow-x:auto; max-height:500px;">
-            <table style="width:100%; border-collapse:collapse; font-size:13px; text-align:left;">
-                <thead style="background:var(--p); color:white; position:sticky; top:0;">
-                    <tr>
-                        <th style="padding:10px;">Fecha / Hora</th>
-                        <th style="padding:10px;">Producto</th>
-                        <th style="padding:10px;">Movimiento</th>
-                        <th style="padding:10px; text-align:center;">Cant.</th>
-                        <th style="padding:10px; text-align:center; background:rgba(0,0,0,0.1);">Stock Antes</th>
-                <th style="padding:10px; text-align:center; background:rgba(0,0,0,0.2);">Stock Después</th>
-                        <th style="padding:10px; text-align:right;">Precio Vta.</th>
-                        <th style="padding:10px; text-align:right;">Costo</th>
-                        <th style="padding:10px;">Sucursal</th>
-                        <th style="padding:10px;">Usuario / Cajero</th>
-                    </tr>
-                </thead>
-                <tbody id="kardex_tabla_body">
-                    <tr><td colspan="8" style="text-align:center; padding:20px; color:#999;">Escribe en el buscador o selecciona un filtro para auditar los movimientos.</td></tr>
-                </tbody>
-            </table>
-        </div>
-    </div>
-</div>
 
 <div id="modalImport" class="modal">
     <div class="modal-content" style="width:650px">
@@ -1111,7 +1061,7 @@
                 <tbody id="visor_items"></tbody>
             </table>
             <div class="total-gigante" style="border-top: 2px dashed #000; margin-top: 10px; padding-top: 10px; text-align: right;">
-                <b>TOTAL: $<span id="visor_total">0.00</span></b>
+                <b>TOTAL: >$</span><span id="visor_total">0.00</span></b>
             </div>
             <div style="text-align: left; margin-top: 5px;">
                 PAGO: <span id="visor_metodo"></span><br>
@@ -1158,7 +1108,7 @@
                 <tbody id="visor_compras_items"></tbody>
             </table>
             <div class="total-gigante" style="border-top: 2px dashed #000; margin-top: 10px; padding-top: 10px; text-align: right;">
-                <b>TOTAL: $<span id="visor_compras_total">0.00</span></b>
+                <b>TOTAL: >$</span><span id="visor_compras_total">0.00</span></b>
             </div>
         </div>
        <div class="no-print" style="display: flex; gap: 10px; margin-top: 20px;">
@@ -1376,11 +1326,16 @@
     </div>
 </div>
 
-<div id="modal_escaner" style="display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.85); z-index:99999; justify-content:center; align-items:center; flex-direction:column;">
-    <div style="background:white; padding:15px; border-radius:10px; width:95%; max-width:400px; text-align:center; box-shadow: 0 5px 15px rgba(0,0,0,0.5);">
-        <h3 style="margin-top:0; color: var(--p);">📸 Escanear Producto</h3>
-        <div id="lector_camara" style="width:100%; min-height: 250px;"></div>
-        <button onclick="cerrarEscanerCamara()" style="margin-top:15px; padding:10px 20px; background:#dc3545; color:white; border:none; border-radius:5px; cursor:pointer; font-size: 16px; font-weight: bold; width: 100%;">❌ Cancelar / Cerrar</button>
+<!-- MODAL FLOTANTE DE ESCÁNER DE CÁMARA -->
+<div id="modal_escaner" style="display: none; position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; background: rgba(0, 0, 0, 0.85); z-index: 999999; justify-content: center; align-items: center; flex-direction: column;">
+    <div style="background: white; padding: 20px; border-radius: 12px; max-width: 420px; width: 90%; text-align: center; box-shadow: 0 10px 30px rgba(0,0,0,0.5);">
+        <h3 style="margin-top: 0; color: #333;"><i class="fa-solid fa-camera"></i> Escanear Código de Barras</h3>
+        
+        <div id="lector_camara" style="width: 100%; min-height: 250px; border-radius: 8px; overflow: hidden; background: #000;"></div>
+        
+        <button onclick="window.cerrarEscanerCamara()" style="margin-top: 15px; background: #dc3545; color: white; border: none; padding: 10px 20px; border-radius: 6px; font-weight: bold; cursor: pointer; width: 100%;">
+            ❌ Cancelar / Cerrar
+        </button>
     </div>
 </div>
 
@@ -1773,6 +1728,129 @@
         </button>
 
     </div>
+</div>
+<div id="kardex-tab" class="tabcontent" style="display:none; padding:20px; font-family:sans-serif;">
+
+    <div style="background:white; padding:20px; border-radius:8px; box-shadow:0 2px 10px rgba(0,0,0,0.1);">
+
+        <h2 style="color:var(--p); margin-top:0;">📊 Kardex de Inventario (Auditoría Global)</h2>
+
+        <p style="color:#666; font-size:14px;">Monitorea el rastro de cada producto: entradas, salidas, cambios de precio y stock.</p>
+
+       
+
+        <div style="display:flex; gap:15px; flex-wrap:wrap; margin-bottom:20px; background:#f8f9fa; padding:15px; border-radius:6px; align-items:flex-end;">
+
+            <div style="flex:2; min-width:200px;">
+
+                <label style="display:block; font-weight:bold; font-size:12px; margin-bottom:5px;">🔍 Buscar Producto:</label>
+
+                <input type="text" id="kardex_buscar" onkeyup="filtrarKardex()" placeholder="Código o Nombre del producto..." style="width:100%; padding:8px; border:1px solid #ccc; border-radius:4px; box-sizing:border-box;">
+
+            </div>
+
+            <div style="flex:1; min-width:130px;">
+
+                <label style="display:block; font-weight:bold; font-size:12px; margin-bottom:5px;">📅 Desde:</label>
+
+                <input type="date" id="kardex_fecha_ini" onchange="filtrarKardex()" style="width:100%; padding:8px; border:1px solid #ccc; border-radius:4px;">
+
+            </div>
+
+            <div style="flex:1; min-width:130px;">
+
+                <label style="display:block; font-weight:bold; font-size:12px; margin-bottom:5px;">📅 Hasta:</label>
+
+                <input type="date" id="kardex_fecha_fin" onchange="filtrarKardex()" style="width:100%; padding:8px; border:1px solid #ccc; border-radius:4px;">
+
+            </div>
+
+            <div style="flex:1; min-width:150px;">
+
+                <label style="display:block; font-weight:bold; font-size:12px; margin-bottom:5px;">📍 Sucursal:</label>
+
+                <select id="kardex_sucursal" onchange="filtrarKardex()" style="width:100%; padding:8px; border:1px solid #ccc; border-radius:4px;"></select>
+
+            </div>
+
+            <div style="flex:1; min-width:150px;">
+
+                <label style="display:block; font-weight:bold; font-size:12px; margin-bottom:5px;">⚙️ Tipo Mvto:</label>
+
+                <select id="kardex_tipo" onchange="filtrarKardex()" style="width:100%; padding:8px; border:1px solid #ccc; border-radius:4px;">
+
+                    <option value="">Todos</option>
+
+                    <option value="CARGA INICIAL">Carga Inicial</option>
+
+                    <option value="VENTA">Venta</option>
+
+                    <option value="COMPRA">Compra</option>
+
+                    <option value="TRANSFERENCIA (SALIDA)">Envío (Salida)</option>
+
+                    <option value="TRANSFERENCIA (ENTRADA)">Recepción (Entrada)</option>
+
+                    <option value="EDICIÓN">Edición Manual</option>
+
+                    <option value="AJUSTE">Ajuste de Stock</option>
+
+                    <option value="AUDITORÍA INVENTARIO">Auditoría</option>
+
+                    <option value="ANULACIÓN">Anulación de Venta</option>
+
+                </select>
+
+            </div>
+
+        </div>
+
+
+
+        <div style="overflow-x:auto; max-height:500px;">
+
+            <table style="width:100%; border-collapse:collapse; font-size:13px; text-align:left;">
+
+                <thead style="background:var(--p); color:white; position:sticky; top:0;">
+
+                    <tr>
+
+                        <th style="padding:10px;">Fecha / Hora</th>
+
+                        <th style="padding:10px;">Producto</th>
+
+                        <th style="padding:10px;">Movimiento</th>
+
+                        <th style="padding:10px; text-align:center;">Cant.</th>
+
+                        <th style="padding:10px; text-align:center; background:rgba(0,0,0,0.1);">Stock Antes</th>
+
+                <th style="padding:10px; text-align:center; background:rgba(0,0,0,0.2);">Stock Después</th>
+
+                        <th style="padding:10px; text-align:right;">Precio Vta.</th>
+
+                        <th style="padding:10px; text-align:right;">Costo</th>
+
+                        <th style="padding:10px;">Sucursal</th>
+
+                        <th style="padding:10px;">Usuario / Cajero</th>
+
+                    </tr>
+
+                </thead>
+
+                <tbody id="kardex_tabla_body">
+
+                    <tr><td colspan="8" style="text-align:center; padding:20px; color:#999;">Escribe en el buscador o selecciona un filtro para auditar los movimientos.</td></tr>
+
+                </tbody>
+
+            </table>
+
+        </div>
+
+    </div>
+
 </div>
 </body>
 </html>

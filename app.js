@@ -571,39 +571,45 @@ db.collection("compras_pausadas").onSnapshot((querySnapshot) => {
 // 🟢 RADAR ÚNICO DE VENTAS PAUSADAS
 // CONSERVA TODAS LAS SUCURSALES
 // =========================================================
-
 db.collection("pausadas").onSnapshot((querySnapshot) => {
-
-    console.log("📡 RADAR PAUSADAS ACTIVADO");
-    console.log("📡 SNAPSHOT:", querySnapshot);
-
+    // console.log("📡 RADAR PAUSADAS ACTIVADO");
+    
     let nuevasPausadas = [];
-
     if (!querySnapshot) return;
 
     querySnapshot.forEach((doc) => {
-
-        console.log("📄 DOC:", doc);
-
-        let venta =
-            typeof doc.data === "function"
-                ? doc.data()
-                : doc;
-
-        console.log("📦 VENTA:", venta);
-
+        let venta = typeof doc.data === "function" ? doc.data() : doc;
         if (!venta) return;
-
+        
+        // Blindaje de seguridad para asegurar que el ID siempre exista
+        if (!venta.id) venta.id = doc.id;
+        
         nuevasPausadas.push(venta);
-
     });
 
-    console.log("📊 RECIBIDAS:", nuevasPausadas);
+    // 🌟 1. RESTAURAMOS EL PUENTE
+    pausadas = nuevasPausadas;
 
-    // IMPORTANTE:
-    // TEMPORALMENTE NO TOCAR pausadas
-    // pausadas = nuevasPausadas;
+    // 🌟 2. GUARDAMOS EL RESPALDO LOCAL
+    localStorage.setItem("pos_pausadas_v6", JSON.stringify(pausadas));
 
+    // 🌟 3. AVISAMOS A LA PANTALLA QUE ACTUALICE EL CONTADOR
+    if (typeof actualizarContadorPausadas === 'function') {
+        actualizarContadorPausadas();
+    }
+
+    // 🌟 4. SI EL MODAL ESTÁ ABIERTO, LO REDIBUJAMOS EN TIEMPO REAL
+    let modal = document.getElementById('modalPausadas');
+    if (modal && modal.style.display === 'block' && typeof abrirPausadas === 'function') {
+        // Ejecutamos abrirPausadas() pasivamente para que aplique los filtros de sucursal
+        let sucLimpia = String(typeof sucursalActual !== 'undefined' ? sucursalActual : '').replace(/📍/g, '').trim();
+        pausadasFiltradas = pausadas.filter(p => {
+            if(!p || p.nom === "FANTASMA") return false;
+            if(!p.sucursal) return true;
+            return (String(p.sucursal).replace(/📍/g, '').trim() === sucLimpia);
+        });
+        if (typeof renderTablaPausadas === 'function') renderTablaPausadas();
+    }
 });
 // Configuración de Ticket
 db.collection("config").doc("ticket").onSnapshot((doc) => {
@@ -692,31 +698,40 @@ function updateClock() {
 // ====================================================================
 window.cargarFondosDesdeNube = async function() {
     try {
-        // En lugar de buscar un ID vacío (que causaba el 404), traemos el primer registro existente
-        const records = await pb.collection('config_visual').getFullList({ requestKey: null });
+        // 🔥 ANTI-CACHÉ ABSOLUTO: Le ordenamos a la base de datos que traiga la información más reciente
+        const records = await pb.collection('config_visual').getFullList({ 
+            requestKey: null,
+            sort: '-updated' // <-- Esto fuerza a que siempre lea el cambio más nuevo
+        });
+
         if (records.length > 0) {
             const record = records[0];
+            let tiempoExacto = new Date().getTime(); // Número único para engañar a la imagen
             
-            // Fondo Login
+            // 1. Fondo Login
             if (record.fondo_login) {
-                let urlLogin = pb.files.getUrl(record, record.fondo_login);
+                let urlLogin = pb.files.getUrl(record, record.fondo_login) + '?t=' + tiempoExacto;
                 let bgLogin = document.getElementById('login-screen');
-                if(bgLogin) bgLogin.style.backgroundImage = `linear-gradient(rgba(0,0,0,0.6), rgba(0,0,0,0.6)), url('${urlLogin}')`;
+                if(bgLogin) {
+                    bgLogin.style.backgroundImage = `linear-gradient(rgba(0,0,0,0.6), rgba(0,0,0,0.6)), url('${urlLogin}')`;
+                }
             }
             
-            // Fondo Panel Derecho
+            // 2. Fondo Panel Derecho (Con Efecto Cine / Fade)
             if (record.fondo_panel) {
-                let urlPanel = pb.files.getUrl(record, record.fondo_panel);
+                let urlPanel = pb.files.getUrl(record, record.fondo_panel) + '?t=' + tiempoExacto;
+                
                 document.querySelectorAll('.panel-der').forEach(panel => {
-                    // Usamos un degradado del 80% para que los números siempre sean legibles
-                    panel.style.backgroundImage = `linear-gradient(rgba(0, 0, 0, 0.8), rgba(0, 0, 0, 0.8)), url('${urlPanel}')`;
+                    // Inyectamos el degradado (oscuro abajo, transparente arriba) y la imagen nueva
+                    panel.style.backgroundImage = `linear-gradient(to bottom, rgba(0,0,0,0) 0%, rgba(0,0,0,0.2) 40%, rgba(0,0,0,0.85) 75%, rgba(0,0,0,0.95) 100%), url('${urlPanel}')`;
                     panel.style.backgroundSize = "cover";
                     panel.style.backgroundPosition = "center";
+                    panel.style.backgroundRepeat = "no-repeat"; // Protege para que no se formen mosaicos
                 });
             }
         }
     } catch (e) {
-        console.warn("⚠️ No se pudieron cargar los fondos. Verifica las reglas de API.", e);
+        console.warn("⚠️ Error al consultar el diseño visual a la base de datos:", e);
     }
 };
 
@@ -798,66 +813,71 @@ window.onload = () => {
     if (typeof renderKardex === 'function') window.renderKardex();
 };
 
-// ==========================================
-// CAMBIO DE PESTAÑAS (MENÚ PRINCIPAL)
-// ==========================================
+// =========================================================================
+// 🔀 ENRUTADOR PRINCIPAL (AUTO-RESCATE INFALIBLE)
+// =========================================================================
 window.changeTab = function(evt, tabName) {
     try {
-        // 1. Escondemos todas las pestañas
-        let tabcontent = document.getElementsByClassName("tabcontent");
-        for (let i = 0; i < tabcontent.length; i++) {
-            tabcontent[i].style.display = "none";
+        // 🚀 0. AUTO-RESCATE NIVEL DIOS: Extrae el Kardex de donde esté y lo pone junto a Ventas
+        let tabKardex = document.getElementById('kardex-tab');
+        let tabVentas = document.getElementById('v-tab') || document.querySelector('.tabcontent');
+        
+        if (tabKardex && tabVentas && tabKardex.parentElement !== tabVentas.parentElement) {
+            tabVentas.parentElement.appendChild(tabKardex);
+            console.log("✅ Kardex liberado del calabozo HTML y reubicado.");
         }
 
-        // 2. Le quitamos el color de "activo" a todos los botones
-        let tablinks = document.getElementsByClassName("t-btn");
-        for (let i = 0; i < tablinks.length; i++) {
-            tablinks[i].className = tablinks[i].className.replace(" active", "");
-        }
+        // 1. Ocultar estrictamente SOLO los contenedores de contenido
+        document.querySelectorAll('.tabcontent').forEach(tab => {
+            tab.style.display = "none";
+        });
 
-        // 3. Mostramos la pestaña que el usuario pidió
-        let tabSeleccionada = document.getElementById(tabName);
-        if (tabSeleccionada) {
-            tabSeleccionada.style.display = "block";
-        }
-        tabActual = tabName;
+        // 2. Remover el estado visual activo solo de los botones de pestaña
+        document.querySelectorAll('.t-btn').forEach(btn => {
+            btn.classList.remove('active');
+        });
 
-        // 4. Iluminamos el botón presionado
+        // 3. Encender exclusivamente la pestaña solicitada
+        let tabDestino = document.getElementById(tabName);
+        if (tabDestino) {
+            tabDestino.style.display = "block";
+        }
+        window.tabActual = tabName;
+
+        // 4. Iluminar el botón presionado
         if (evt && evt.currentTarget) {
-             evt.currentTarget.className += " active";
+            evt.currentTarget.classList.add('active');
         } else {
-             let btn = document.getElementById('btn_' + tabName);
-             if (btn) btn.className += " active";
+            let btn = document.getElementById('btn_' + tabName);
+            if (btn) btn.classList.add('active');
         }
 
-        // 🚀 LA MAGIA: Si el usuario abrió el Kardex, lo dibujamos
+        // 5. Disparadores de ciclo de vida por módulo (Silenciosos)
         if (tabName === 'kardex-tab' && typeof window.renderKardex === 'function') {
             window.renderKardex();
         }
-        // 📋 DETECTOR: Si el admin abre Auditorías, cargamos los datos de inmediato
-if (tabName === 'audi-tab' && typeof cargarBorradoresPendientes === 'function') {
-    cargarBorradoresPendientes();
-}
+        if (tabName === 'audi-tab' && typeof cargarBorradoresPendientes === 'function') {
+            cargarBorradoresPendientes();
+        }
 
-        // 🎯 NUEVO: Posicionar el cursor automáticamente
+        // 6. Autoenfoque inteligente del cursor
         setTimeout(() => {
             let inputObjetivo = null;
             
-            if (tabName === 'v-tab') inputObjetivo = document.getElementById('v_cod'); // Ventas
-            else if (tabName === 'c-tab') inputObjetivo = document.getElementById('c_cod'); // Compras
-            else if (tabName === 'i-tab') inputObjetivo = document.getElementById('buscar_inv'); // Inventario
+            if (tabName === 'v-tab' || tabName === 'ventas-tab') inputObjetivo = document.getElementById('v_cod');
+            else if (tabName === 'c-tab' || tabName === 'compras-tab') inputObjetivo = document.getElementById('c_cod');
+            else if (tabName === 'i-tab' || tabName === 'inv-tab') inputObjetivo = document.getElementById('buscar_inv');
+            else if (tabName === 'kardex-tab') inputObjetivo = document.getElementById('kardex_buscar');
 
-            // Si existe la casilla, ponemos el cursor sin que la pantalla salte
             if (inputObjetivo) {
                 inputObjetivo.focus({ preventScroll: true });
             }
-        }, 100); // Esperamos una fracción de segundo a que la pestaña esté 100% visible
+        }, 100);
 
     } catch (error) {
-        console.error("Error al cambiar de pestaña:", error);
+        console.error("❌ Error al cambiar de pestaña:", error);
     }
 };
-
 function cerrarModales() { 
     document.querySelectorAll('.modal').forEach(m => m.style.display = 'none'); 
     setTimeout(() => { 
@@ -916,6 +936,7 @@ window.intentarLogin = function() {
             if(document.getElementById('corte_sucursal')) document.getElementById('corte_sucursal').disabled = false;
             if(document.getElementById('t_origen')) document.getElementById('t_origen').disabled = false;
         } else { 
+            // Bloqueamos el selector para que el cajero solo opere en la sucursal donde hizo login
             document.getElementById('ui_sucursal').disabled = true; 
             if(document.getElementById('corte_sucursal')) document.getElementById('corte_sucursal').disabled = true;
             if(document.getElementById('t_origen')) document.getElementById('t_origen').disabled = true;
@@ -939,13 +960,11 @@ window.intentarLogin = function() {
             let misPermisos = usuariosData[u].permisos || []; 
             let esAdmin = (u === "Admin");
 
-            // 1. Control del Botón "Hacer Inventario Ciego"
             let btnInvCiego = document.getElementById('btn_hacer_inv_ciego');
             if (btnInvCiego) {
                 btnInvCiego.style.display = (esAdmin || misPermisos.includes('inv_ciego')) ? 'inline-block' : 'none';
             }
 
-            // 2. Control de la Pestaña "Auditorías"
             let btnAuditoria = document.getElementById('btn_audi-tab');
             if (btnAuditoria) {
                 btnAuditoria.style.display = (esAdmin || misPermisos.includes('auditoria')) ? 'inline-block' : 'none';
@@ -959,33 +978,38 @@ window.intentarLogin = function() {
         
         if(allowedTabs.length > 0) { document.getElementById('btn_' + allowedTabs[0]).click(); }
         
-        renderI();
-        renderCorte(); 
+        if(typeof renderI === 'function') renderI();
+        if(typeof renderCorte === 'function') renderCorte(); 
         document.getElementById('login_pin').value = '';
 
 
         // =================================================================
-        // 🏪 🚨 VERIFICACIÓN AUTOMÁTICA DE TURNO / CAJA AL ENTRAR (SINCRONIZADO)
+        // 🏪 🚨 AUTO-ROAMING DE TURNO (MULTISUCURSAL)
         // =================================================================
         setTimeout(async () => {
             let sucNombre = String(typeof sucursalActual !== 'undefined' ? sucursalActual : "Matriz").replace(/📍/g, '').trim();
 
             try {
-                // 1. PREGUNTAMOS A POCKETBASE SI HAY UN TURNO ABIERTO EN ESTA SUCURSAL
-                let urlSesion = `https://sexy-starling.pikapod.net/api/collections/cajas_sesiones/records?filter=(estado='abierta'%20%26%26%20sucursal='${sucNombre}')&sort=-created&limit=1&_t=${Date.now()}`;
+                // 🌟 BUSCAMOS EL TURNO EXCLUSIVO DEL CAJERO (Sin importar dónde lo abrió)
+                let urlSesion = `https://sexy-starling.pikapod.net/api/collections/cajas_sesiones/records?filter=(estado='abierta'%20%26%26%20cajero='${u}')&sort=-created&limit=1&_t=${Date.now()}`;
                 let res = await fetch(urlSesion, { cache: 'no-store' });
                 
                 if (res.ok) {
                     let data = await res.json();
                     if (data.items && data.items.length > 0) {
-                        // ¡Encontramos un turno vivo en la nube! Lo inyectamos al dispositivo actual
                         let sesionNube = data.items[0];
-                        window.sesionCajaActual = sesionNube.data || sesionNube;
                         
+                        // 🌟 ENGANCHE AUTOMÁTICO SILENCIOSO
+                        window.sesionCajaActual = sesionNube.data || sesionNube;
                         try { localStorage.setItem("pos_sesion_caja", JSON.stringify(window.sesionCajaActual)); } catch(e){}
-                        console.log("✅ Conectado a la sesión activa en la nube:", window.sesionCajaActual.id);
+                        
+                        console.log("✅ Turno flotante enlazado:", window.sesionCajaActual.id);
+                        
+                        if (typeof mostrarAvisoRapido === 'function') {
+                            mostrarAvisoRapido(`✅ Turno sincronizado automáticamente.`);
+                        }
                     } else {
-                        // Si no hay en la nube, borramos cualquier fantasma local
+                        // Si no hay turnos a su nombre, limpiamos su memoria
                         window.sesionCajaActual = null;
                         try { localStorage.removeItem("pos_sesion_caja"); } catch(e){}
                     }
@@ -993,32 +1017,22 @@ window.intentarLogin = function() {
             } catch(e) {
                 console.error("Error al buscar sesión en la nube:", e);
             }
-            // 2. ACTUALIZAMOS LA INTERFAZ CON LA SESIÓN CORRECTA
+            
+            // ACTUALIZAMOS LA UI VISUAL (BOTONES ROJO Y VERDE)
             if (typeof actualizarIndicadorTurnoUI === 'function') {
                 actualizarIndicadorTurnoUI();
             }
             
-            // 💧 ACTIVAMOS LA MARCA DE AGUA AL ENTRAR
             if (typeof actualizarMarcaDeAgua === 'function') {
                 actualizarMarcaDeAgua();
             }
 
-            // 2. ACTUALIZAMOS LA INTERFAZ CON LA SESIÓN CORRECTA
-            if (typeof actualizarIndicadorTurnoUI === 'function') {
-                actualizarIndicadorTurnoUI();
-            }
-
-            // 3. SI DESPUÉS DE PREGUNTAR A LA NUBE SIGUE SIN HABER SESIÓN, LE PEDIMOS ABRIR UNA
+            // SI ESTÁ CERRADO, AHÍ SÍ LE PREGUNTAMOS SI QUIERE ABRIR UNO NUEVO
             if (!window.sesionCajaActual || window.sesionCajaActual.estado !== 'abierta') {
-                let deseaAbrir = confirm(`🏪 ¡Hola ${u}!\n\nLa caja de la sucursal [ ${sucNombre} ] se encuentra CERRADA.\n\n¿Deseas INICIAR TURNO e ingresar el Fondo Inicial de caja ahora?`);
+                let deseaAbrir = confirm(`🏪 No tienes ningún turno abierto, ${u}.\n\n¿Deseas INICIAR TURNO e ingresar el Fondo Inicial ahora?`);
                 
                 if (deseaAbrir && typeof abrirMontoInicialCaja === 'function') {
                     abrirMontoInicialCaja();
-                }
-            } else {
-                // Notificamos sutilmente que se unió al turno existente
-                if (typeof mostrarAvisoRapido === 'function') {
-                    mostrarAvisoRapido(`✅ Turno sincronizado.\nConectado a la caja de ${sucNombre}.`);
                 }
             }
         }, 400);
@@ -1026,7 +1040,7 @@ window.intentarLogin = function() {
     } else { 
         alert("PIN Incorrecto"); 
     }
-}
+};
 window.actualizarMarcaDeAgua = async function() {
     let nombreSucursal = String(typeof sucursalActual !== 'undefined' ? sucursalActual : "Matriz").replace(/📍/g, '').trim();
     
@@ -2001,7 +2015,7 @@ window.renderV = function() {
         }).join(''); 
 
         t = Math.round(t * 2) / 2; 
-        document.getElementById('v_total').innerText = t.toFixed(2); 
+       document.getElementById('v_total').innerText = t.toFixed(2);
 
         // Contador de Artículos
         let totalArticulos = carV.reduce((acc, x) => acc + (parseFloat(x.can) || 1), 0);
@@ -2284,7 +2298,42 @@ async function actualizarAcumuladorDiario(venta, esAnulacion = false) {
     db.collection("resumenes_diarios").doc(docId).set(acumulador);
     console.log(`📊 Acumulador Analítico [${docId}] actualizado en tiempo real.`);
 }
+// =========================================================================
+// 📦 LECTOR UNIVERSAL DE STOCK MULTI-SUCURSAL
+// =========================================================================
+function obtenerStockRealSucursal(prod, suc) {
+    if (!prod) return 0;
+    let s = String(suc || (typeof sucursalActual !== 'undefined' ? sucursalActual : 'Matriz')).replace(/📍/g, '').trim();
 
+    // 1. Búsqueda en mapas anidados de sucursales
+    if (prod.sucursales && typeof prod.sucursales === 'object') {
+        let val = prod.sucursales[s];
+        if (val !== undefined) return typeof val === 'object' ? (parseFloat(val.can || val.stock || 0)) : (parseFloat(val) || 0);
+    }
+    if (prod.stock_sucursales && typeof prod.stock_sucursales === 'object') {
+        let val = prod.stock_sucursales[s];
+        if (val !== undefined) return parseFloat(val) || 0;
+    }
+    if (prod.existencias && typeof prod.existencias === 'object') {
+        let val = prod.existencias[s];
+        if (val !== undefined) return parseFloat(val) || 0;
+    }
+    if (prod.stock && typeof prod.stock === 'object') {
+        let val = prod.stock[s];
+        if (val !== undefined) return parseFloat(val) || 0;
+    }
+
+    // 2. Búsqueda por llaves compuestas dinámicas
+    if (prod['can_' + s] !== undefined) return parseFloat(prod['can_' + s]) || 0;
+    if (prod['stock_' + s] !== undefined) return parseFloat(prod['stock_' + s]) || 0;
+
+    // 3. Fallback a stock general plano
+    if (prod.can !== undefined) return parseFloat(prod.can) || 0;
+    if (prod.stock !== undefined && typeof prod.stock !== 'object') return parseFloat(prod.stock) || 0;
+    if (prod.existencia !== undefined) return parseFloat(prod.existencia) || 0;
+
+    return 0;
+}
 
 // ====================================================================
 // 🛒 CONFIRMAR VENTA (CONECTADA AL ACUMULADOR)
@@ -2301,7 +2350,7 @@ window.confirmarVenta = async function(cambioFinal = 0) {
         let sumaEntregada = 0;
         let nombresClientes = [];
 
-        // 🌟 1. CREAMOS EL ID DE LA VENTA AQUÍ ARRIBA (UNO SOLO PARA TODO) 🌟
+        // 🌟 1. ID ÚNICO DE LA VENTA
         let idVentaNueva = Date.now() + Math.floor(Math.random()*1000);
 
         if (Array.isArray(pagosActuales) && pagosActuales.length > 0) {
@@ -2311,7 +2360,6 @@ window.confirmarVenta = async function(cambioFinal = 0) {
                 let metodoLimpio = p.metodo ? p.metodo.trim().toLowerCase() : '';
                 
                 if(metodoLimpio === 'crédito' || metodoLimpio === 'credito') {
-                    
                     let telCliente = p.cliente_tel || (typeof window.telVentaActual !== 'undefined' ? window.telVentaActual : null);
                     
                     if (!telCliente || !clientes[telCliente]) {
@@ -2339,7 +2387,6 @@ window.confirmarVenta = async function(cambioFinal = 0) {
                     let fechaHoy = (typeof getFechaLocal === 'function') ? getFechaLocal() : new Date().toISOString().split('T')[0];
                     let horaActual = new Date().toLocaleTimeString();
                     
-                    // 🌟 2. USAMOS EL MISMO ID PARA EL HISTORIAL DEL CLIENTE 🌟
                     c.historial.push({
                         detalle: "Ticket #" + idVentaNueva,
                         fecha: fechaHoy,
@@ -2371,31 +2418,54 @@ window.confirmarVenta = async function(cambioFinal = 0) {
         let metodosStr = (pagosActuales.length > 0) ? pagosActuales.map(p => p.metodo).join(' + ') : 'Efectivo';
 
         let hoy = (typeof getFechaLocal === 'function') ? getFechaLocal() : new Date().toISOString().split('T')[0];
-        let itemsTicketHtml = ''; let detallesParaGuardar = [];
+        let horaVenta = new Date().toLocaleTimeString();
+        let itemsTicketHtml = ''; 
+        let detallesParaGuardar = [];
         let sumaTotalCobrada = 0;
+
+        let suc = typeof sucursalActual !== 'undefined' ? sucursalActual : '';
+        let usr = typeof usuarioActual !== 'undefined' ? usuarioActual : '';
 
         for (let x of carV) { 
             let pOriginal = inv[x.cod] || {}; 
             let codMaestro = x.maestro_cod || (pOriginal.grupo && inv[pOriginal.grupo] ? pOriginal.grupo : x.cod);
             let pMaestro = inv[codMaestro] || pOriginal;
 
+            let cantVendida = parseFloat(x.can) || 1;
+
+            // 🌟 1. LECTURA PRECISA DEL STOCK ANTES DEL COBRO
+            let stockAntes = obtenerStockRealSucursal(pMaestro, suc);
+            if (stockAntes === 0 && pOriginal) {
+                stockAntes = obtenerStockRealSucursal(pOriginal, suc);
+            }
+
+            // 🌟 2. EJECUCIÓN DEL DESCUENTO DE STOCK
             if(pOriginal.tipo === 'kit') { 
                 if(pOriginal.comp) pOriginal.comp.forEach(c => { 
                     let compMaestro = (inv[c.cod] && inv[c.cod].grupo && inv[inv[c.cod].grupo]) ? inv[c.cod].grupo : c.cod;
-                    if(typeof descontarStock === 'function') descontarStock(compMaestro, (c.can || 1) * (x.can || 1)); 
+                    if(typeof descontarStock === 'function') descontarStock(compMaestro, (c.can || 1) * cantVendida); 
                 }); 
             } else { 
-                if(typeof descontarStock === 'function') descontarStock(codMaestro, x.can || 1); 
+                if(typeof descontarStock === 'function') descontarStock(codMaestro, cantVendida); 
             }
             
+            // 🌟 3. LECTURA DEL STOCK DESPUÉS DEL COBRO
+            let stockDespues = obtenerStockRealSucursal(pMaestro, suc);
+            // Si descontarStock opera de forma diferida en memoria, calculamos la paridad matemática exacta:
+            if (stockDespues === stockAntes) {
+                stockDespues = stockAntes - cantVendida;
+            }
+
             let minM = pMaestro.md || 10; 
             let precioVentaNormal = pMaestro.pv || 0;
-            if (pMaestro.pre_sucursales && typeof sucursalActual !== 'undefined' && pMaestro.pre_sucursales[sucursalActual] !== undefined) precioVentaNormal = pMaestro.pre_sucursales[sucursalActual];
+            if (pMaestro.pre_sucursales && typeof sucursalActual !== 'undefined' && pMaestro.pre_sucursales[sucursalActual] !== undefined) {
+                precioVentaNormal = pMaestro.pre_sucursales[sucursalActual];
+            }
             let precioMayoreo = pMaestro.pm || precioVentaNormal;
 
-            let aplicaMayoreo = (typeof forceWholesale !== 'undefined' && forceWholesale) && ((x.can||1) >= minM); 
-            let subtotalNormal = (x.can||1) * precioVentaNormal;
-            let subtotalMayoreo = aplicaMayoreo ? ((x.can||1) * precioMayoreo) : subtotalNormal;
+            let aplicaMayoreo = (typeof forceWholesale !== 'undefined' && forceWholesale) && (cantVendida >= minM); 
+            let subtotalNormal = cantVendida * precioVentaNormal;
+            let subtotalMayoreo = aplicaMayoreo ? (cantVendida * precioMayoreo) : subtotalNormal;
 
             let subtotalPromo = subtotalNormal;
             let promoActiva = null;
@@ -2405,16 +2475,16 @@ window.confirmarVenta = async function(cambioFinal = 0) {
 
             if (promoActiva) {
                 if (promoActiva.tipo === 'desc') {
-                    let cantA = x.can||1; 
+                    let cantA = cantVendida; 
                     if((promoActiva.limite||0) > 0) { 
                         let disp = promoActiva.limite - (promoActiva.usadas||0); 
                         if(cantA > disp) cantA = disp; 
                     } 
-                    subtotalPromo = (cantA * (precioVentaNormal * (1 - (promoActiva.desc||0)/100))) + (((x.can||1) - cantA) * precioVentaNormal); 
+                    subtotalPromo = (cantA * (precioVentaNormal * (1 - (promoActiva.desc||0)/100))) + ((cantVendida - cantA) * precioVentaNormal); 
                 } else if (promoActiva.tipo === 'nxm') {
                     let nVal = promoActiva.n || 1; 
-                    let grupos = Math.floor((x.can||1) / nVal); 
-                    let sueltos = (x.can||1) % nVal; 
+                    let grupos = Math.floor(cantVendida / nVal); 
+                    let sueltos = cantVendida % nVal; 
                     if((promoActiva.limite||0) > 0) { 
                         let disp = promoActiva.limite - (promoActiva.usadas||0); 
                         if(grupos > disp) { sueltos += (grupos - disp) * nVal; grupos = disp; } 
@@ -2439,7 +2509,7 @@ window.confirmarVenta = async function(cambioFinal = 0) {
             if (x.esGranelMontoExacto !== undefined) {
                 s = parseFloat(x.esGranelMontoExacto); 
             } else if (x.precioManual !== undefined) {
-                s = (x.can||1) * x.precioManual; 
+                s = cantVendida * x.precioManual; 
                 etiquetaDescuento = "Precio Manual";
             }
 
@@ -2447,7 +2517,7 @@ window.confirmarVenta = async function(cambioFinal = 0) {
             sumaTotalCobrada += subCobrado;
             let printName = (x.nom || 'Producto').substring(0,15); 
             
-            itemsTicketHtml += `<tr><td style="vertical-align:top;">${x.can||1}</td><td>${printName}</td><td style="text-align:right">$${subtotalNormal.toFixed(2)}</td></tr>`;
+            itemsTicketHtml += `<tr><td style="vertical-align:top;">${cantVendida}</td><td>${printName}</td><td style="text-align:right">$${subtotalNormal.toFixed(2)}</td></tr>`;
             
             if (subtotalNormal > subCobrado + 0.01) {
                 let ahorroItem = subtotalNormal - subCobrado;
@@ -2458,8 +2528,48 @@ window.confirmarVenta = async function(cambioFinal = 0) {
                 itemsTicketHtml += `<tr><td colspan="2" style="text-align:right; font-size:11px;">↳ ${etiquetaDescuento}:</td><td style="text-align:right; font-size:11px;">-$${ahorroItem.toFixed(2)}</td></tr>`;
             }
 
-            detallesParaGuardar.push({ cod: x.cod, nom: x.nom || 'Producto', can: x.can || 1, subtotal: subCobrado, pv: precioVentaNormal, dep: pOriginal.dep || "General" });
+            let costoUnitario = parseFloat(pMaestro.pc || pOriginal.pc || 0);
+            detallesParaGuardar.push({ 
+                cod: x.cod, 
+                nom: x.nom || 'Producto', 
+                can: cantVendida, 
+                subtotal: subCobrado, 
+                pv: precioVentaNormal, 
+                costo: costoUnitario,
+                dep: pOriginal.dep || "General" 
+            });
             
+            // 🌟 4. CREACIÓN ATÓMICA DEL REGISTRO KARDEX CON EL STOCK REAL
+            let regKardex = {
+                id: Date.now() + "_" + Math.floor(Math.random()*1000),
+                fecha: hoy,
+                hora: horaVenta,
+                codigo: x.cod,
+                nombre: x.nom || 'Producto',
+                tipo: 'VENTA',
+                cantidad: -cantVendida,
+                stock_antes: stockAntes,
+                stock_despues: stockDespues,
+                precio: parseFloat(subCobrado / cantVendida) || precioVentaNormal,
+                costo: costoUnitario,
+                sucursal: suc,
+                cajero: usr,
+                id_venta: idVentaNueva
+            };
+
+            if (typeof window.historialKardex !== 'undefined' && Array.isArray(window.historialKardex)) {
+                window.historialKardex.unshift(regKardex);
+            }
+            if (typeof window.kardex !== 'undefined' && Array.isArray(window.kardex)) {
+                window.kardex.unshift(regKardex);
+            }
+
+            if (typeof db !== 'undefined') {
+                db.collection("kardex").doc(String(regKardex.id)).set(regKardex).catch(e => console.warn("Kardex offline:", e));
+            } else if (typeof pb !== 'undefined') {
+                pb.collection('kardex').create(regKardex).catch(e => console.warn("Kardex pb offline:", e));
+            }
+
             if (typeof db !== 'undefined' && codMaestro) { 
                 db.collection("inventario").doc(codMaestro).set(inv[codMaestro] || pMaestro).catch(e => console.warn("Inventario a mochila offline.")); 
             }
@@ -2469,9 +2579,6 @@ window.confirmarVenta = async function(cambioFinal = 0) {
             let ahorroGlobal = sumaTotalCobrada - tot;
             itemsTicketHtml += `<tr><td colspan="2" style="text-align:right;"><b>DESC. REDONDEO:</b></td><td style="text-align:right;">-$${ahorroGlobal.toFixed(2)}</td></tr>`;
         }
-
-        let suc = typeof sucursalActual !== 'undefined' ? sucursalActual : '';
-        let usr = typeof usuarioActual !== 'undefined' ? usuarioActual : '';
 
         let elFecha = document.getElementById('ticket_fecha');
         if (elFecha) elFecha.innerText = new Date().toLocaleString() + " - " + suc + "\nCliente: " + nomClienteTicket;
@@ -2494,9 +2601,8 @@ window.confirmarVenta = async function(cambioFinal = 0) {
         let elCajero = document.getElementById('ticket_cajero');
         if (elCajero) elCajero.innerText = usr;
         
-        // 🌟 3. AQUÍ YA NO CREAMOS EL ID, USAMOS EL DE ARRIBA 🌟
         let nuevaVenta = { 
-            id: idVentaNueva, fecha: hoy, hora: new Date().toLocaleTimeString(), 
+            id: idVentaNueva, fecha: hoy, hora: horaVenta, 
             cajero: usr, sucursal: suc, total: tot, 
             nom: nomClienteTicket,
             metodo: metodosStr, pagos: pagosActuales, 
@@ -2612,6 +2718,10 @@ function abrirGranel(c) {
 // 🛑 VENTAS PAUSADAS
 // =========================================================
 
+// =========================================================
+// 🛑 VENTAS PAUSADAS (VERSIÓN ORIGINAL INTACTA)
+// =========================================================
+
 function preguntarPausar() { 
     if(carV.length === 0) return; 
     let n = prompt("Nombre venta pausada:", nombreVentaActual || "Cliente "+(pausadas.length+1)); 
@@ -2642,6 +2752,7 @@ function preguntarPausar() {
         pausadas.push(nuevaPausada); 
         localStorage.setItem("pos_pausadas_v6", JSON.stringify(pausadas)); 
         
+        // CÓDIGO ORIGINAL DE NUBE
         try { 
             if (typeof db !== 'undefined') {
                 if (typeof db.collection("pausadas").create === 'function') {
@@ -2674,6 +2785,101 @@ function preguntarPausar() {
     }, 150);
 }
 
+// =========================================================
+// RETOMAR VENTA (BORRADO FANTASMA)
+// =========================================================
+
+function retomarVenta(idBuscar) { 
+    let i = pausadas.findIndex(p => String(p.id) === String(idBuscar));
+    if(i === -1) return;
+
+    let ventaRecuperada = pausadas[i];
+    carV = Array.isArray(ventaRecuperada.items) ? ventaRecuperada.items : [];
+    nombreVentaActual = ventaRecuperada.nom || "Venta";
+    window.idVentaPausadaActual = String(ventaRecuperada.id);
+
+    pausadas.splice(i, 1);
+    localStorage.setItem("pos_pausadas_v6", JSON.stringify(pausadas));
+
+    // 👻 SOBREESCRITURA FANTASMA (En vez de borrar, la vaciamos)
+    try {
+        if (typeof db !== 'undefined') {
+            let idStr = String(ventaRecuperada.id);
+            let payloadFantasma = { id: idStr, nom: 'FANTASMA', sucursal: 'FANTASMA', items: [], updatedAt: Date.now() };
+
+            if (typeof db.collection("pausadas").update === 'function') {
+                db.collection("pausadas").update(idStr, payloadFantasma).catch(e=>{});
+            } else if (db.collection("pausadas").doc) {
+                db.collection("pausadas").doc(idStr).set(payloadFantasma).catch(e=>{});
+            }
+        }
+    } catch(e) { console.error("Error fantasma:", e); }
+
+    if (typeof window.renderV === 'function') window.renderV();
+    if (typeof cerrarModales === 'function') cerrarModales();
+    actualizarContadorPausadas();
+}
+
+// =========================================================
+// CONFIRMAR ELIMINAR (BORRADO FANTASMA)
+// =========================================================
+
+function confirmarEliminarPausada() {
+    let pinElemento = document.getElementById('auth_pausada_pin');
+    let pinIngresado = pinElemento ? pinElemento.value : '';
+    let pinCajero = (typeof usuariosData !== 'undefined' && usuariosData[usuarioActual]) ? usuariosData[usuarioActual].pin : null;
+    let pinAdmin = (typeof usuariosData !== 'undefined' && usuariosData["Admin"]) ? usuariosData["Admin"].pin : null;
+
+    if(pinIngresado !== pinCajero && pinIngresado !== pinAdmin) {
+        alert("❌ PIN Incorrecto.");
+        if (pinElemento) {
+            pinElemento.value = '';
+            pinElemento.focus();
+        }
+        return;
+    }
+
+    let i = pausadas.findIndex(p => String(p.id) === String(idPausadaAEliminar));
+    if(i !== -1) {
+        let ventaAEliminar = pausadas[i];
+        
+        pausadas.splice(i, 1);
+        localStorage.setItem("pos_pausadas_v6", JSON.stringify(pausadas));
+
+        // 👻 SOBREESCRITURA FANTASMA
+        try {
+            if (ventaAEliminar && typeof db !== 'undefined') {
+                let idStr = String(ventaAEliminar.id);
+                let payloadFantasma = { id: idStr, nom: 'FANTASMA', sucursal: 'FANTASMA', items: [], updatedAt: Date.now() };
+
+                if (typeof db.collection("pausadas").update === 'function') {
+                    db.collection("pausadas").update(idStr, payloadFantasma).catch(e=>{});
+                } else if (db.collection("pausadas").doc) {
+                    db.collection("pausadas").doc(idStr).set(payloadFantasma).catch(e=>{});
+                }
+            }
+        } catch(e) { console.error("Error fantasma:", e); }
+    }
+
+    actualizarContadorPausadas();
+
+    let sucLimpia = String(typeof sucursalActual !== 'undefined' ? sucursalActual : '').replace(/📍/g, '').trim();
+    pausadasFiltradas = pausadas.filter(p => {
+        if(!p || p.nom === "FANTASMA") return false;
+        if(!p.sucursal) return true;
+        return (String(p.sucursal).replace(/📍/g, '').trim() === sucLimpia);
+    });
+
+    focusPausadaIndex = 0;
+    if (typeof renderTablaPausadas === 'function') renderTablaPausadas();
+
+    let modal = document.getElementById('modalAuthPausada');
+    if(modal) modal.style.display = 'none';
+
+    if(pausadasFiltradas.length === 0 && typeof cerrarModales === 'function') { 
+        cerrarModales(); 
+    }
+}
 
 // =========================================================
 // VARIABLES
@@ -2691,144 +2897,69 @@ let idPausadaAEliminar = null;
 // ABRIR PAUSADAS
 // =========================================================
 
+// =========================================================
+// 1. ABRIR PAUSADAS (CON FILTRO ESTRICTO)
+// =========================================================
 function abrirPausadas() { 
+    if(!Array.isArray(pausadas)) pausadas = [];
 
-    if(!Array.isArray(pausadas)) {
-        pausadas = [];
-    }
-
-
-    // -----------------------------------------------------
-    // QUITAR DUPLICADOS
-    // -----------------------------------------------------
-
-    let mapa =
-        new Map();
-
-
+    let mapa = new Map();
     pausadas.forEach(p => {
-
         if(!p) return;
-
-        if(!p.id) {
-
-            p.id =
-                String(Date.now()) +
-                Math.random();
-
-        }
-
-        mapa.set(
-            String(p.id),
-            p
-        );
-
+        if(!p.id) p.id = String(Date.now()) + Math.random();
+        mapa.set(String(p.id), p);
     });
-
-
-    pausadas =
-        Array.from(
-            mapa.values()
-        );
-
-
-    // -----------------------------------------------------
-    // VENTA EN CURSO
-    // -----------------------------------------------------
+    pausadas = Array.from(mapa.values());
 
     if(carV && carV.length > 0) {
-
-        if(
-            confirm(
-                "⚠️ TIENES UNA VENTA EN CURSO.\n\n" +
-                "¿Deseas poner esta venta en PAUSA primero?"
-            )
-        ) {
-
+        if(confirm("⚠️ TIENES UNA VENTA EN CURSO.\n\n¿Deseas poner esta venta en PAUSA primero?")) {
             preguntarPausar();
-
         }
-
         return;
     }
 
+    // 🌟 FILTRO ESTRICTO DE SUCURSAL
+    let sucLimpia = String(typeof sucursalActual !== 'undefined' ? sucursalActual : 'Matriz').replace(/📍/g, '').trim().toLowerCase();
 
-    // -----------------------------------------------------
-    // SUCURSAL
-    // -----------------------------------------------------
+    pausadasFiltradas = pausadas.filter(p => {
+        if(!p || p.nom === "FANTASMA") return false;
+        let sucVenta = String(p.sucursal || 'Matriz').replace(/📍/g, '').trim().toLowerCase();
+        return sucVenta === sucLimpia;
+    });
 
-    let sucLimpia =
-        String(
-            typeof sucursalActual !== 'undefined'
-                ? sucursalActual
-                : ''
-        )
-        .replace(/📍/g, '')
-        .trim();
-
-
-    // -----------------------------------------------------
-    // FILTRAR
-    // -----------------------------------------------------
-
-    pausadasFiltradas =
-        pausadas.filter(p => {
-
-            if(!p) return false;
-
-            if(p.nom === "FANTASMA") {
-                return false;
-            }
-
-            if(
-                !p.sucursal ||
-                String(p.sucursal)
-                    .replace(/📍/g, '')
-                    .trim() === sucLimpia
-            ) {
-
-                return true;
-
-            }
-
-            return false;
-
-        });
-
-
-    if(
-        pausadasFiltradas.length === 0
-    ) {
-
-        return alert(
-            "📋 No tienes ninguna venta en espera."
-        );
-
+    if(pausadasFiltradas.length === 0) {
+        return alert("📋 No tienes ninguna venta en espera en esta sucursal.");
     }
-
 
     focusPausadaIndex = 0;
-
     renderTablaPausadas();
 
-
-    let modal =
-        document.getElementById(
-            'modalPausadas'
-        );
-
-
-    if(modal) {
-
-        modal.style.display =
-            'block';
-
-    }
-
+    let modal = document.getElementById('modalPausadas');
+    if(modal) modal.style.display = 'block';
 }
 
+// =========================================================
+// 2. ACTUALIZAR CONTADOR (CON FILTRO ESTRICTO)
+// =========================================================
+function actualizarContadorPausadas() {
+    let lbl = document.getElementById('count_pausadas');
+    if(!lbl) return;
 
+    let mapa = new Map();
+    pausadas.forEach(p => {
+        if(p && p.id) mapa.set(String(p.id), p);
+    });
+    pausadas = Array.from(mapa.values());
 
+    // 🌟 FILTRO ESTRICTO DE SUCURSAL
+    let sucLimpia = String(typeof sucursalActual !== 'undefined' ? sucursalActual : 'Matriz').replace(/📍/g, '').trim().toLowerCase();
+
+    lbl.innerText = pausadas.filter(p => {
+        if(!p || p.nom === "FANTASMA") return false;
+        let sucVenta = String(p.sucursal || 'Matriz').replace(/📍/g, '').trim().toLowerCase();
+        return sucVenta === sucLimpia;
+    }).length;
+}
 // =========================================================
 // TABLA
 // =========================================================
@@ -2913,141 +3044,6 @@ function renderTablaPausadas() {
 
 
 
-// =========================================================
-// RETOMAR VENTA
-// =========================================================
-
-function retomarVenta(idBuscar) { 
-
-    let i =
-        pausadas.findIndex(
-            p =>
-                String(p.id) ===
-                String(idBuscar)
-        );
-
-
-    if(i === -1) return;
-
-
-    let ventaRecuperada =
-        pausadas[i];
-
-
-    // -----------------------------------------------------
-    // RECUPERAR PRODUCTOS
-    // -----------------------------------------------------
-
-    carV =
-        Array.isArray(
-            ventaRecuperada.items
-        )
-            ? ventaRecuperada.items
-            : [];
-
-
-    // -----------------------------------------------------
-    // RECUPERAR NOMBRE
-    // -----------------------------------------------------
-
-    nombreVentaActual =
-        ventaRecuperada.nom ||
-        "Venta";
-
-
-    // -----------------------------------------------------
-    // CONSERVAR ID
-    // -----------------------------------------------------
-
-    window.idVentaPausadaActual =
-        String(
-            ventaRecuperada.id
-        );
-
-
-    // -----------------------------------------------------
-    // QUITAR LOCALMENTE
-    //
-    // ESTO ES IMPORTANTE.
-    //
-    // Mientras la venta está siendo trabajada,
-    // NO debe existir dentro de "pausadas".
-    // -----------------------------------------------------
-
-    pausadas.splice(
-        i,
-        1
-    );
-
-
-    localStorage.setItem(
-        "pos_pausadas_v6",
-        JSON.stringify(pausadas)
-    );
-
-
-    // -----------------------------------------------------
-    // ELIMINAR REALMENTE DE LA NUBE
-    //
-    // YA NO USAMOS FANTASMA PARA RETOMAR.
-    // -----------------------------------------------------
-
-    try {
-
-        if(typeof db !== 'undefined') {
-
-            let documento =
-                db
-                    .collection("pausadas")
-                    .doc(
-                        String(
-                            ventaRecuperada.id
-                        )
-                    );
-
-
-            if(
-                documento &&
-                typeof documento.delete === 'function'
-            ) {
-
-                documento
-                    .delete()
-                    .catch(e => {
-
-                        console.error(
-                            "❌ Error eliminando pausa al retomarla:",
-                            e
-                        );
-
-                    });
-
-            }
-
-        }
-
-    } catch(e) {
-
-        console.error(
-            "❌ Error al retirar venta pausada:",
-            e
-        );
-
-    }
-
-
-    // -----------------------------------------------------
-    // ACTUALIZAR
-    // -----------------------------------------------------
-
-    window.renderV();
-
-    cerrarModales();
-
-    actualizarContadorPausadas();
-
-}
-
 
 
 // =========================================================
@@ -3113,279 +3109,8 @@ function eliminarPausada(idTarget) {
 
 
 
-// =========================================================
-// CONFIRMAR ELIMINAR
-// =========================================================
 
-function confirmarEliminarPausada() {
 
-    let pinIngresado =
-        document.getElementById(
-            'auth_pausada_pin'
-        ).value;
-
-
-    let pinCajero =
-        usuariosData[usuarioActual]
-            ? usuariosData[usuarioActual].pin
-            : null;
-
-
-    let pinAdmin =
-        usuariosData["Admin"]
-            ? usuariosData["Admin"].pin
-            : null;
-
-
-    if(
-        pinIngresado !== pinCajero &&
-        pinIngresado !== pinAdmin
-    ) {
-
-        alert(
-            "❌ PIN Incorrecto."
-        );
-
-
-        document.getElementById(
-            'auth_pausada_pin'
-        ).value = '';
-
-
-        document.getElementById(
-            'auth_pausada_pin'
-        ).focus();
-
-
-        return;
-
-    }
-
-
-    let i =
-        pausadas.findIndex(
-            p =>
-                String(p.id) ===
-                String(idPausadaAEliminar)
-        );
-
-
-    if(i !== -1) {
-
-        let ventaAEliminar =
-            pausadas[i];
-
-
-        pausadas.splice(
-            i,
-            1
-        );
-
-
-        localStorage.setItem(
-            "pos_pausadas_v6",
-            JSON.stringify(pausadas)
-        );
-
-
-        // -------------------------------------------------
-        // BORRAR DE LA NUBE
-        // -------------------------------------------------
-
-        try {
-
-            if(
-                ventaAEliminar &&
-                typeof db !== 'undefined'
-            ) {
-
-                let documento =
-                    db
-                        .collection("pausadas")
-                        .doc(
-                            String(
-                                ventaAEliminar.id
-                            )
-                        );
-
-
-                if(
-                    documento &&
-                    typeof documento.delete === 'function'
-                ) {
-
-                    documento
-                        .delete()
-                        .catch(e => {
-
-                            console.error(
-                                "❌ Error eliminando venta:",
-                                e
-                            );
-
-                        });
-
-                }
-
-            }
-
-        } catch(e) {
-
-            console.error(
-                "❌ Error eliminando de la nube:",
-                e
-            );
-
-        }
-
-    }
-
-
-    actualizarContadorPausadas();
-
-
-    // -----------------------------------------------------
-    // VOLVER A FILTRAR
-    // -----------------------------------------------------
-
-    let sucLimpia =
-        String(
-            typeof sucursalActual !== 'undefined'
-                ? sucursalActual
-                : ''
-        )
-        .replace(/📍/g, '')
-        .trim();
-
-
-    pausadasFiltradas =
-        pausadas.filter(p => {
-
-            if(!p) return false;
-
-            if(p.nom === "FANTASMA") {
-                return false;
-            }
-
-            if(!p.sucursal) {
-                return true;
-            }
-
-            return (
-                String(p.sucursal)
-                    .replace(/📍/g, '')
-                    .trim()
-                ===
-                sucLimpia
-            );
-
-        });
-
-
-    focusPausadaIndex = 0;
-
-    renderTablaPausadas();
-
-
-    let modal =
-        document.getElementById(
-            'modalAuthPausada'
-        );
-
-
-    if(modal) {
-        modal.style.display = 'none';
-    }
-
-
-    if(
-        pausadasFiltradas.length === 0
-    ) {
-
-        cerrarModales();
-
-    }
-
-}
-
-
-
-// =========================================================
-// CONTADOR
-// =========================================================
-
-function actualizarContadorPausadas() {
-
-    let lbl =
-        document.getElementById(
-            'count_pausadas'
-        );
-
-
-    if(!lbl) return;
-
-
-    let mapa =
-        new Map();
-
-
-    pausadas.forEach(p => {
-
-        if(
-            p &&
-            p.id
-        ) {
-
-            mapa.set(
-                String(p.id),
-                p
-            );
-
-        }
-
-    });
-
-
-    pausadas =
-        Array.from(
-            mapa.values()
-        );
-
-
-    let sucLimpia =
-        String(
-            typeof sucursalActual !== 'undefined'
-                ? sucursalActual
-                : ''
-        )
-        .replace(/📍/g, '')
-        .trim();
-
-
-    lbl.innerText =
-        pausadas.filter(p => {
-
-            if(!p) return false;
-
-            if(p.nom === "FANTASMA") {
-                return false;
-            }
-
-            if(!p.sucursal) {
-                return true;
-            }
-
-            return (
-                String(p.sucursal)
-                    .replace(/📍/g, '')
-                    .trim()
-                ===
-                sucLimpia
-            );
-
-        }).length;
-
-}
 
 
 
@@ -3401,8 +3126,11 @@ function handleCompraScan(e) {
         let c = document.getElementById('c_cod').value.trim(); 
         if(!c) return;
         
+        // 🌟 1. ESCONDER ALERTA AL ESCANEAR UN CÓDIGO NUEVO
+        let alertPromo = document.getElementById('c_promo_alert');
+        if(alertPromo) alertPromo.style.display = 'none';
+
         if(inv[c]) { 
-            // 🌟 MAGIA MAESTRO-ESPEJO: Detectamos si es un producto dependiente
             let pOriginal = inv[c];
             let codMaestro = c;
             let pMaestro = pOriginal;
@@ -3411,14 +3139,52 @@ function handleCompraScan(e) {
                 codMaestro = pOriginal.grupo;
                 pMaestro = inv[codMaestro];
                 
-                // Avisamos al cajero que el sistema hizo un desvío automático
                 alert(`⚠️ CÓDIGO DEPENDIENTE DETECTADO\n\n"${pOriginal.nom}" es un espejo.\n\nLa compra y el stock se registrarán directamente en su Producto Maestro:\n👉 ${pMaestro.nom}`);
                 
-                // 🪄 El truco: Cambiamos el código en pantalla por el del Maestro
                 document.getElementById('c_cod').value = codMaestro;
             }
 
-            // Llenamos el formulario con los datos del Maestro (o del original si no es espejo)
+            // 🌟 2. RADAR DE PROMOCIONES ACTIVAS
+            let hoy = (typeof getFechaLocal === 'function') ? getFechaLocal() : new Date().toISOString().split('T')[0];
+            let promoActiva = null;
+            let promoIndexReal = -1; // Guardaremos su posición en la base de datos
+
+            if (typeof promociones !== 'undefined' && Array.isArray(promociones)) {
+                promociones.forEach((pr, idx) => {
+                    if (pr && (pr.cod === c || pr.cod === codMaestro) && 
+                        (pr.sucursal === 'Todas' || pr.sucursal === sucursalActual || (!pr.sucursal && sucursalActual === 'Matriz')) && 
+                        (!pr.fecha_ini || pr.fecha_ini === '' || pr.fecha_ini <= hoy) && 
+                        (!pr.fecha_fin || pr.fecha_fin === '' || pr.fecha_fin >= hoy) && 
+                        (!pr.limite || pr.limite === 0 || (pr.usadas||0) < pr.limite)) {
+                        promoActiva = pr;
+                        promoIndexReal = idx; 
+                    }
+                });
+            }
+
+            // 🌟 3. MOSTRAR EL BANNER SI SE DETECTA LA PROMOCIÓN
+            if (promoActiva && alertPromo) {
+                let precioNormal = parseFloat(pMaestro.pv) || 0;
+                let txtPromo = "";
+                
+                if (promoActiva.tipo === 'desc') {
+                    let pPromo = precioNormal * (1 - (parseFloat(promoActiva.desc)/100));
+                    txtPromo = `🎁 <b>¡TIENE PROMOCIÓN!</b> Descuento del <b>${promoActiva.desc}%</b>. Precio al público con promo: <b style="font-size:16px;">$${pPromo.toFixed(2)}</b>`;
+                } else if (promoActiva.tipo === 'nxm') {
+                    txtPromo = `🎁 <b>¡TIENE PROMOCIÓN!</b> Tipo 2x1: <b>LLEVA ${promoActiva.n} Y PAGA ${promoActiva.m}</b>.`;
+                }
+                
+                // Inyectamos el texto y el botón con enlace directo
+                alertPromo.innerHTML = `
+                    <div style="display:flex; justify-content:space-between; align-items:center;">
+                        <span>${txtPromo}</span>
+                        <button type="button" onclick="irEditarPromoDesdeCompras(${promoIndexReal})" style="background:#0d6efd; color:white; border:none; padding:7px 15px; border-radius:4px; font-weight:bold; cursor:pointer; box-shadow: 0 2px 4px rgba(0,0,0,0.2); transition: all 0.2s;">✏️ Editar/Eliminar Promo</button>
+                    </div>
+                `;
+                alertPromo.style.display = 'block';
+            }
+
+            // Continuamos llenando las cajas normalmente...
             document.getElementById('c_nom').value = pMaestro.nom || ""; 
             document.getElementById('c_dep').value = pMaestro.dep || "General"; 
             document.getElementById('c_tipo').value = pMaestro.tipo || "pieza";
@@ -3439,7 +3205,6 @@ function handleCompraScan(e) {
 
             setTimeout(() => { document.getElementById('c_cant').focus(); document.getElementById('c_cant').select(); }, 50); 
         } else {
-            // Si el producto no existe
             document.getElementById('c_nom').value = ""; 
             document.getElementById('c_dep').value = "General"; 
             document.getElementById('c_tipo').value = "pieza";
@@ -3455,6 +3220,21 @@ function handleCompraScan(e) {
         }
     } 
 }
+// ====================================================================
+// 🚀 PUENTE: DE COMPRAS A EDICIÓN DE PROMOCIONES
+// ====================================================================
+window.irEditarPromoDesdeCompras = function(indexReal) {
+    // 1. Cambiamos a la pestaña de promociones
+    let btnPromo = document.getElementById('btn_pro-tab');
+    if (btnPromo) btnPromo.click();
+    
+    // 2. Le damos medio segundo a la pantalla para dibujarse, y abrimos el editor
+    setTimeout(() => {
+        if (typeof editarPromo === 'function') {
+            editarPromo(indexReal);
+        }
+    }, 300);
+};
 
 function actualizarCalculosCompra() {
     let costoBase = parseFloat(document.getElementById('c_cos').value) || 0; let impuestoPorcentaje = parseFloat(document.getElementById('c_iva').value) || 0;
@@ -5140,10 +4920,25 @@ window.verificarPinYCancelar = function() {
 
 window.renderCorte = function() { 
     try {
-        let fInicio = document.getElementById('corte_fecha_inicio') ? document.getElementById('corte_fecha_inicio').value : ''; 
-        let fFin = document.getElementById('corte_fecha_fin') ? document.getElementById('corte_fecha_fin').value : ''; 
-        let fCajero = document.getElementById('corte_cajero') ? document.getElementById('corte_cajero').value : ''; 
-        let fSuc = document.getElementById('corte_sucursal') ? document.getElementById('corte_sucursal').value : ''; 
+        // 🔥 AUTO-REPARADOR DE MENÚS: Obligamos a los filtros a actualizar la pantalla al instante
+        let elSucursal = document.getElementById('corte_sucursal');
+        if (elSucursal && !elSucursal.dataset.vinculado) { elSucursal.addEventListener('change', window.renderCorte); elSucursal.dataset.vinculado = "true"; }
+        
+        let elCajero = document.getElementById('corte_cajero');
+        if (elCajero && !elCajero.dataset.vinculado) { elCajero.addEventListener('change', window.renderCorte); elCajero.dataset.vinculado = "true"; }
+
+        let elInicio = document.getElementById('corte_fecha_inicio');
+        if (elInicio && !elInicio.dataset.vinculado) { elInicio.addEventListener('change', window.renderCorte); elInicio.dataset.vinculado = "true"; }
+
+        let elFin = document.getElementById('corte_fecha_fin');
+        if (elFin && !elFin.dataset.vinculado) { elFin.addEventListener('change', window.renderCorte); elFin.dataset.vinculado = "true"; }
+
+        let fInicio = elInicio ? elInicio.value : ''; 
+        let fFin = elFin ? elFin.value : ''; 
+        let fCajero = elCajero ? elCajero.value.trim() : ''; 
+        
+        // 🛡️ ESCUDO ANTI-ESPACIOS
+        let fSuc = elSucursal ? String(elSucursal.value).replace(/📍/g, '').trim() : ''; 
         let hoy = (typeof getFechaLocal === 'function') ? getFechaLocal() : new Date().toISOString().split('T')[0];
 
         let sesionActiva = (typeof sesionCajaActual !== 'undefined' && sesionCajaActual && sesionCajaActual.estado === 'abierta') ? sesionCajaActual : null;
@@ -5163,10 +4958,9 @@ window.renderCorte = function() {
         (window.compras || []).forEach(c => { if(c && c.id) mapaCompras[c.id] = c; });
         let todasLasCompras = Object.values(mapaCompras).sort((a,b) => a.id - b.id);
 
-        let selectCajero = document.getElementById('corte_cajero');
-        if(selectCajero && selectCajero.options.length <= 1 && todasLasVentas.length > 0) {
+        if(elCajero && elCajero.options.length <= 1 && todasLasVentas.length > 0) {
             let cajerosUnicos = [...new Set(todasLasVentas.map(v => v.cajero).filter(Boolean))];
-            cajerosUnicos.forEach(c => selectCajero.innerHTML += `<option value="${c}">${c}</option>`);
+            cajerosUnicos.forEach(c => elCajero.innerHTML += `<option value="${c}">${c}</option>`);
         }
         
         let ef=0, ta=0, trans=0, cr=0; let tVentas = 0, tUtilidad = 0, numVentas = 0;
@@ -5180,16 +4974,22 @@ window.renderCorte = function() {
             return;
         }
 
+        // ==========================================
+        // 🌟 1. FILTRO DE VENTAS (TU LÓGICA BLINDADA)
+        // ==========================================
         let filteredVentas = todasLasVentas.filter(v => { 
+            let vSuc = String(v.sucursal || "Matriz").replace(/📍/g, '').trim();
+            let vCaj = String(v.cajero || "").trim();
+
             if (sesionActiva && !esFiltroHistorico) {
                 return (v.id_sesion_caja === sesionActiva.id || v.fecha === hoy) && 
-                       (!fCajero || v.cajero === fCajero) && 
-                       (!fSuc || v.sucursal === fSuc || (fSuc === "Matriz" && !v.sucursal));
+                       (!fCajero || vCaj === fCajero) && 
+                       (!fSuc || vSuc === fSuc);
             }
             let vFecha = v.fecha || hoy; 
             return (vFecha >= fInicio && vFecha <= fFin) && 
-                   (!fCajero || v.cajero === fCajero) && 
-                   (!fSuc || v.sucursal === fSuc || (fSuc === "Matriz" && !v.sucursal)); 
+                   (!fCajero || vCaj === fCajero) && 
+                   (!fSuc || vSuc === fSuc); 
         });
         
         filteredVentas.forEach(v => {
@@ -5225,25 +5025,19 @@ window.renderCorte = function() {
                 }
 
                 let utilTicket = 0; 
-                
-                // 🛡️ REPARACIÓN: Detectamos tanto "detalles" como "items" (si es un array viejo)
                 let listaItemsTicket = v.detalles || (Array.isArray(v.items) ? v.items : []);
 
                 if (listaItemsTicket.length > 0 && !esAbono) { 
                     listaItemsTicket.forEach(d => { 
                         if(d.can > 0) { 
                             let costoUnitario = parseFloat(d.costo) || parseFloat(d.cos) || 0;
-                            
-                            // 🌟 MÁQUINA DEL TIEMPO: Si el ticket viejo se guardó con $0 costo, lo buscamos en el catálogo actual
                             if (costoUnitario === 0 && typeof inv !== 'undefined' && inv[d.cod]) {
                                 let pCat = inv[d.cod];
                                 let costoBase = parseFloat(pCat.cos_promedio !== undefined ? pCat.cos_promedio : (pCat.cos || 0));
                                 let ivaProd = parseFloat(pCat.iva) || 0;
                                 costoUnitario = costoBase * (1 + (ivaProd / 100));
                             }
-
                             let subtotalItem = parseFloat(d.subtotal) || 0;
-                            
                             if (subtotalItem === 0) {
                                 let precioVenta = parseFloat(d.pv) || 0;
                                 if (precioVenta === 0 && typeof inv !== 'undefined' && inv[d.cod]) {
@@ -5251,16 +5045,12 @@ window.renderCorte = function() {
                                 }
                                 subtotalItem = parseFloat(d.can || 1) * precioVenta;
                             }
-                            
                             let gananciaArticulo = subtotalItem - (costoUnitario * parseFloat(String(d.can) || 1));
                             utilTicket += gananciaArticulo;
-                            
                             depsHash[d.dep || "General"] = (depsHash[d.dep || "General"] || 0) + subtotalItem; 
-                            
                             if (!topProductosHash[d.cod]) {
                                 topProductosHash[d.cod] = { nombre: d.nom || 'Producto Desconocido', cantidad: 0, total: 0, ganancia: 0 };
                             }
-                            
                             let cantItem = parseFloat(d.can) || 0;
                             topProductosHash[d.cod].cantidad += cantItem; 
                             topProductosHash[d.cod].total += subtotalItem;
@@ -5268,14 +5058,12 @@ window.renderCorte = function() {
                         }
                     }); 
                 }
-                
                 tUtilidad += utilTicket; 
                 utilPorDia[dStr] = (utilPorDia[dStr] || 0) + utilTicket;
             }
             
             let classes = v.anulada ? 'anulada-row' : ''; let tag = v.anulada ? '<span style="color:red; font-weight:bold;">[ANULADA]</span> ' : '';
             let detallePagoText = v.pagoCon !== undefined && v.pagoCon > 0 ? `<br><small style="color:#666; font-style:italic;">(Pagó: $${parseFloat(v.pagoCon).toFixed(2)} | Cambio: $${parseFloat(v.cambio).toFixed(2)})</small>` : '';
-
             let itemsTexto = Array.isArray(v.items) ? v.items.map(x=>x.nom).join(', ') : (v.items || '');
 
             operacionesHTML.push({
@@ -5288,133 +5076,115 @@ window.renderCorte = function() {
         let listaRetirosGastos = []; 
         let listaIngresosExtra = []; 
 
-        let usuarioSesionLimpio = String(typeof usuarioActual !== 'undefined' ? usuarioActual : '').trim().toLowerCase();
-        let fCajeroLimpio = String(fCajero || '').trim().toLowerCase();
+        // ==========================================
+        // 🌟 2. FILTRO DE MOVIMIENTOS (TU LÓGICA BLINDADA)
+        // ==========================================
+        todosLosMovs.forEach(m => {
+            let mFecha = m.fecha || hoy; 
+            let mSuc = String(m.sucursal || "Matriz").replace(/📍/g, '').trim();
+            let mCaj = String(m.cajero || "").trim();
 
-        let filteredMovs = todosLosMovs.filter(m => {
-            if (!m) return false;
-            let mFecha = m.fecha || hoy;
-            let mCajero = String(m.cajero || '').trim().toLowerCase();
-
-            if (fCajeroLimpio) {
-                return mCajero === fCajeroLimpio && (mFecha === hoy || (mFecha >= fInicio && mFecha <= fFin));
-            }
-
-            if (sesionActiva && !esFiltroHistorico) {
-                let coincideSesion = m.id_sesion_caja && String(m.id_sesion_caja) === String(sesionActiva.id);
-                let coincideUsuario = (mFecha === hoy) && (mCajero === usuarioSesionLimpio || usuarioSesionLimpio === 'admin' || !usuarioSesionLimpio);
-                let coincideSucursal = (!fSuc || m.sucursal === fSuc || (fSuc === "Matriz" && !m.sucursal));
-
-                return (coincideSesion || coincideUsuario) && coincideSucursal;
-            }
-
-            return mFecha >= fInicio && mFecha <= fFin;
-        });
-
-        filteredMovs.forEach(m => {
-            let montoM = parseFloat(m.monto) || 0; 
-            let mMotivo = (m.motivo || '').toLowerCase();
-            let mTipo = String(m.tipo || '').trim();
-            
-            if (mTipo === 'Ingreso') { 
-                ing_efectivo += montoM; 
-                flujo_ing_otros += montoM; 
-                listaIngresosExtra.push(m);
-            } else if (mTipo === 'Retiro' || mTipo === 'Gasto') { 
-                ret_efectivo += montoM; 
-                if (mMotivo.includes('compra') || mMotivo.includes('proveedor')) {
-                    flujo_out_compras += montoM; 
-                } else {
-                    flujo_out_otros += montoM; 
+            if(mFecha >= fInicio && mFecha <= fFin && (!fCajero || mCaj === fCajero) && (!fSuc || mSuc === fSuc)) { 
+                let montoM = parseFloat(m.monto) || 0; let mMotivo = (m.motivo || '').toLowerCase();
+                
+                if(m.tipo === 'Ingreso') { 
+                    ing_efectivo += montoM; flujo_ing_otros += montoM; 
+                    listaIngresosExtra.push(m);
+                } else if(m.tipo === 'Retiro') { 
+                    ret_efectivo += montoM; 
+                    if (mMotivo.includes('compra') || mMotivo.includes('proveedor')) flujo_out_compras += montoM; else flujo_out_otros += montoM; 
+                    listaRetirosGastos.push(m);
                 }
-                listaRetirosGastos.push(m);
-            }
-            
-            let isIngreso = (mTipo === 'Ingreso');
-            operacionesHTML.push({
-                id: m.id,
-                html: `<tr style="background:#fcfcfc;"><td>${m.fecha || hoy} ${m.hora || ''}</td><td>${m.cajero || 'Admin'}</td><td>${m.sucursal || 'Matriz'}</td><td style="font-weight:bold; color:${isIngreso?'var(--s)':'var(--danger)'};">${isIngreso?'+':'-'}$${montoM.toFixed(2)}</td><td><span class="badge-kit" style="background:${isIngreso?'var(--info)':'var(--danger)'}">${mTipo.toUpperCase()}</span></td><td>${m.motivo || 'Movimiento de Caja'}</td></tr>`
-            });
+                
+                let isIngreso = m.tipo === 'Ingreso';
+                operacionesHTML.push({
+                    id: m.id,
+                    html: `<tr style="background:#fcfcfc;"><td>${m.fecha} ${m.hora}</td><td>${m.cajero || 'Admin'}</td><td>${m.sucursal || 'Matriz'}</td><td style="font-weight:bold; color:${isIngreso?'var(--s)':'var(--danger)'};">${isIngreso?'+':'-'}$${montoM.toFixed(2)}</td><td><span class="badge-kit" style="background:${isIngreso?'var(--info)':'var(--danger)'}">${m.tipo.toUpperCase()}</span></td><td>${m.motivo}</td></tr>`
+                });
+            } 
         });
 
+        // ==========================================
+        // 🌟 3. FILTRO DE COMPRAS (TU LÓGICA BLINDADA)
+        // ==========================================
         let comprasEfectivoTotal = 0;
         let filteredCompras = todasLasCompras.filter(c => {
             if (c.anulada) return false;
+            let cSuc = String(c.sucursal || "Matriz").replace(/📍/g, '').trim();
+            let cCaj = String(c.cajero || "").trim();
+
             if (sesionActiva && !esFiltroHistorico) {
-                return (c.id_sesion_caja === sesionActiva.id || c.fecha === hoy) && (!fCajero || c.cajero === fCajero) && (!fSuc || c.sucursal === fSuc);
+                return (c.id_sesion_caja === sesionActiva.id || c.fecha === hoy) && (!fCajero || cCaj === fCajero) && (!fSuc || cSuc === fSuc);
             }
             let cFecha = c.fecha || hoy;
-            return cFecha >= fInicio && cFecha <= fFin && (!fCajero || c.cajero === fCajero) && (!fSuc || c.sucursal === fSuc);
+            return cFecha >= fInicio && cFecha <= fFin && (!fCajero || cCaj === fCajero) && (!fSuc || cSuc === fSuc);
         });
 
         filteredCompras.forEach(c => {
             let mMetodo = String(c.metodo || '').toLowerCase();
             let totalC = parseFloat(c.total) || 0;
-            if (mMetodo.includes('efectivo')) {
-                comprasEfectivoTotal += totalC;
-            }
+            if (mMetodo.includes('efectivo')) comprasEfectivoTotal += totalC;
         });
 
-        let fondoInicial = (sesionActiva && !esFiltroHistorico) ? (parseFloat(sesionActiva.monto_inicial) || 0) : 0;
-        let efectivoEnCaja = fondoInicial + ef + ing_efectivo - ret_efectivo - comprasEfectivoTotal;
+        let efectivoEnCaja = ef + ing_efectivo - ret_efectivo - comprasEfectivoTotal;
         
         currentCorteData = {
-            fondoInicial: fondoInicial,
-            ventasTotales: tVentas, gananciaNeta: tUtilidad, numVentas: numVentas,     
+            fondoInicial: 0, ventasTotales: tVentas, gananciaNeta: tUtilidad, numVentas: numVentas,     
             efectivoVentas: ef, tarjeta: ta, transferencia: trans, credito: cr,
             ingresos: ing_efectivo, retiros: ret_efectivo, comprasEfectivo: comprasEfectivoTotal,
-            esperado: efectivoEnCaja,
-            cajeroCorte: fCajero || "Todos", fechaInicio: fInicio, fechaFin: fFin
+            esperado: efectivoEnCaja, cajeroCorte: fCajero || "Todos", fechaInicio: fInicio, fechaFin: fFin
         };
 
+        // 📊 INYECCIÓN DE TOTALES EN PANTALLA
         if(document.getElementById('kpi_ventas')) document.getElementById('kpi_ventas').innerText = "$" + tVentas.toLocaleString('es-MX', {minimumFractionDigits: 2});
         if(document.getElementById('kpi_ganancia')) document.getElementById('kpi_ganancia').innerText = "$" + tUtilidad.toLocaleString('es-MX', {minimumFractionDigits: 2});
         if(document.getElementById('kpi_no_ventas')) document.getElementById('kpi_no_ventas').innerText = numVentas;
         if(document.getElementById('kpi_ticket_prom')) document.getElementById('kpi_ticket_prom').innerText = "$" + (numVentas > 0 ? (tVentas / numVentas) : 0).toLocaleString('es-MX', {minimumFractionDigits: 2});
         if(document.getElementById('kpi_margen')) document.getElementById('kpi_margen').innerText = (tVentas > 0 ? ((tUtilidad / tVentas) * 100) : 0).toFixed(2) + "%";
-        
         if(document.getElementById('r_efectivo')) document.getElementById('r_efectivo').innerText = "$"+efectivoEnCaja.toFixed(2); 
         if(document.getElementById('r_tarjeta')) document.getElementById('r_tarjeta').innerText = "$"+ta.toFixed(2); 
         if(document.getElementById('r_transferencia')) document.getElementById('r_transferencia').innerText = "$"+trans.toFixed(2); 
         if(document.getElementById('r_credito')) document.getElementById('r_credito').innerText = "$"+cr.toFixed(2); 
         if(document.getElementById('r_total')) document.getElementById('r_total').innerText = "$"+(ef + ta + trans).toFixed(2); 
 
-        if(document.getElementById('r_lista_ventas')) document.getElementById('r_lista_ventas').innerHTML = operacionesHTML.sort((a,b) => b.id - a.id).map(op => op.html).join('') || "<tr><td colspan='6' style='text-align:center'>No hay operaciones en este rango</td></tr>";
+        // 🚀 LÍMITE VISUAL (250 FILAS MÁXIMO PARA QUE NO SE CONGELE)
+        let contVentas = document.getElementById('r_lista_ventas');
+        if(contVentas) {
+            let maxFilas = 250; 
+            let htmlInyectar = operacionesHTML.slice(0, maxFilas).map(op => op.html).join('');
+            
+            if (operacionesHTML.length > maxFilas) {
+                htmlInyectar += `<tr><td colspan='6' style='text-align:center; background:#ffefc0; color:#856404; font-weight:bold; padding: 10px;'>⚠️ Se muestran ${maxFilas} operaciones visualmente para que tu PC no se trabe. Tus totales SÍ incluyen las ${operacionesHTML.length} operaciones calculadas.</td></tr>`;
+            }
+            contVentas.innerHTML = htmlInyectar || "<tr><td colspan='6' style='text-align:center'>No hay operaciones en este rango</td></tr>";
+        }
 
         let htmlGastos = listaRetirosGastos.map(g => `<tr><td>${g.hora || ''}</td><td>${g.motivo || 'Retiro'}</td><td style="text-align:right; color:red;">-$${parseFloat(g.monto).toFixed(2)}</td></tr>`).join('');
-        let cg = document.getElementById('cc_lista_gastos'); if(cg) { cg.innerHTML = htmlGastos || '<tr><td colspan="3" style="text-align:center; color:#888;">No hubo retiros</td></tr>'; }
+        let cg = document.getElementById('cc_lista_gastos'); if(cg) cg.innerHTML = htmlGastos || '<tr><td colspan="3" style="text-align:center; color:#888;">No hubo retiros</td></tr>';
         
         let htmlIngresos = listaIngresosExtra.map(g => `<tr><td>${g.hora || ''}</td><td>${g.motivo || 'Ingreso'}</td><td style="text-align:right; color:#28a745;">+$${parseFloat(g.monto).toFixed(2)}</td></tr>`).join('');
-        let ci = document.getElementById('ci_lista_ingresos') || document.getElementById('cc_lista_ingresos'); if(ci) { ci.innerHTML = htmlIngresos || '<tr><td colspan="3" style="text-align:center; color:#888;">No hubo ingresos extra</td></tr>'; }
+        let ci = document.getElementById('ci_lista_ingresos') || document.getElementById('cc_lista_ingresos'); if(ci) ci.innerHTML = htmlIngresos || '<tr><td colspan="3" style="text-align:center; color:#888;">No hubo ingresos extra</td></tr>';
 
         let elemDetalleTexto = document.getElementById('cierre_detalle_texto') || document.getElementById('cc_detalle_arqueo');
         if (elemDetalleTexto) {
             let txt = "";
             if (listaIngresosExtra.length > 0) {
                 txt += "🟢 OTROS INGRESOS (Abonos, Entradas):\n";
-                listaIngresosExtra.forEach(i => {
-                    txt += ` + $${parseFloat(i.monto).toFixed(2)} | 📥 ${i.motivo} (${i.hora || ''})\n`;
-                });
+                listaIngresosExtra.forEach(i => txt += ` + $${parseFloat(i.monto).toFixed(2)} | 📥 ${i.motivo} (${i.hora || ''})\n`);
                 txt += "\n";
             }
             if (listaRetirosGastos.length > 0) {
                 txt += "🔴 GASTOS Y RETIROS (Salidas, Traspasos):\n";
-                listaRetirosGastos.forEach(r => {
-                    txt += ` - $${parseFloat(r.monto).toFixed(2)} | 🔄 ${r.motivo} (${r.hora || ''})\n`;
-                });
+                listaRetirosGastos.forEach(r => txt += ` - $${parseFloat(r.monto).toFixed(2)} | 🔄 ${r.motivo} (${r.hora || ''})\n`);
             }
-            if (!txt) {
-                txt = "(No hay ingresos ni gastos extra registrados en este turno)";
-            }
+            if (!txt) txt = "(No hay ingresos ni gastos extra registrados en este turno)";
             elemDetalleTexto.innerText = txt;
         }
 
         let htmlCajerosKpi = Object.keys(metricasCajero).map(c => {
             let m = metricasCajero[c];
-            let prom = m.tickets > 0 ? (m.total / m.tickets) : 0;
             let hrs = m.horasUnicas.size > 0 ? m.horasUnicas.size : 1;
-            let vph = m.total / hrs;
-            return `<tr><td><b>${c}</b></td><td>$${m.total.toFixed(2)}</td><td>$${prom.toFixed(2)}</td><td style="color:var(--orange); font-weight:bold;">$${vph.toFixed(2)}</td></tr>`;
+            return `<tr><td><b>${c}</b></td><td>$${m.total.toFixed(2)}</td><td>$${(m.tickets>0?(m.total/m.tickets):0).toFixed(2)}</td><td style="color:var(--orange); font-weight:bold;">$${(m.total/hrs).toFixed(2)}</td></tr>`;
         }).join('');
         if(document.getElementById('kpi_tabla_cajeros')) document.getElementById('kpi_tabla_cajeros').innerHTML = htmlCajerosKpi || '<tr><td colspan="4" style="text-align:center;">Vacio</td></tr>';
 
@@ -6634,58 +6404,135 @@ function seleccionarBusqueda(cod) {
 // ==========================================
 // 📸 MOTOR DEL ESCÁNER DE CÁMARA (GLOBAL)
 // ==========================================
-window.escanerCamara = null; 
-window.destinoActualEscaner = 'ventas'; 
+// =========================================================================
+// 📸 CONTROLADOR DE ESCÁNER DE CÁMARA (RESILIENTE A HARDWARE)
+// =========================================================================
+window.abrirEscanerCamara = function(destino) {
+    if (!destino) destino = 'ventas';
+    console.log("📸 Solicitando cámara para:", destino);
+    window.destinoActualEscaner = destino;
 
-window.abrirEscanerCamara = function(destino = 'ventas') {
-    console.log("📸 Abriendo cámara para:", destino);
-    window.destinoActualEscaner = destino; 
-    let modalC = document.getElementById('modal_escaner');
-    
+    var modalC = document.getElementById('modal_escaner');
     if (!modalC) {
-        alert("⚠️ ¡Falta el contenedor HTML del Escáner (modal_escaner)!");
+        alert("⚠️ Falta el contenedor HTML modal_escaner en la página.");
         return;
     }
-    
-    modalC.style.display = 'flex';
-    
-    if (window.escanerCamara) { 
-        window.escanerCamara.clear(); 
+
+    if (typeof Html5Qrcode === 'undefined') {
+        alert("⚠️ La librería Html5Qrcode no está disponible.");
+        return;
     }
 
-    window.escanerCamara = new Html5QrcodeScanner(
-        "lector_camara", 
-        { fps: 10, qrbox: { width: 250, height: 120 }, rememberLastUsedCamera: true }, 
-        false
-    );
-    
-    window.escanerCamara.render((texto) => {
-        window.cerrarEscanerCamara();
-        
-        // Sonido de Beep
-        try { let ctx = new (window.AudioContext || window.webkitAudioContext)(); let osc = ctx.createOscillator(); let gain = ctx.createGain(); osc.type = 'sine'; osc.frequency.value = 880; gain.gain.setValueAtTime(1, ctx.currentTime); gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.15); osc.connect(gain); gain.connect(ctx.destination); osc.start(); osc.stop(ctx.currentTime + 0.15); } catch(e){}
-        
-        if (window.destinoActualEscaner === 'compras' && document.getElementById('c_cod')) { 
-            document.getElementById('c_cod').value = texto; 
-            handleCompraScan({ key: 'Enter' }); 
-        } else if (window.destinoActualEscaner === 'transferencias' && document.getElementById('t_cod')) { 
-            document.getElementById('t_cod').value = texto; 
-            addTransferToList(); 
-        } else if (window.destinoActualEscaner === 'caja' && document.getElementById('caja_codigo')) { 
-            document.getElementById('caja_codigo').value = texto; 
-            buscarProdCaja(); 
-        } else if (document.getElementById('v_cod')) { 
-            document.getElementById('v_cod').value = texto; 
-            handleVenta({ key: 'Enter' }); 
-        }
-    }, () => {});
+    // 1. Apagar instancia previa si existía
+    if (window.html5QrCodeInstance) {
+        window.html5QrCodeInstance.stop().then(function() {
+            window.html5QrCodeInstance.clear();
+            window.html5QrCodeInstance = null;
+            iniciarLector();
+        }).catch(function() {
+            window.html5QrCodeInstance = null;
+            iniciarLector();
+        });
+    } else {
+        iniciarLector();
+    }
+
+    function iniciarLector() {
+        // 2. Comprobar si existen cámaras físicas conectadas
+        Html5Qrcode.getCameras().then(function(cameras) {
+            if (!cameras || cameras.length === 0) {
+                alert("📷 No se detectó ninguna cámara en este equipo.\n\n• En PC de escritorio: Conecta una webcam por USB.\n• En Laptop: Revisa que la cámara esté activa en la configuración de privacidad.");
+                return;
+            }
+
+            modalC.style.display = 'flex';
+
+            // Seleccionar cámara trasera si está disponible (móviles) o la primera webcam
+            var camId = cameras[0].id;
+            for (var i = 0; i < cameras.length; i++) {
+                var label = (cameras[i].label || '').toLowerCase();
+                if (label.indexOf('back') !== -1 || label.indexOf('trasera') !== -1 || label.indexOf('rear') !== -1) {
+                    camId = cameras[i].id;
+                    break;
+                }
+            }
+
+            window.html5QrCodeInstance = new Html5Qrcode("lector_camara");
+            var config = { fps: 15, qrbox: { width: 280, height: 150 } };
+
+            window.html5QrCodeInstance.start(
+                camId,
+                config,
+                function(texto) {
+                    console.log("✅ Código detectado:", texto);
+
+                    // Sonido Beep
+                    try {
+                        var AudioCtx = window.AudioContext || window.webkitAudioContext;
+                        if (AudioCtx) {
+                            var ctx = new AudioCtx();
+                            var osc = ctx.createOscillator();
+                            var gain = ctx.createGain();
+                            osc.type = 'sine';
+                            osc.frequency.value = 880;
+                            gain.gain.setValueAtTime(1, ctx.currentTime);
+                            gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.15);
+                            osc.connect(gain);
+                            gain.connect(ctx.destination);
+                            osc.start();
+                            osc.stop(ctx.currentTime + 0.15);
+                        }
+                    } catch (e) {}
+
+                    window.cerrarEscanerCamara();
+
+                    // Asignación de código al módulo activo
+                    if (window.destinoActualEscaner === 'compras' && document.getElementById('c_cod')) {
+                        document.getElementById('c_cod').value = texto;
+                        if (typeof handleCompraScan === 'function') handleCompraScan({ key: 'Enter' });
+                    } else if (window.destinoActualEscaner === 'transferencias' && document.getElementById('t_cod')) {
+                        document.getElementById('t_cod').value = texto;
+                        if (typeof addTransferToList === 'function') addTransferToList();
+                    } else if (window.destinoActualEscaner === 'caja' && document.getElementById('caja_codigo')) {
+                        document.getElementById('caja_codigo').value = texto;
+                        if (typeof buscarProdCaja === 'function') buscarProdCaja();
+                    } else if (document.getElementById('v_cod')) {
+                        document.getElementById('v_cod').value = texto;
+                        if (typeof handleVenta === 'function') handleVenta({ key: 'Enter' });
+                    }
+                },
+                function(errorMessage) {
+                    // Escaneo continuo sin coincidencia (silencioso)
+                }
+            ).catch(function(err) {
+                console.error("❌ Error al iniciar stream de video:", err);
+                alert("⚠️ No fue posible activar la cámara: " + (err.message || err));
+                window.cerrarEscanerCamara();
+            });
+
+        }).catch(function(err) {
+            console.error("❌ Error consultando dispositivos de video:", err);
+            alert("📷 No hay acceso a dispositivos de cámara en este navegador.");
+        });
+    }
 };
 
-window.cerrarEscanerCamara = function() { 
-    let modalC = document.getElementById('modal_escaner');
-    if (modalC) modalC.style.display = 'none'; 
-    if (window.escanerCamara) { window.escanerCamara.clear(); window.escanerCamara = null; } 
+window.cerrarEscanerCamara = function() {
+    var modalC = document.getElementById('modal_escaner');
+    if (modalC) modalC.style.display = 'none';
+
+    if (window.html5QrCodeInstance) {
+        window.html5QrCodeInstance.stop().then(function() {
+            window.html5QrCodeInstance.clear();
+            window.html5QrCodeInstance = null;
+        }).catch(function() {
+            window.html5QrCodeInstance = null;
+        });
+    }
 };
+
+
+
 // ====================================================================
 // === TECLADO GLOBAL (ATAJOS Y NAVEGACIÓN) ===
 // ====================================================================
@@ -7027,28 +6874,32 @@ window.registrarEnKardex = function(productoCod, productoNom, tipoMov, cantidad,
     }
 }
 
-// 2. EL DIBUJANTE (Corrección del ID destructivo)
+// =========================================================================
+// 📊 RENDERIZADO PASIVO DEL KARDEX (NO ALTERA PESTAÑAS)
+// =========================================================================
 window.renderKardex = function() {
     try {
-        // 🚨 AQUÍ ESTABA EL ERROR: Cambiamos 'kardex' por 'kardex_sucursal'
-        let selectSuc = document.getElementById('kardex_sucursal');
-        
-        let sucursalesSeguras = [];
-        if (typeof listaSucursales !== 'undefined' && Array.isArray(listaSucursales)) {
-            sucursalesSeguras = listaSucursales;
-        }
+        // ❌ ELIMINAMOS cualquier instrucción de "display = 'block'" o "display = 'none'" aquí.
+        // Esa responsabilidad ahora es 100% exclusiva de changeTab().
 
-        if (selectSuc && selectSuc.innerHTML === "") {
+        // 1. Poblar selector de sucursales (solo si está vacío)
+        let selectSuc = document.getElementById('kardex_sucursal');
+        let sucursalesSeguras = (typeof listaSucursales !== 'undefined' && Array.isArray(listaSucursales)) 
+            ? listaSucursales 
+            : [];
+
+        if (selectSuc && (selectSuc.innerHTML === "" || selectSuc.options.length <= 1)) {
             selectSuc.innerHTML = '<option value="">📍 Todas las Sucursales</option>' + 
                 sucursalesSeguras.map(s => `<option value="${s}">📍 ${s}</option>`).join('');
         }
 
+        // 2. Dibujar y filtrar los datos (silenciosamente en segundo plano)
         if (typeof window.filtrarKardex === 'function') {
             window.filtrarKardex();
         }
         
     } catch (error) {
-        console.error("❌ Error al preparar el Kardex:", error);
+        console.error("❌ Error en renderKardex:", error);
     }
 };
 // 1. INICIALIZAR LA MEMORIA DEL KARDEX AL CARGAR LA PÁGINA
@@ -7064,78 +6915,142 @@ try {
 }
 
 
-// 3. EL FILTRO (Búsqueda robusta)
+// =========================================================================
+// 🕒 MOTOR DE NORMALIZACIÓN Y PARSEO CRONOLÓGICO DE KARDEX
+// =========================================================================
+function parsearFechaHoraKardex(reg) {
+    if (!reg) return 0;
+    if (reg.created) return new Date(reg.created).getTime();
+    if (reg.timestamp && !isNaN(reg.timestamp)) return Number(reg.timestamp);
+
+    let f = String(reg.fecha || '1970-01-01').trim();
+    let h = String(reg.hora || '00:00:00').trim().toLowerCase();
+
+    // Normalizar formato DD/MM/YYYY a YYYY-MM-DD
+    if (f.includes('/')) {
+        let p = f.split('/');
+        if (p.length === 3 && p[2].length === 4) {
+            f = `${p[2]}-${p[1].padStart(2, '0')}-${p[0].padStart(2, '0')}`;
+        }
+    }
+
+    // Normalizar formato 12 horas (a.m. / p.m.) a formato militar de 24 horas
+    if (h.includes('m')) {
+        let esPM = h.includes('p.m.') || h.includes('pm');
+        let soloNumeros = h.replace(/[^0-9:]/g, '');
+        let partesH = soloNumeros.split(':');
+        let horas = parseInt(partesH[0], 10) || 0;
+        let minutos = partesH[1] || '00';
+        let segundos = partesH[2] || '00';
+
+        if (esPM && horas < 12) horas += 12;
+        if (!esPM && horas === 12) horas = 0;
+        h = `${String(horas).padStart(2, '0')}:${minutos}:${segundos}`;
+    }
+
+    let dt = new Date(`${f}T${h}`);
+    return isNaN(dt.getTime()) ? 0 : dt.getTime();
+}
+
+// =========================================================================
+// 📊 CONTROLADOR DE FILTRADO, ORDENAMIENTO Y RENDERIZADO DEL KARDEX
+// =========================================================================
 window.filtrarKardex = function() {
     try {
-        if (!window.historialKardex || !Array.isArray(window.historialKardex)) {
-            return;
-        }
+        // 🛡️ Normalización de la fuente de datos en memoria (Soporta Array u Object)
+        let fuente = window.historialKardex || window.kardex || (typeof kardex !== 'undefined' ? kardex : []);
+        let registros = Array.isArray(fuente) ? fuente : Object.values(fuente);
 
-        let txtBusqueda = document.getElementById('kardex_buscar');
-        let txt = txtBusqueda ? txtBusqueda.value.toLowerCase().trim() : "";
+        // Captura reactiva de valores desde el DOM
+        let txtInput = document.getElementById('kardex_buscar');
+        let txt = txtInput ? txtInput.value.toLowerCase().trim() : "";
         
         let sucSelect = document.getElementById('kardex_sucursal');
-        let sucFiltro = sucSelect ? sucSelect.value : "";
+        let sucFiltro = sucSelect ? sucSelect.value.replace(/📍/g, '').trim().toLowerCase() : "";
         
         let tipoSelect = document.getElementById('kardex_tipo');
-        let tipoFiltro = tipoSelect ? tipoSelect.value : "";
+        let tipoFiltro = tipoSelect ? tipoSelect.value.trim().toUpperCase() : "";
 
-        let registrosFiltrados = window.historialKardex.filter(reg => {
-            let matchTxt = txt === "" || (reg.codigo && String(reg.codigo).toLowerCase().includes(txt)) || (reg.nombre && String(reg.nombre).toLowerCase().includes(txt));
-            let matchSuc = sucFiltro === "" || reg.sucursal === sucFiltro;
-            let matchTipo = tipoFiltro === "" || reg.tipo === tipoFiltro;
-            return matchTxt && matchSuc && matchTipo;
+        let fIniInput = document.getElementById('kardex_fecha_ini');
+        let fIni = fIniInput ? fIniInput.value : "";
+
+        let fFinInput = document.getElementById('kardex_fecha_fin');
+        let fFin = fFinInput ? fFinInput.value : "";
+
+        // Pipeline de filtrado
+        let filtrados = registros.filter(reg => {
+            if (!reg) return false;
+
+            // 1. Filtro por texto (Código o Nombre)
+            let cod = String(reg.codigo || '').toLowerCase();
+            let nom = String(reg.nombre || '').toLowerCase();
+            let matchTxt = txt === "" || cod.includes(txt) || nom.includes(txt);
+
+            // 2. Filtro por sucursal
+            let sucReg = String(reg.sucursal || '').replace(/📍/g, '').trim().toLowerCase();
+            let matchSuc = sucFiltro === "" || sucReg === sucFiltro;
+
+            // 3. Filtro por tipo de movimiento
+            let tipoReg = String(reg.tipo || '').toUpperCase();
+            let matchTipo = tipoFiltro === "" || tipoReg.includes(tipoFiltro);
+
+            // 4. Filtro por rango de fechas normalizado
+            let fReg = String(reg.fecha || '');
+            if (fReg.includes('/')) {
+                let p = fReg.split('/');
+                if (p.length === 3 && p[2].length === 4) {
+                    fReg = `${p[2]}-${p[1].padStart(2, '0')}-${p[0].padStart(2, '0')}`;
+                }
+            }
+            let matchFIni = fIni === "" || fReg >= fIni;
+            let matchFFin = fFin === "" || fReg <= fFin;
+
+            return matchTxt && matchSuc && matchTipo && matchFIni && matchFFin;
         });
+
+        // 🌟 ORDENAMIENTO CRONOLÓGICO: Más reciente primero (Descendente)
+        filtrados.sort((a, b) => parsearFechaHoraKardex(b) - parsearFechaHoraKardex(a));
 
         let html = '';
         
-        // Dibujamos máximo 300 filas de golpe para que el navegador no se trabe
-        registrosFiltrados.slice(0, 300).forEach(reg => {
-            let colorTipo = '#000';
+        // Renderizado optimizado para los primeros 300 registros
+        filtrados.slice(0, 300).forEach(reg => {
             let tipoLimpio = String(reg.tipo || '').toUpperCase();
+            let colorTipo = '#000';
             
             if (tipoLimpio.includes('VENTA')) colorTipo = 'var(--s)';
             else if (tipoLimpio.includes('COMPRA')) colorTipo = '#17a2b8';
             else if (tipoLimpio.includes('EDICIÓN')) colorTipo = 'var(--p)';
             else if (tipoLimpio.includes('AJUSTE')) colorTipo = '#fd7e14';
             else if (tipoLimpio.includes('ANULACIÓN')) colorTipo = 'var(--danger)';
-            else if (tipoLimpio.includes('TRANSFERENCIA') || tipoLimpio.includes('DEVOLUCIÓN DE ENVÍO')) colorTipo = '#6f42c1';
+            else if (tipoLimpio.includes('TRANSFERENCIA')) colorTipo = '#6f42c1';
 
-            let precioVentaSeguro = parseFloat(reg.precio) || 0;
-            let costoSeguro = parseFloat(reg.costo) || 0;
-            let cantidadSegura = parseFloat(reg.cantidad) || 0;
-
-            let stockAntes = reg.stock_antes !== undefined ? reg.stock_antes : 'N/A';
-            let stockDespues = reg.stock_despues !== undefined ? reg.stock_despues : 'N/A';
-
-            let colorCant = cantidadSegura > 0 ? 'var(--s)' : (cantidadSegura < 0 ? 'var(--danger)' : '#666');
+            let cant = parseFloat(reg.cantidad) || 0;
+            let colorCant = cant > 0 ? 'var(--s)' : (cant < 0 ? 'var(--danger)' : '#666');
 
             html += `<tr style="border-bottom: 1px solid #eee;">
-                <td style="padding:8px;">${reg.fecha} <br><small style="color:#888;">${reg.hora}</small></td>
-                <td style="padding:8px;"><b>${reg.nombre}</b><br><small style="color:#666;">${reg.codigo}</small></td>
-                <td style="padding:8px;"><span class="badge-kit" style="background:${colorTipo}; color:white; font-weight:bold;">${tipoLimpio}</span></td>
-                <td style="padding:8px; text-align:center; font-weight:bold; color:${colorCant};">${cantidadSegura > 0 ? '+' : ''}${cantidadSegura}</td>
-                
-                <td style="padding:8px; text-align:center; font-weight:bold; color:#666; background:rgba(0,0,0,0.02);">${stockAntes}</td>
-                <td style="padding:8px; text-align:center; font-weight:bold; color:var(--p); background:rgba(0,0,0,0.04);">${stockDespues}</td>
-                
-                <td style="padding:8px; text-align:right;">$${precioVentaSeguro.toFixed(2)}</td>
-                <td style="padding:8px; text-align:right; color:#666;">$${costoSeguro.toFixed(2)}</td>
-                <td style="padding:8px;">📍 ${reg.sucursal}</td>
-                <td style="padding:8px;">👤 ${reg.cajero}</td>
+                <td style="padding:8px;">${reg.fecha || ''}<br><small style="color:#888;">${reg.hora || ''}</small></td>
+                <td style="padding:8px;"><b>${reg.nombre || 'Sin Nombre'}</b><br><small style="color:#666;">${reg.codigo || ''}</small></td>
+                <td style="padding:8px;"><span class="badge-kit" style="background:${colorTipo}; color:white; font-weight:bold; padding:2px 6px; border-radius:4px; font-size:11px;">${tipoLimpio}</span></td>
+                <td style="padding:8px; text-align:center; font-weight:bold; color:${colorCant};">${cant > 0 ? '+' : ''}${cant}</td>
+                <td style="padding:8px; text-align:center; color:#666; background:rgba(0,0,0,0.02);">${reg.stock_antes !== undefined ? reg.stock_antes : '-'}</td>
+                <td style="padding:8px; text-align:center; font-weight:bold; color:var(--p); background:rgba(0,0,0,0.04);">${reg.stock_despues !== undefined ? reg.stock_despues : '-'}</td>
+                <td style="padding:8px; text-align:right;">$${(parseFloat(reg.precio) || 0).toFixed(2)}</td>
+                <td style="padding:8px; text-align:right; color:#666;">$${(parseFloat(reg.costo) || 0).toFixed(2)}</td>
+                <td style="padding:8px;">📍 ${reg.sucursal || ''}</td>
+                <td style="padding:8px;">👤 ${reg.cajero || reg.usuario || ''}</td>
             </tr>`;
         });
 
         let tbody = document.getElementById('kardex_tabla_body');
         if (tbody) {
-            tbody.innerHTML = html || `<tr><td colspan="10" style="text-align:center; padding:20px; color:#999;">No se encontraron movimientos en el historial.</td></tr>`;
+            tbody.innerHTML = html || `<tr><td colspan="10" style="text-align:center; padding:20px; color:#999;">No se encontraron movimientos registrados con los filtros seleccionados.</td></tr>`;
         }
 
     } catch (error) {
-        console.error("❌ Error interno en filtrarKardex:", error);
+        console.error("❌ Error en filtrarKardex:", error);
     }
 };
-
 
 // ====================================================================
 // === 🚚 MÓDULO UNIFICADO: TRANSFERENCIAS Y RECEPCIONES 📥 ===
@@ -9851,58 +9766,87 @@ window.sesionCajaActual = null;
 
 window.cargarSesionCajaActiva = async function() {
     try {
-        let sucReal = String(typeof sucursalActual !== 'undefined' ? sucursalActual : "Matriz").replace(/📍/g, '').trim();
         let usrReal = typeof usuarioActual !== 'undefined' ? usuarioActual : '';
 
-        // 1. Buscamos cualquier caja abierta en esta sucursal
-        let records = await pb.collection('cajas_sesiones').getFullList({
-            filter: pb.filter("estado = 'abierta' && (sucursal ~ {:suc} || sucursal = {:sucRaw})", {
-                suc: sucReal,
-                sucRaw: typeof sucursalActual !== 'undefined' ? sucursalActual : "Matriz"
-            }),
-            sort: '-created',
-            requestKey: null
-        });
+        // Si no hay nadie logueado, no cargamos ninguna caja
+        if (!usrReal) {
+            window.sesionCajaActual = null;
+            return;
+        }
 
-        if (records && records.length > 0) {
-            // 🌟 CORRECCIÓN: Búsqueda estricta. Cero asignaciones forzadas.
-            let sesionCoincidente = records.find(r => r.cajero === usrReal);
+        // 1. Descargamos TODAS las cajas de la base de datos (sin filtros complejos que puedan fallar)
+        let records = [];
+        try {
+            records = await pb.collection('cajas_sesiones').getFullList({
+                sort: '-created',
+                requestKey: null
+            });
+        } catch(errPb) {
+            console.error("Error consultando cajas en PocketBase:", errPb);
+            return;
+        }
+
+        // 🌟 2. FILTRO ESTRICTO EN MEMORIA (100% a prueba de fallos)
+        // Solo conservamos la caja si está ABIERTA y le pertenece a ESTE CAJERO
+        let misTurnosAbiertos = records.filter(r => 
+            r.estado === 'abierta' && 
+            r.cajero === usrReal
+        );
+
+        if (misTurnosAbiertos.length > 0) {
+            let miTurnoPendiente = misTurnosAbiertos[0]; // Tomamos su turno más reciente
+
+            // 3. Revisar si ya lo habíamos cargado en esta máquina para no molestarlo con mensajes
+            let sesionLocal = localStorage.getItem("pos_sesion_activa");
+            let yaEstabaCargada = false;
             
-            // 🛡️ Opcional: Si necesitas que el Admin pueda ver la caja de otros, descomenta la siguiente línea:
-            // if (!sesionCoincidente && usrReal.toLowerCase() === 'admin') sesionCoincidente = records[0];
+            if (sesionLocal) {
+                try {
+                    let parseada = JSON.parse(sesionLocal);
+                    // Validamos que el ID de la caja guardada coincida con el de la nube
+                    yaEstabaCargada = (parseada.id === miTurnoPendiente.id && parseada.cajero === usrReal);
+                } catch(e) {}
+            }
 
-            if (sesionCoincidente) {
-                // Es su turno, lo cargamos en memoria
-                window.sesionCajaActual = sesionCoincidente;
-                localStorage.setItem("pos_sesion_activa", JSON.stringify(sesionCoincidente));
+            if (yaEstabaCargada) {
+                // Carga directa sin preguntar
+                window.sesionCajaActual = miTurnoPendiente;
             } else {
-                // Hay turnos abiertos, pero NINGUNO le pertenece a este cajero.
-                window.sesionCajaActual = null;
-                localStorage.removeItem("pos_sesion_activa");
+                // 🌟 4. PREGUNTA DE CONTINUIDAD (Solo aparece una vez)
+                let continuar = confirm(`👋 Hola ${usrReal},\n\nTienes un turno abierto previamente en la sucursal "${miTurnoPendiente.sucursal}".\n\n¿Deseas CONTINUAR operando con este mismo turno?`);
+                
+                if (continuar) {
+                    window.sesionCajaActual = miTurnoPendiente;
+                    localStorage.setItem("pos_sesion_activa", JSON.stringify(miTurnoPendiente));
+                } else {
+                    // Si dice que NO, lo dejamos sin caja para que la pantalla le exija iniciar una nueva
+                    window.sesionCajaActual = null;
+                    localStorage.removeItem("pos_sesion_activa");
+                }
             }
         } else {
-            // No hay ninguna caja abierta en la sucursal
+            // NINGUN TURNO ABIERTO PERTENECE A ESTE CAJERO (Limpia rastros de otros cajeros)
             window.sesionCajaActual = null;
             localStorage.removeItem("pos_sesion_activa");
         }
     } catch (e) {
-        console.error("Error al sincronizar turno desde la nube:", e);
+        console.error("❌ Error general al sincronizar turno:", e);
         
-        // Paracaídas Local (Solo cargamos si el cajero guardado coincide con el actual)
+        // Paracaídas Local: Solo entra si no hay internet Y si la caja pertenece a este usuario
+        let usrReal = typeof usuarioActual !== 'undefined' ? usuarioActual : '';
         let sesionGuardada = localStorage.getItem("pos_sesion_activa");
         if (sesionGuardada) {
             try {
                 let parseada = JSON.parse(sesionGuardada);
-                if (parseada.cajero === usrReal) {
+                if (parseada.cajero === usrReal && parseada.estado === 'abierta') {
                     window.sesionCajaActual = parseada;
                 } else {
                     window.sesionCajaActual = null;
                 }
-            } catch(err) {
-                window.sesionCajaActual = null;
-            }
+            } catch(err) { window.sesionCajaActual = null; }
         }
     } finally {
+        // Disparamos la actualización visual para poner "ABIERTO 🟢" o "CERRADO 🔴"
         if (typeof window.actualizarIndicadorTurnoUI === 'function') {
             window.actualizarIndicadorTurnoUI();
         }
@@ -9964,30 +9908,27 @@ if (document.readyState === 'complete' || document.readyState === 'interactive')
 }
 window.abrirMontoInicialCaja = async function() {
     let montoInput = prompt("💵 Ingresa el Fondo Inicial de Caja para abrir turno:", "0.00");
-    if (montoInput === null) return; // Si le da a cancelar
+    if (montoInput === null) return; 
 
     let montoInicial = parseFloat(montoInput) || 0;
     
-    // Obtenemos la sucursal y el usuario actual de forma segura
+    // 🌟 RESTAURAMOS A TU LÓGICA ORIGINAL
     let sucReal = String(typeof sucursalActual !== 'undefined' ? sucursalActual : "Matriz").replace(/📍/g, '').trim();
     let cajeroActual = String(typeof usuarioActual !== 'undefined' ? usuarioActual : "Cajero").trim();
 
-    // 🌟 Objeto de datos con nombres EXACTOS a tus columnas de PocketBase
     let datosSesion = {
-        sucursal: sucReal,
+        sucursal: sucReal, // <-- Vuelve a ser estricto por local
         cajero: cajeroActual,
         estado: 'abierta',
         monto_inicial: montoInicial,
-        fecha_apertura: new Date().toISOString(), // Fecha ISO válida para campo DateTime en PocketBase
+        fecha_apertura: new Date().toISOString(), 
         efectivo_esperado: montoInicial,
         efectivo_contado: 0,
         diferencia_caja: 0
     };
 
     try {
-        // Guardamos en la colección correcta 'cajas_sesiones'
         let record = await pb.collection('cajas_sesiones').create(datosSesion);
-        
         window.sesionCajaActual = record;
         localStorage.setItem("pos_sesion_activa", JSON.stringify(record));
 
@@ -9997,8 +9938,8 @@ window.abrirMontoInicialCaja = async function() {
             window.actualizarIndicadorTurnoUI();
         }
     } catch (error) {
-        console.error("Error detallado al abrir turno en PocketBase:", error);
-        alert("❌ No se pudo guardar el turno en PocketBase. Revisa los nombres de los campos.");
+        console.error("Error al abrir turno:", error);
+        alert("❌ No se pudo guardar el turno en PocketBase.");
     }
 };
 
@@ -10586,3 +10527,58 @@ window.mostrarNotificacionFlotante = function(idRecord, datosModal, tipo) {
 
     document.body.appendChild(toast);
 };
+window.actualizarTickerPromos = function() {
+    let tickerContainer = document.getElementById('contenedor_ticker');
+    let tickerTexto = document.getElementById('texto_ticker_promos');
+    if (!tickerContainer || !tickerTexto) return;
+
+    let hoy = (typeof getFechaLocal === 'function') ? getFechaLocal() : new Date().toISOString().split('T')[0];
+    
+    let activas = [];
+    if (typeof promociones !== 'undefined' && Array.isArray(promociones)) {
+        activas = promociones.filter(p => {
+            if (!p) return false;
+            let matchSuc = (p.sucursal === 'Todas' || p.sucursal === sucursalActual || (!p.sucursal && sucursalActual === 'Matriz'));
+            let matchIni = (!p.fecha_ini || p.fecha_ini === '' || p.fecha_ini <= hoy);
+            let matchFin = (!p.fecha_fin || p.fecha_fin === '' || p.fecha_fin >= hoy);
+            let matchLim = (!p.limite || p.limite === 0 || (p.usadas || 0) < p.limite);
+            return matchSuc && matchIni && matchFin && matchLim;
+        });
+    }
+
+    // Si no hay promos, mostramos la bienvenida con velocidad fija y tranquila
+    if (activas.length === 0) {
+        tickerTexto.innerHTML = `<span style="margin: 0 40px; font-weight: normal;">🌟 ¡BIENVENIDO AL SISTEMA! - Mantente atento a nuestras próximas ofertas 🌟</span>`;
+        tickerTexto.style.animationDuration = "20s"; // Velocidad calmada
+        tickerContainer.style.display = 'block';
+        return;
+    }
+
+    // Si sí hay promos, armamos los mensajes
+    let mensajes = activas.map(p => {
+        let nombreProd = (typeof inv !== 'undefined' && inv[p.cod]) ? inv[p.cod].nom : 'Oferta Especial';
+        let descuento = p.tipo === 'nxm' ? `LLEVA ${p.n} PAGA ${p.m}` : `-${p.desc}% OFF`;
+        return `<span style="margin: 0 40px; font-weight: normal;">🏷️ <b style="color:#ffc107;">${nombreProd.toUpperCase()}</b>: ${descuento}</span>`;
+    });
+
+    // Lo unimos solo dos veces para no hacer una cadena kilométrica
+    let cadena = mensajes.join(' • ') + ' • ' + mensajes.join(' • ');
+    
+    tickerTexto.innerHTML = cadena;
+    
+    // 🔥 MAGIA DE VELOCIDAD: Calcula 0.1 segundos por cada letra exacta que haya en el texto
+    let tiempoPerfecto = cadena.length * 0.1; 
+    tickerTexto.style.animationDuration = tiempoPerfecto + "s";
+
+    tickerContainer.style.display = 'block';
+};
+
+// Auto-arranque
+setTimeout(() => {
+    if (typeof actualizarTickerPromos === 'function') actualizarTickerPromos();
+}, 2000);
+
+// Auto-arranque de la barra a los 2 segundos de abrir el sistema
+setTimeout(() => {
+    if (typeof actualizarTickerPromos === 'function') actualizarTickerPromos();
+}, 2000);
