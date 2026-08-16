@@ -6402,51 +6402,72 @@ function seleccionarBusqueda(cod) {
 }
 
 // ====================================================================
-// 📸 ESCÁNER DE CÓDIGOS DE BARRAS PARA CELULARES (FINAL)
+// 📸 ESCÁNER DE CÓDIGOS DE BARRAS (VERSIÓN CLONADA DE INV. CIEGO)
 // ====================================================================
-let html5QrcodeScanner = null;
+let html5QrcodeScannerPrincipal = null;
 
 window.abrirEscanerCamara = function(destinoInputId = 'v_cod') {
     let modal = document.getElementById('modal-camara');
+    if(!modal) return;
     
-    if(!modal) {
-        console.error("Falta el HTML de la cámara");
-        return;
-    }
-
-    // Forzamos la aparición de la pantalla negra por encima de todo
+    // 1. Mostramos la pantalla negra a la fuerza
     modal.style.setProperty('display', 'flex', 'important');
     modal.style.setProperty('z-index', '999999', 'important');
 
-    try {
-        // Iniciamos el escáner
-        html5QrcodeScanner = new Html5QrcodeScanner(
-            "lector-qr", { fps: 10, qrbox: { width: 250, height: 150 } });
-
-        html5QrcodeScanner.render((codigoEscaneado) => {
-            let input = document.getElementById(destinoInputId);
-            if(input) {
-                input.value = codigoEscaneado;
-                // Simulamos el "Enter" para buscar el producto
-                input.dispatchEvent(new KeyboardEvent('keypress', { key: 'Enter' }));
+    // 2. Usamos la misma lógica "cruda" que te funciona en el Inventario Ciego
+    html5QrcodeScannerPrincipal = new Html5Qrcode("lector-qr");
+    
+    html5QrcodeScannerPrincipal.start(
+        { facingMode: "environment" }, // 🔥 Fuerza la cámara trasera del celular
+        {
+            fps: 20, // Más rápido
+            qrbox: { width: 280, height: 130 },
+            formatsToSupport: [ 
+                Html5QrcodeSupportedFormats.EAN_13, 
+                Html5QrcodeSupportedFormats.EAN_8, 
+                Html5QrcodeSupportedFormats.CODE_128,
+                Html5QrcodeSupportedFormats.UPC_A
+            ]
+        },
+        (codigoDetectado) => {
+            // 🎯 ¡Código detectado!
+            if (navigator.vibrate) navigator.vibrate(80); // Vibra el celular
+            
+            if (html5QrcodeScannerPrincipal) {
+                // Apagamos la cámara
+                html5QrcodeScannerPrincipal.stop().then(() => {
+                    html5QrcodeScannerPrincipal = null;
+                    modal.style.setProperty('display', 'none', 'important');
+                    
+                    // Mandamos el código a la barra de búsqueda y damos "Enter"
+                    let input = document.getElementById(destinoInputId);
+                    if(input) {
+                        input.value = codigoDetectado;
+                        // Disparamos los eventos para que tu sistema busque el producto
+                        input.dispatchEvent(new KeyboardEvent('keypress', { key: 'Enter' }));
+                        input.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter' }));
+                    }
+                }).catch(err => console.error(err));
             }
-            cerrarEscanerCamara();
-        }, (error) => {
-            // Ignoramos la estática visual
-        });
-        
-    } catch (e) {
-        console.error("Error al encender cámara: ", e);
-    }
+        },
+        (error) => { /* Silenciar estática */ }
+    ).catch(err => {
+        console.warn("Cámara bloqueada o sin permisos.", err);
+        alert("⚠️ No se pudo encender la cámara. Revisa los permisos de tu navegador.");
+        cerrarEscanerCamara();
+    });
 };
 
 window.cerrarEscanerCamara = function() {
     let modal = document.getElementById('modal-camara');
     if(modal) modal.style.setProperty('display', 'none', 'important');
     
-    if(html5QrcodeScanner) {
-        html5QrcodeScanner.clear().catch(e => console.error("Error al apagar:", e));
-        html5QrcodeScanner = null;
+    if (html5QrcodeScannerPrincipal) {
+        html5QrcodeScannerPrincipal.stop().then(() => {
+            html5QrcodeScannerPrincipal = null;
+        }).catch(err => {
+            html5QrcodeScannerPrincipal = null; // Forzamos apagado
+        });
     }
 };
 
