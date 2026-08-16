@@ -257,7 +257,7 @@
             <div style="display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 15px; align-items: center;">
                 <input type="text" id="c_cod" placeholder="SCAN CÓDIGO PRODUCTO..." onkeypress="handleCompraScan(event)" style="flex: 1 1 150px; height: 40px; box-sizing: border-box; padding: 0 10px; font-size: 14px; border: 1px solid #ccc; border-radius: 4px;">
                 <button onclick="abrirCalculadoraCajaGlobal()" style="background:#004085; color:white; border:none; border-radius: 4px; height: 40px; padding: 0 15px; cursor: pointer; font-weight: bold; font-size: 14px; box-shadow: 0 1px 3px rgba(0,0,0,0.2); white-space: nowrap;">📦 Cajas</button>
-                <button class="no-print" onclick="abrirEscanerCamara('compras')" style="background: #28a745; color: white; border: none; border-radius: 4px; height: 40px; padding: 0 15px; cursor: pointer; font-size: 18px; box-shadow: 0 1px 3px rgba(0,0,0,0.2); white-space: nowrap;">📷</button>
+                <button class="no-print" onclick="abrirEscanerCamara('c_cod')" style="background: #28a745; color: white; border: none; border-radius: 4px; height: 40px; padding: 0 15px; cursor: pointer; font-size: 18px; box-shadow: 0 1px 3px rgba(0,0,0,0.2); white-space: nowrap;">📷</button>
                 <button class="btn-search" onclick="abrirBuscador()" style="height: 40px; padding: 0 15px; font-size: 13px; border-radius: 4px; border: none; cursor: pointer; white-space: nowrap;">🔍 BUSCAR</button>
                 <button class="btn-search" style="background:var(--s); height: 40px; padding: 0 15px; font-size: 13px; border-radius: 4px; border: none; cursor: pointer; white-space: nowrap;" onclick="abrirModalMovimiento()">💵 MOVIMIENTO CAJA</button>
             </div>
@@ -1133,7 +1133,7 @@
                 <div id="t_sugerencias" style="display:none; position:absolute; top:42px; left:0; width:100%; background:white; border:1px solid #004085; border-radius:5px; max-height:200px; overflow-y:auto; z-index:1000; box-shadow: 0 4px 8px rgba(0,0,0,0.2);"></div>
             </div>
             <input type="number" id="t_cant" value="1" style="flex:1; height:40px; padding:0 10px; border:1px solid #ccc; border-radius:4px; box-sizing:border-box; font-size:14px;">
-            <button class="no-print" onclick="abrirEscanerCamara('transferencias')" style="background: #28a745; color: white; border: none; border-radius: 4px; height: 40px; padding: 0 15px; cursor: pointer; font-size: 18px; box-shadow: 0 1px 3px rgba(0,0,0,0.2); white-space: nowrap;">📷</button>
+            <button class="no-print" onclick="abrirEscanerCamara('t_cod')" style="background: #28a745; color: white; border: none; border-radius: 4px; height: 40px; padding: 0 15px; cursor: pointer; font-size: 18px; box-shadow: 0 1px 3px rgba(0,0,0,0.2); white-space: nowrap;">📷</button>
             <button onclick="addTransferToList()" class="btn-final" style="margin:0; background:var(--kit); height:40px; padding: 0 15px; border-radius:4px; font-size:14px; flex:1">AÑADIR</button>
         </div>
         <div style="flex-grow:1; overflow-y:auto; margin-top:15px; border:1px solid #eee; min-height: 200px;">
