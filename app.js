@@ -2338,7 +2338,21 @@ function obtenerStockRealSucursal(prod, suc) {
 // ====================================================================
 // 🛒 CONFIRMAR VENTA (CONECTADA AL ACUMULADOR)
 // ====================================================================
+// ====================================================================
+// 🛒 CONFIRMAR VENTA (CON CANDADO ANTI-DUPLICADOS)
+// ====================================================================
+window.ventaEnProceso = false; // 🛡️ Candado global
+
 window.confirmarVenta = async function(cambioFinal = 0) {
+    // 🛡️ 1. REVISAMOS EL CANDADO. Si ya está trabajando, ignoramos el clic fantasma.
+    if (window.ventaEnProceso) {
+        console.warn("⏳ Ignorando clic adicional: La venta ya se está procesando...");
+        return; 
+    }
+    
+    // 🛡️ 2. CERRAMOS EL CANDADO
+    window.ventaEnProceso = true;
+
     try {
         let tot = parseFloat(document.getElementById('v_total').innerText); 
         if(tot <= 0 || isNaN(tot)) return;
@@ -2451,7 +2465,6 @@ window.confirmarVenta = async function(cambioFinal = 0) {
             
             // 🌟 3. LECTURA DEL STOCK DESPUÉS DEL COBRO
             let stockDespues = obtenerStockRealSucursal(pMaestro, suc);
-            // Si descontarStock opera de forma diferida en memoria, calculamos la paridad matemática exacta:
             if (stockDespues === stockAntes) {
                 stockDespues = stockAntes - cantVendida;
             }
@@ -2624,27 +2637,32 @@ window.confirmarVenta = async function(cambioFinal = 0) {
         let badgeMayoreo = document.getElementById('v_mayoreo_status');
         if(badgeMayoreo) { badgeMayoreo.innerText = "MAYOREO: DESACTIVADO"; badgeMayoreo.style.background = "#444"; badgeMayoreo.style.color = "#bbb"; }
 
-        // ⚡ 1. MOSTRAR EL TICKET INSTANTÁNEAMENTE (Sin hacer esperar al usuario)
+        // ⚡ 1. MOSTRAR EL TICKET INSTANTÁNEAMENTE
         let modalCobro = document.getElementById('modalCobro');
         if (modalCobro) modalCobro.style.display = 'none'; 
         
         let modalTicket = document.getElementById('modalTicket');
         if (modalTicket) modalTicket.style.display = 'block';
 
-        // ⚡ 2. MANDAR EL TRABAJO PESADO A SEGUNDO PLANO (Evita que el celular se congele)
+        // ⚡ 2. MANDAR EL TRABAJO PESADO A SEGUNDO PLANO
         setTimeout(() => {
             if(typeof window.renderV === "function") window.renderV(); else if(typeof renderV === "function") renderV();
             if(typeof window.renderClientes === "function") window.renderClientes();
             
             let btnCerrar = document.getElementById('btnCerrarTicket'); 
             if(btnCerrar) btnCerrar.focus();
-        }, 50); // Le damos 50 milisegundos a la pantalla para respirar y dibujar el ticket
+        }, 50); 
         let btnCobrar = Array.from(document.querySelectorAll('button')).find(b => b.innerText.includes('PROCESANDO'));
         if (btnCobrar) { btnCobrar.innerText = "💳 MANUAL"; btnCobrar.style.pointerEvents = "auto"; btnCobrar.style.backgroundColor = ""; }
         
     } catch(err) { 
         console.error("Error catastrofico en Venta:", err); 
         alert("⚠️ Hubo un error al procesar la venta: " + err.message); 
+    } finally {
+        // 🛡️ 3. ABRIMOS EL CANDADO (Se ejecuta siempre al final, haya error o no)
+        setTimeout(() => {
+            window.ventaEnProceso = false;
+        }, 1000); // 1 segundo de enfriamiento para limpiar la pantalla por completo
     }
 };
 // Granel
@@ -10519,9 +10537,8 @@ window.actualizarTickerPromos = function() {
     let tickerTexto = document.getElementById('texto_ticker_promos');
     if (!tickerContainer || !tickerTexto) return;
 
-    // 🛑 APAGAMOS LA ANIMACIÓN DEVORADORA DE MEMORIA
-    tickerTexto.style.animation = "none"; 
-    tickerTexto.style.transition = "none"; 
+   // 🛑 DESTRUIMOS EL CSS VIEJO Y LO FORZAMOS AL CENTRO
+    tickerTexto.style.cssText = "animation: none !important; transition: none !important; transform: none !important; position: static !important; display: block !important; width: 100% !important; text-align: center !important; white-space: normal !important; margin: 0 !important; padding: 5px !important;";
 
     let hoy = (typeof getFechaLocal === 'function') ? getFechaLocal() : new Date().toISOString().split('T')[0];
     
