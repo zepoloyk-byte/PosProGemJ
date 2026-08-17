@@ -10511,10 +10511,17 @@ window.mostrarNotificacionFlotante = function(idRecord, datosModal, tipo) {
 
     document.body.appendChild(toast);
 };
+// Variable global para controlar el tiempo sin volver loca a la memoria
+window.intervaloPromosVentas = null;
+
 window.actualizarTickerPromos = function() {
     let tickerContainer = document.getElementById('contenedor_ticker');
     let tickerTexto = document.getElementById('texto_ticker_promos');
     if (!tickerContainer || !tickerTexto) return;
+
+    // 🛑 APAGAMOS LA ANIMACIÓN DEVORADORA DE MEMORIA
+    tickerTexto.style.animation = "none"; 
+    tickerTexto.style.transition = "none"; 
 
     let hoy = (typeof getFechaLocal === 'function') ? getFechaLocal() : new Date().toISOString().split('T')[0];
     
@@ -10530,31 +10537,40 @@ window.actualizarTickerPromos = function() {
         });
     }
 
-    // Si no hay promos, mostramos la bienvenida con velocidad fija y tranquila
+    tickerContainer.style.setProperty('display', 'block', 'important');
+
+    // Limpiamos el reloj anterior para que no se encimen
+    if (window.intervaloPromosVentas) {
+        clearInterval(window.intervaloPromosVentas);
+    }
+
+    // SI NO HAY PROMOCIONES
     if (activas.length === 0) {
-        tickerTexto.innerHTML = `<span style="margin: 0 40px; font-weight: normal;">🌟 ¡BIENVENIDO AL SISTEMA! - Mantente atento a nuestras próximas ofertas 🌟</span>`;
-        tickerTexto.style.animationDuration = "20s"; // Velocidad calmada
-        tickerContainer.style.display = 'block';
+        tickerTexto.innerHTML = `<span style="font-weight: normal;">🌟 ¡BIENVENIDO AL SISTEMA! 🌟</span>`;
         return;
     }
 
-    // Si sí hay promos, armamos los mensajes
+    // ARMAMOS LA LISTA DE MENSAJES
     let mensajes = activas.map(p => {
         let nombreProd = (typeof inv !== 'undefined' && inv[p.cod]) ? inv[p.cod].nom : 'Oferta Especial';
         let descuento = p.tipo === 'nxm' ? `LLEVA ${p.n} PAGA ${p.m}` : `-${p.desc}% OFF`;
-        return `<span style="margin: 0 40px; font-weight: normal;">🏷️ <b style="color:#ffc107;">${nombreProd.toUpperCase()}</b>: ${descuento}</span>`;
+        return `<span style="font-weight: bold; font-size: 14px;">🏷️ <span style="color:#ffc107;">${nombreProd.toUpperCase()}</span>: ${descuento}</span>`;
     });
 
-    // Lo unimos solo dos veces para no hacer una cadena kilométrica
-    let cadena = mensajes.join(' • ') + ' • ' + mensajes.join(' • ');
+    // 🚀 SISTEMA DE CARRUSEL LIGERO (Cero lag)
+    let indicePromo = 0;
     
-    tickerTexto.innerHTML = cadena;
-    
-    // 🔥 MAGIA DE VELOCIDAD: Calcula 0.1 segundos por cada letra exacta que haya en el texto
-    let tiempoPerfecto = cadena.length * 0.1; 
-    tickerTexto.style.animationDuration = tiempoPerfecto + "s";
+    // Mostramos la primera de inmediato
+    tickerTexto.innerHTML = mensajes[indicePromo];
 
-    tickerContainer.style.display = 'block';
+    // Cambiamos el texto cada 4 segundos
+    window.intervaloPromosVentas = setInterval(() => {
+        indicePromo++;
+        if (indicePromo >= mensajes.length) {
+            indicePromo = 0; // Volver a empezar
+        }
+        tickerTexto.innerHTML = mensajes[indicePromo];
+    }, 4000); 
 };
 
 // Auto-arranque
