@@ -2528,7 +2528,7 @@ window.confirmarVenta = async function(cambioFinal = 0) {
                 itemsTicketHtml += `<tr><td colspan="2" style="text-align:right; font-size:11px;">↳ ${etiquetaDescuento}:</td><td style="text-align:right; font-size:11px;">-$${ahorroItem.toFixed(2)}</td></tr>`;
             }
 
-            let costoUnitario = parseFloat(pMaestro.pc || pOriginal.pc || 0);
+            let costoUnitario = parseFloat(pMaestro.cos || pOriginal.cos || pMaestro.pc || pOriginal.pc || 0);
             detallesParaGuardar.push({ 
                 cod: x.cod, 
                 nom: x.nom || 'Producto', 
@@ -2624,16 +2624,21 @@ window.confirmarVenta = async function(cambioFinal = 0) {
         let badgeMayoreo = document.getElementById('v_mayoreo_status');
         if(badgeMayoreo) { badgeMayoreo.innerText = "MAYOREO: DESACTIVADO"; badgeMayoreo.style.background = "#444"; badgeMayoreo.style.color = "#bbb"; }
 
-        if(typeof window.renderV === "function") window.renderV(); else if(typeof renderV === "function") renderV();
-        if(typeof window.renderClientes === "function") window.renderClientes();
+        // ⚡ 1. MOSTRAR EL TICKET INSTANTÁNEAMENTE (Sin hacer esperar al usuario)
         let modalCobro = document.getElementById('modalCobro');
         if (modalCobro) modalCobro.style.display = 'none'; 
         
         let modalTicket = document.getElementById('modalTicket');
         if (modalTicket) modalTicket.style.display = 'block';
-        
-        setTimeout(() => { let btnCerrar = document.getElementById('btnCerrarTicket'); if(btnCerrar) btnCerrar.focus(); }, 100);
 
+        // ⚡ 2. MANDAR EL TRABAJO PESADO A SEGUNDO PLANO (Evita que el celular se congele)
+        setTimeout(() => {
+            if(typeof window.renderV === "function") window.renderV(); else if(typeof renderV === "function") renderV();
+            if(typeof window.renderClientes === "function") window.renderClientes();
+            
+            let btnCerrar = document.getElementById('btnCerrarTicket'); 
+            if(btnCerrar) btnCerrar.focus();
+        }, 50); // Le damos 50 milisegundos a la pantalla para respirar y dibujar el ticket
         let btnCobrar = Array.from(document.querySelectorAll('button')).find(b => b.innerText.includes('PROCESANDO'));
         if (btnCobrar) { btnCobrar.innerText = "💳 MANUAL"; btnCobrar.style.pointerEvents = "auto"; btnCobrar.style.backgroundColor = ""; }
         
