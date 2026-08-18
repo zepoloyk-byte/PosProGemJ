@@ -454,14 +454,13 @@ async function iniciarRadarVentasVeloz() {
     if (typeof renderCorte === 'function') renderCorte();
 
     try {
-        // 👇 SOLUCIÓN: Definimos la fecha de HOY en lugar de usar selectedDate
         let hoy = typeof getFechaLocal === 'function' ? getFechaLocal() : new Date().toLocaleString("sv-SE", { timeZone: "America/Mexico_City" }).substring(0, 10);
         
         console.log("☁️ Descargando ventas del día:", hoy);
 
-        // Pedimos a la nube las ventas de hoy
+        // 👇 SOLUCIÓN: Comillas simples ('') alrededor de ${hoy}
         let records = await pb.collection('ventas').getList(1, 500, {
-            filter: `data.fecha >= "${hoy}"`,
+            filter: `data.fecha >= '${hoy}'`, 
             requestKey: null
         });
 
@@ -509,7 +508,6 @@ async function iniciarRadarVentasVeloz() {
     });
 }
 iniciarRadarVentasVeloz();
-
 // Compras (Radar Inmune a pérdida de IDs en PikaPod)
 db.collection("compras").onSnapshot((querySnapshot) => {
     let nuevasCompras = [];
@@ -3930,71 +3928,66 @@ window.guardarAjusteStock = async function() {
             pMaestro.stock = {};
         }
         
-        // Ajuste en la memoria local
+        // 1. Ajuste en la memoria local (Esto se guarda sí o sí)
         pMaestro.stock[sucursalActual] = stockDespuesReal;
-        
         try { localStorage.setItem("pos_precision_v6", JSON.stringify(inv)); } catch (e) { }
 
-        // 🌟 ESCUDO ANTI-SOBREESCRITURA: Cambia el valor SOLO en esta sucursal (PB/FB)
-        try {
-            if (typeof pb !== 'undefined' && codMaestro) {
-                let pNube = await pb.collection('inventario').getOne(String(codMaestro));
+        let guardadoExitoso = false;
+
+        // 🌟 ESCUDO ANTI-DUPLICADOS (Buscador inteligente)
+        if (typeof pb !== 'undefined') {
+            try {
+                let idBuscar = String(codMaestro); 
+                // En lugar de buscar por ID estricto, buscamos dentro de la columna 'cod' o 'codigo'
+                let pNube = await pb.collection('inventario').getFirstListItem(`id="${idBuscar}" || cod="${idBuscar}" || codigo="${idBuscar}"`);
                 
                 if (!pNube.stock) pNube.stock = {};
                 if (!pNube.inv_sucursales) pNube.inv_sucursales = {};
                 
                 pNube.stock[sucursalActual] = stockDespuesReal;
                 pNube.inv_sucursales[sucursalActual] = stockDespuesReal;
+                if (!pNube.stock && !pNube.inv_sucursales && pNube.can !== undefined) pNube.can = stockDespuesReal;
                 
-                if (!pNube.stock && !pNube.inv_sucursales && pNube.can !== undefined) {
-                    pNube.can = stockDespuesReal;
-                }
-                
-                await pb.collection('inventario').update(String(codMaestro), pNube);
-
-            } else if (typeof db !== 'undefined' && codMaestro) {
-                let docSnap = await db.collection("inventario").doc(String(codMaestro)).get();
-                if (docSnap.exists) {
-                    let pNube = docSnap.data();
-                    
-                    if (!pNube.stock) pNube.stock = {};
-                    if (!pNube.inv_sucursales) pNube.inv_sucursales = {};
-                    
-                    pNube.stock[sucursalActual] = stockDespuesReal;
-                    pNube.inv_sucursales[sucursalActual] = stockDespuesReal;
-                    
-                    if (!pNube.stock && !pNube.inv_sucursales && pNube.can !== undefined) {
-                        pNube.can = stockDespuesReal;
-                    }
-
-                    await db.collection("inventario").doc(String(codMaestro)).set(pNube);
-                } else {
-                    await db.collection("inventario").doc(String(codMaestro)).set(pMaestro);
-                }
+                // Actualizamos usando el ID interno real que PocketBase le haya asignado (Evita duplicados)
+                await pb.collection('inventario').update(pNube.id, pNube);
+                guardadoExitoso = true;
+            } catch (errPb) {
+                console.warn("PocketBase no localizó el código. Pasando a sistema secundario...");
             }
+        }
 
+        // INTENTO 2: Sistema original db (Solo usamos .set para evitar el error de .get)
+        if (!guardadoExitoso && typeof db !== 'undefined') {
+            try {
+                await db.collection("inventario").doc(String(codMaestro)).set(pMaestro);
+                guardadoExitoso = true;
+            } catch (errFb) {
+                console.error("Error en base de datos secundaria:", errFb);
+            }
+        }
+
+        // FIN DEL PROCESO
+        if (guardadoExitoso) {
             if (typeof registrarEnKardex === 'function') {
                 registrarEnKardex(codAjusteStock, pO.nom, "AJUSTE", diferencia, pO.pv || 0, pO.cos || 0, stockAntesReal, stockDespuesReal);
             }
-            
             document.getElementById('modalAjusteStock').style.display = 'none';
             alert("✅ Stock ajustado y guardado correctamente.");
-            
-            if (typeof renderTablaInventario === 'function') renderTablaInventario();
-            if (typeof renderI === 'function') renderI(); 
-
-        } catch (errorNube) {
-            console.error("❌ Error con la nube al ajustar:", errorNube);
-            alert("❌ Error con la nube al ajustar.");
+        } else {
+            // Si ambos fallan por falta de internet, no bloqueamos al usuario, confirmamos que se guardó local
+            document.getElementById('modalAjusteStock').style.display = 'none';
+            alert("⚠️ Stock guardado localmente (La nube no respondió o estás offline).");
         }
         
+        if (typeof renderTablaInventario === 'function') renderTablaInventario();
+        if (typeof renderI === 'function') renderI(); 
+
     } else {
         alert("❌ PIN Incorrecto.");
         document.getElementById('ajuste_admin_pin').value = '';
         document.getElementById('ajuste_admin_pin').focus();
     }
 };
-
 
 function pausarCompraActual() {
     if(carC.length === 0) return alert("❌ Lista vacía.");
@@ -5759,7 +5752,6 @@ window.anularVentaVisor = async function() {
 
             let producto = inv[codMaestro];
 
-            // Ajuste local (Memoria de la pantalla)
             if (!producto.stock || typeof producto.stock !== "object") {
                 let stockAnteriorGeneral = parseFloat(producto.stock) || parseFloat(producto.existencia) || parseFloat(producto.can) || 0;
                 producto.stock = {};
@@ -5769,38 +5761,30 @@ window.anularVentaVisor = async function() {
             let stockDespues = parseFloat((stockAntes + cantidad).toFixed(3));
             producto.stock[sucursalVenta] = stockDespues;
 
-            // KARDEX
             if (typeof registrarEnKardex === "function") {
-                try {
-                    await registrarEnKardex(codMaestro, d.nom || producto.nom, "ANULACIÓN", cantidad, 0, 0, stockAntes, stockDespues, sucursalVenta);
-                } catch (e) { console.error("❌ Error en Kardex:", e); }
+                try { await registrarEnKardex(codMaestro, d.nom || producto.nom, "ANULACIÓN", cantidad, 0, 0, stockAntes, stockDespues, sucursalVenta); } catch (e) {}
             }
 
-            // 🌟 ESCUDO ANTI-SOBREESCRITURA (POCKETBASE / FIREBASE)
             if (typeof pb !== "undefined" && codMaestro) {
                 try {
-                    let pNube = await pb.collection("inventario").getOne(codMaestro);
+                    let pNube = await pb.collection("inventario").getFirstListItem(`id="${codMaestro}" || cod="${codMaestro}" || codigo="${codMaestro}"`);
                     if (sucursalVenta !== "" && pNube.inv_sucursales && pNube.inv_sucursales[sucursalVenta] !== undefined) {
                         pNube.inv_sucursales[sucursalVenta] += cantidad;
                     } else if (pNube.can !== undefined) {
                         pNube.can += cantidad;
                     }
-                    await pb.collection("inventario").update(codMaestro, pNube);
-                    console.log("☁️ PB: Inventario sumado (Anulación):", codMaestro);
-                } catch (e) { console.error("❌ Error sumando inventario en PB:", e); }
+                    await pb.collection("inventario").update(pNube.id, pNube);
+                } catch (e) { console.error("❌ Error PB inventario:", e); }
             } else if (typeof db !== "undefined" && codMaestro) {
                 try {
                     let docSnap = await db.collection("inventario").doc(String(codMaestro)).get();
                     if (docSnap.exists) {
                         let pNube = docSnap.data();
-                        if (sucursalVenta !== "" && pNube.inv_sucursales && pNube.inv_sucursales[sucursalVenta] !== undefined) {
-                            pNube.inv_sucursales[sucursalVenta] += cantidad;
-                        } else if (pNube.can !== undefined) {
-                            pNube.can += cantidad;
-                        }
+                        if (sucursalVenta !== "" && pNube.inv_sucursales && pNube.inv_sucursales[sucursalVenta] !== undefined) pNube.inv_sucursales[sucursalVenta] += cantidad;
+                        else if (pNube.can !== undefined) pNube.can += cantidad;
                         await db.collection("inventario").doc(String(codMaestro)).set(pNube);
                     }
-                } catch (e) { console.error("❌ Error sumando inventario FB:", e); }
+                } catch (e) { console.error("❌ Error FB inventario:", e); }
             }
         }
     }
@@ -5838,12 +5822,26 @@ window.anularVentaVisor = async function() {
         }
     }
 
+    // =====================================================
+    // 4. MARCAR VENTA COMO ANULADA (CORREGIDO PARA NUBE PB)
+    // =====================================================
     vReal.anulada = true;
     vVisor.anulada = true;
     let indiceVenta = ventas.findIndex(v => String(v.id) === String(vReal.id));
     if (indiceVenta !== -1) ventas[indiceVenta].anulada = true;
 
-    if (typeof db !== "undefined") {
+    // 🚀 ACTUALIZAMOS LA VENTA EN LA NUBE PARA QUE LOS DEMÁS CELULARES SE ENTEREN
+    if (typeof pb !== "undefined") {
+        try {
+            let idBuscar = String(vReal.doc_id || vReal.id);
+            try {
+                await pb.collection("ventas").update(idBuscar, vReal);
+            } catch(e) {
+                let vNube = await pb.collection("ventas").getFirstListItem(`id="${idBuscar}" || doc_id="${idBuscar}"`);
+                await pb.collection("ventas").update(vNube.id, vReal);
+            }
+        } catch (errNube) { console.error("Error marcando venta como anulada en PB", errNube); }
+    } else if (typeof db !== "undefined") {
         try { await db.collection("ventas").doc(String(vReal.id)).set(vReal); } catch (e) {}
     }
 
@@ -5861,10 +5859,18 @@ window.anularVentaVisor = async function() {
     else if (typeof renderI === "function") renderI();
     if (typeof renderClientes === "function") renderClientes();
 };
-window.devolverArticuloVisor = function(indexDetalle) {
+window.devolverArticuloVisor = async function(indexDetalle) {
     let vRef = visorIndices[currentVisorPos]; 
-    let vReal = ventas[vRef.indexGlobal]; 
-    if(vReal.anulada) return;
+    if (!vRef) return;
+
+    // 🌟 CORRECCIÓN CRÍTICA: Buscar el ticket por su ID real, NO por su posición
+    let vReal = ventas.find(v => String(v.id) === String(vRef.id));
+    if (!vReal) vReal = ventas[vRef.indexGlobal] || vRef;
+
+    if(vReal.anulada) {
+        alert("⚠️ Esta venta ya está anulada completamente.");
+        return;
+    }
 
     let d = vReal.detalles ? vReal.detalles[indexDetalle] : (vReal.items ? vReal.items[indexDetalle] : null); 
     if(!d || d.can <= 0) return;
@@ -5874,21 +5880,21 @@ window.devolverArticuloVisor = function(indexDetalle) {
 
     let m = c * (d.subtotal / d.can); 
     if(!confirm(`Devolver ${c} uds por $${m.toFixed(2)}?`)) return;
-    
+
     d.can = parseFloat((d.can - c).toFixed(3)); 
     d.subtotal = parseFloat((d.subtotal - m).toFixed(2)); 
     vReal.total = parseFloat((vReal.total - m).toFixed(2)); 
-    
+
     if(vReal.total <= 0) { 
         vReal.anulada = true; 
         vReal.total = 0; 
     }
-    
+
     let sucursalVenta = vReal.sucursal || sucursalActual;
     let pOriginal = inv[d.cod] || {}; 
     let codMaestro = d.cod_maestro || (pOriginal.grupo && inv[pOriginal.grupo] ? pOriginal.grupo : d.cod);
     let pMaestro = inv[codMaestro] || pOriginal;
-    
+
     let stockAntesReal = 0;
     if (pMaestro.stock && typeof pMaestro.stock === 'object') {
         stockAntesReal = parseFloat(pMaestro.stock[sucursalVenta]) || 0;
@@ -5900,19 +5906,27 @@ window.devolverArticuloVisor = function(indexDetalle) {
     if(inv[codMaestro]) { 
         if(!inv[codMaestro].stock) inv[codMaestro].stock = {}; 
         inv[codMaestro].stock[sucursalVenta] = stockDespuesReal; 
-        
-        // 🌟 ESCUDO ANTI-SOBREESCRITURA PARA DEVOLUCIÓN PARCIAL
+
+        // 🌟 ESCUDO ANTI-DUPLICADOS PARA DEVOLUCIÓN (Buscador Inteligente PB)
         if (typeof pb !== 'undefined' && codMaestro) { 
-            pb.collection('inventario').getOne(codMaestro).then(pNube => {
-                if (sucursalVenta !== '' && pNube.inv_sucursales && pNube.inv_sucursales[sucursalVenta] !== undefined) {
+            try {
+                let idBuscar = String(codMaestro);
+                let pNube = await pb.collection('inventario').getFirstListItem(`id="${idBuscar}" || cod="${idBuscar}" || codigo="${idBuscar}"`);
+                
+                if (!pNube.inv_sucursales) pNube.inv_sucursales = {};
+                
+                if (sucursalVenta !== '' && pNube.inv_sucursales[sucursalVenta] !== undefined) {
                     pNube.inv_sucursales[sucursalVenta] += c; // Suma en vivo
                 } else if (pNube.can !== undefined) {
                     pNube.can += c;
                 }
-                pb.collection('inventario').update(codMaestro, pNube).catch(e => console.warn("Error PB:", e));
-            }).catch(e => console.warn("Error leyendo stock en PB:", e));
+                await pb.collection('inventario').update(pNube.id, pNube);
+            } catch(e) {
+                console.warn("PocketBase no localizó el código. Guardado local.");
+            }
         } else if (typeof db !== 'undefined' && codMaestro) { 
-            db.collection("inventario").doc(String(codMaestro)).get().then(docSnap => {
+            try {
+                let docSnap = await db.collection("inventario").doc(String(codMaestro)).get();
                 if (docSnap.exists) {
                     let pNube = docSnap.data();
                     if (sucursalVenta !== '' && pNube.inv_sucursales && pNube.inv_sucursales[sucursalVenta] !== undefined) {
@@ -5920,12 +5934,12 @@ window.devolverArticuloVisor = function(indexDetalle) {
                     } else if (pNube.can !== undefined) {
                         pNube.can += c;
                     }
-                    db.collection("inventario").doc(String(codMaestro)).set(pNube);
+                    await db.collection("inventario").doc(String(codMaestro)).set(pNube);
                 }
-            }).catch(e => console.warn("Error FB.", e));
+            } catch(e) { console.warn("Error FB.", e); }
         }
     }
-    
+
     if (typeof registrarEnKardex === 'function') {
         registrarEnKardex(codMaestro, d.nom, "ANULACIÓN PARCIAL", c, 0, 0, stockAntesReal, stockDespuesReal, sucursalVenta);
     }
@@ -5941,7 +5955,14 @@ window.devolverArticuloVisor = function(indexDetalle) {
             clientes[claveCliente].saldo = parseFloat((Math.max(0, saldoActual - m)).toFixed(2));
             try { localStorage.setItem("pos_clientes_v1", JSON.stringify(clientes)); } catch(e){}
 
-            if (typeof db !== 'undefined') {
+            // Escudo PB Clientes
+            if (typeof pb !== 'undefined') {
+                try {
+                    let provNube = await pb.collection('clientes').getFirstListItem(`id="${claveCliente}" || tel="${claveCliente}"`);
+                    provNube.saldo = (parseFloat(provNube.saldo) || 0) - m;
+                    await pb.collection('clientes').update(provNube.id, provNube);
+                } catch(e) { console.warn("Error restando deuda cliente PB"); }
+            } else if (typeof db !== 'undefined') {
                 db.collection("clientes").doc(String(claveCliente)).set({ saldo: firebase.firestore.FieldValue.increment(-m) }, { merge: true }).catch(e => console.error(e));
             }
         }
@@ -5956,18 +5977,32 @@ window.devolverArticuloVisor = function(indexDetalle) {
             db.collection("movimientos").doc(String(idMov)).set(nm).catch(e => console.error(e)); 
         }
     }
-    
-    try { localStorage.setItem("pos_ventas_local", JSON.stringify(ventas)); } catch(e){}
-    let guardarPromesa = (typeof db !== 'undefined') ? db.collection("ventas").doc(String(vReal.id)).set(vReal) : Promise.resolve();
 
-    guardarPromesa.then(() => { 
-        alert("✅ Devolución procesada: $" + m.toFixed(2)); 
+    try { localStorage.setItem("pos_ventas_v6", JSON.stringify(ventas)); } catch(e){}
+
+    // 🚀 ACTUALIZAMOS EL TICKET EN LA NUBE PARA QUE TODOS LO VEAN MODIFICADO
+    try {
+        if (typeof pb !== 'undefined') {
+            let idBuscar = String(vReal.doc_id || vReal.id);
+            try {
+                await pb.collection("ventas").update(idBuscar, vReal);
+            } catch(e) {
+                let vNube = await pb.collection("ventas").getFirstListItem(`id="${idBuscar}" || doc_id="${idBuscar}"`);
+                await pb.collection("ventas").update(vNube.id, vReal);
+            }
+        } else if (typeof db !== 'undefined') {
+            await db.collection("ventas").doc(String(vReal.id)).set(vReal);
+        }
+
+        alert("✅ Devolución procesada en la nube: $" + m.toFixed(2)); 
         if(typeof renderVisorActivo === 'function') renderVisorActivo(); 
         if(typeof renderCorte === 'function') renderCorte(); 
         if(typeof renderTablaInventario === 'function') renderTablaInventario(); 
         else if(typeof renderI === 'function') renderI(); 
         if(typeof renderClientes === 'function') renderClientes(); 
-    }).catch(err => { alert("⚠️ Devolución guardada en memoria local."); });
+    } catch(err) {
+        alert("⚠️ Devolución guardada en memoria local (No hay conexión).");
+    }
 }
 
 // Visor Compras
