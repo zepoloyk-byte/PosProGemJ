@@ -2583,8 +2583,31 @@ window.confirmarVenta = async function(cambioFinal = 0) {
                 pb.collection('kardex').create(regKardex).catch(e => console.warn("Kardex pb offline:", e));
             }
 
-            if (typeof db !== 'undefined' && codMaestro) { 
-                db.collection("inventario").doc(codMaestro).set(inv[codMaestro] || pMaestro).catch(e => console.warn("Inventario a mochila offline.")); 
+            // 🌟 5. ACTUALIZACIÓN INTELIGENTE DE STOCK (Resta en vivo sin sobreescribir)
+            if (typeof pb !== 'undefined' && codMaestro) { 
+                // VERSIÓN POCKETBASE
+                pb.collection('inventario').getOne(codMaestro).then(productoRealNube => {
+                    if (suc !== '' && productoRealNube.inv_sucursales && productoRealNube.inv_sucursales[suc] !== undefined) {
+                        productoRealNube.inv_sucursales[suc] -= cantVendida;
+                    } else if (productoRealNube.can !== undefined) {
+                        productoRealNube.can -= cantVendida;
+                    }
+                    pb.collection('inventario').update(codMaestro, productoRealNube).catch(e => console.warn("Error PB:", e));
+                }).catch(e => console.warn("Error leyendo stock en PB:", e));
+
+            } else if (typeof db !== 'undefined' && codMaestro) { 
+                // VERSIÓN FIREBASE (De respaldo)
+                db.collection("inventario").doc(codMaestro).get().then(docSnap => {
+                    if (docSnap.exists) {
+                        let productoRealNube = docSnap.data();
+                        if (suc !== '' && productoRealNube.inv_sucursales && productoRealNube.inv_sucursales[suc] !== undefined) {
+                            productoRealNube.inv_sucursales[suc] -= cantVendida;
+                        } else if (productoRealNube.can !== undefined) {
+                            productoRealNube.can -= cantVendida;
+                        }
+                        db.collection("inventario").doc(codMaestro).set(productoRealNube);
+                    }
+                }).catch(e => console.warn("Error FB.", e));
             }
         }
 
@@ -3621,12 +3644,36 @@ window.procesarGuardadoEInventario = async function(totalCompra, metodoNombre, m
                     let codComp = c.cod; 
                     let maestroComp = typeof obtenerProductoMaestro === 'function' ? obtenerProductoMaestro(codComp) : inv[codComp];
                     let cantTotalAumentar = (c.can || 1) * x.can; 
+                    
                     if (maestroComp) {
+                        // Ajuste Local
                         if (!maestroComp.stock) maestroComp.stock = {};
                         maestroComp.stock[sucursalActual] = (maestroComp.stock[sucursalActual] || 0) + cantTotalAumentar;
                         maestroComp.updatedAt = Date.now();
+                        
                         let docIdAActualizar = maestroComp === inv[codComp] ? codComp : inv[codComp].grupo;
-                        if (typeof db !== 'undefined') await db.collection("inventario").doc(String(docIdAActualizar)).set(maestroComp); 
+                        
+                        // 🌟 ESCUDO ANTI-SOBREESCRITURA PARA KITS (PB / FB)
+                        if (typeof pb !== 'undefined' && docIdAActualizar) {
+                            try {
+                                let pNube = await pb.collection("inventario").getOne(String(docIdAActualizar));
+                                if (!pNube.inv_sucursales) pNube.inv_sucursales = {};
+                                pNube.inv_sucursales[sucursalActual] = (parseFloat(pNube.inv_sucursales[sucursalActual]) || 0) + cantTotalAumentar;
+                                pNube.updatedAt = Date.now();
+                                await pb.collection("inventario").update(String(docIdAActualizar), pNube);
+                            } catch(e) { console.warn("Error PB Kit", e); }
+                        } else if (typeof db !== 'undefined' && docIdAActualizar) {
+                            try {
+                                let docSnap = await db.collection("inventario").doc(String(docIdAActualizar)).get();
+                                if (docSnap.exists) {
+                                    let pNube = docSnap.data();
+                                    if (!pNube.inv_sucursales) pNube.inv_sucursales = {};
+                                    pNube.inv_sucursales[sucursalActual] = (parseFloat(pNube.inv_sucursales[sucursalActual]) || 0) + cantTotalAumentar;
+                                    pNube.updatedAt = Date.now();
+                                    await db.collection("inventario").doc(String(docIdAActualizar)).set(pNube);
+                                }
+                            } catch(e) { console.warn("Error FB Kit", e); }
+                        }
                     }
                 }
             } else if (prod) {
@@ -3696,11 +3743,62 @@ window.procesarGuardadoEInventario = async function(totalCompra, metodoNombre, m
                 prod.updatedAt = Date.now(); 
                 if (maestro !== prod) maestro.updatedAt = Date.now();
                 
-                if (typeof db !== 'undefined') {
-                    await db.collection("inventario").doc(String(x.cod)).set(prod);
-                    if (maestro !== prod) {
-                        await db.collection("inventario").doc(String(prod.grupo)).set(maestro);
-                    }
+                // 🌟 ESCUDO ANTI-SOBREESCRITURA PARA COMPRAS (PB / FB)
+                if (typeof pb !== 'undefined' && x.cod) {
+                    try {
+                        let pNube = await pb.collection("inventario").getOne(String(x.cod));
+                        if (!pNube.inv_sucursales) pNube.inv_sucursales = {};
+                        pNube.inv_sucursales[sucursalActual] = (parseFloat(pNube.inv_sucursales[sucursalActual]) || 0) + parseFloat(x.can);
+                        
+                        // Actualizamos los costos y precios que calculaste arriba
+                        if (prod.cos !== undefined) pNube.cos = prod.cos;
+                        if (prod.cos_promedio !== undefined) pNube.cos_promedio = prod.cos_promedio;
+                        if (prod.iva !== undefined) pNube.iva = prod.iva;
+                        if (prod.pv !== undefined) pNube.pv = prod.pv;
+                        if (prod.pre_sucursales) pNube.pre_sucursales = prod.pre_sucursales;
+                        pNube.updatedAt = Date.now();
+
+                        await pb.collection("inventario").update(String(x.cod), pNube);
+
+                        // Si hay producto maestro (grupo), también lo actualizamos
+                        if (maestro !== prod && prod.grupo) {
+                            let mNube = await pb.collection("inventario").getOne(String(prod.grupo));
+                            if (!mNube.inv_sucursales) mNube.inv_sucursales = {};
+                            mNube.inv_sucursales[sucursalActual] = (parseFloat(mNube.inv_sucursales[sucursalActual]) || 0) + parseFloat(x.can);
+                            mNube.updatedAt = Date.now();
+                            await pb.collection("inventario").update(String(prod.grupo), mNube);
+                        }
+                    } catch(e) { console.warn("Error PB Compra:", e); }
+
+                } else if (typeof db !== 'undefined' && x.cod) {
+                    try {
+                        let docSnap = await db.collection("inventario").doc(String(x.cod)).get();
+                        if (docSnap.exists) {
+                            let pNube = docSnap.data();
+                            if (!pNube.inv_sucursales) pNube.inv_sucursales = {};
+                            pNube.inv_sucursales[sucursalActual] = (parseFloat(pNube.inv_sucursales[sucursalActual]) || 0) + parseFloat(x.can);
+                            
+                            if (prod.cos !== undefined) pNube.cos = prod.cos;
+                            if (prod.cos_promedio !== undefined) pNube.cos_promedio = prod.cos_promedio;
+                            if (prod.iva !== undefined) pNube.iva = prod.iva;
+                            if (prod.pv !== undefined) pNube.pv = prod.pv;
+                            if (prod.pre_sucursales) pNube.pre_sucursales = prod.pre_sucursales;
+                            pNube.updatedAt = Date.now();
+
+                            await db.collection("inventario").doc(String(x.cod)).set(pNube);
+                        }
+                        
+                        if (maestro !== prod && prod.grupo) {
+                            let mSnap = await db.collection("inventario").doc(String(prod.grupo)).get();
+                            if (mSnap.exists) {
+                                let mNube = mSnap.data();
+                                if (!mNube.inv_sucursales) mNube.inv_sucursales = {};
+                                mNube.inv_sucursales[sucursalActual] = (parseFloat(mNube.inv_sucursales[sucursalActual]) || 0) + parseFloat(x.can);
+                                mNube.updatedAt = Date.now();
+                                await db.collection("inventario").doc(String(prod.grupo)).set(mNube);
+                            }
+                        }
+                    } catch(e) { console.warn("Error FB Compra:", e); }
                 }
             }
         } catch (errorItem) {
@@ -3807,7 +3905,7 @@ window.procesarGuardadoEInventario = async function(totalCompra, metodoNombre, m
 // ✏️ AJUSTE MANUAL DE STOCK
 // ==========================================
 
-window.guardarAjusteStock = function() {
+window.guardarAjusteStock = async function() {
     let nuevoStock = parseFloat(document.getElementById('ajuste_nuevo_stock').value);
     let pin = document.getElementById('ajuste_admin_pin').value;
     
@@ -3832,26 +3930,64 @@ window.guardarAjusteStock = function() {
             pMaestro.stock = {};
         }
         
+        // Ajuste en la memoria local
         pMaestro.stock[sucursalActual] = stockDespuesReal;
         
         try { localStorage.setItem("pos_precision_v6", JSON.stringify(inv)); } catch (e) { }
 
-        // ☁️ GUARDADO BLINDADO: Mandamos el producto entero, sin 'merge'
-        if (typeof db !== 'undefined') {
-            db.collection("inventario").doc(String(codMaestro)).set(pMaestro)
-            .then(() => {
-                if (typeof registrarEnKardex === 'function') {
-                    registrarEnKardex(codAjusteStock, pO.nom, "AJUSTE", diferencia, pO.pv || 0, pO.cos || 0, stockAntesReal, stockDespuesReal);
+        // 🌟 ESCUDO ANTI-SOBREESCRITURA: Cambia el valor SOLO en esta sucursal (PB/FB)
+        try {
+            if (typeof pb !== 'undefined' && codMaestro) {
+                let pNube = await pb.collection('inventario').getOne(String(codMaestro));
+                
+                if (!pNube.stock) pNube.stock = {};
+                if (!pNube.inv_sucursales) pNube.inv_sucursales = {};
+                
+                pNube.stock[sucursalActual] = stockDespuesReal;
+                pNube.inv_sucursales[sucursalActual] = stockDespuesReal;
+                
+                if (!pNube.stock && !pNube.inv_sucursales && pNube.can !== undefined) {
+                    pNube.can = stockDespuesReal;
                 }
-                document.getElementById('modalAjusteStock').style.display = 'none';
-                alert("✅ Stock ajustado y guardado correctamente.");
-                if (typeof renderTablaInventario === 'function') renderTablaInventario();
-                if (typeof renderI === 'function') renderI(); 
-            }).catch((e) => {
-                console.error(e);
-                alert("❌ Error con la nube al ajustar.");
-            });
+                
+                await pb.collection('inventario').update(String(codMaestro), pNube);
+
+            } else if (typeof db !== 'undefined' && codMaestro) {
+                let docSnap = await db.collection("inventario").doc(String(codMaestro)).get();
+                if (docSnap.exists) {
+                    let pNube = docSnap.data();
+                    
+                    if (!pNube.stock) pNube.stock = {};
+                    if (!pNube.inv_sucursales) pNube.inv_sucursales = {};
+                    
+                    pNube.stock[sucursalActual] = stockDespuesReal;
+                    pNube.inv_sucursales[sucursalActual] = stockDespuesReal;
+                    
+                    if (!pNube.stock && !pNube.inv_sucursales && pNube.can !== undefined) {
+                        pNube.can = stockDespuesReal;
+                    }
+
+                    await db.collection("inventario").doc(String(codMaestro)).set(pNube);
+                } else {
+                    await db.collection("inventario").doc(String(codMaestro)).set(pMaestro);
+                }
+            }
+
+            if (typeof registrarEnKardex === 'function') {
+                registrarEnKardex(codAjusteStock, pO.nom, "AJUSTE", diferencia, pO.pv || 0, pO.cos || 0, stockAntesReal, stockDespuesReal);
+            }
+            
+            document.getElementById('modalAjusteStock').style.display = 'none';
+            alert("✅ Stock ajustado y guardado correctamente.");
+            
+            if (typeof renderTablaInventario === 'function') renderTablaInventario();
+            if (typeof renderI === 'function') renderI(); 
+
+        } catch (errorNube) {
+            console.error("❌ Error con la nube al ajustar:", errorNube);
+            alert("❌ Error con la nube al ajustar.");
         }
+        
     } else {
         alert("❌ PIN Incorrecto.");
         document.getElementById('ajuste_admin_pin').value = '';
@@ -5590,543 +5726,141 @@ function renderVisorActivo() {
 }
 
 // ====================================================================
-// 🗑️ ANULAR VENTA DESDE EL VISOR (CONECTADA AL ACUMULADOR)
+// 🗑️ ANULAR VENTA DESDE EL VISOR (CON ESCUDO ANTI-SOBREESCRITURA)
 // ====================================================================
 window.anularVentaVisor = async function() {
-
     let vVisor = visorIndices[currentVisorPos];
+    if (!vVisor) { alert("❌ No se encontró la venta."); return; }
 
-    if (!vVisor) {
-        alert("❌ No se encontró la venta.");
-        return;
-    }
+    let vReal = ventas.find(v => String(v.id) === String(vVisor.id)) || vVisor;
+    if (vReal.anulada) { alert("⚠️ Esta venta ya está anulada."); return; }
 
-    // Buscar la venta real por ID, NO por posición
-    let vReal = ventas.find(v =>
-        String(v.id) === String(vVisor.id)
-    ) || vVisor;
-
-
-    if (vReal.anulada) {
-        alert("⚠️ Esta venta ya está anulada.");
-        return;
-    }
-
-
-    if (!confirm(
-        "¿Anular esta venta?\n\n" +
-        "Se devolverá el stock al sistema y se ajustarán las gráficas."
-    )) {
-        return;
-    }
-
+    if (!confirm("¿Anular esta venta?\n\nSe devolverá el stock al sistema y se ajustarán las gráficas.")) { return; }
 
     console.log("🔴 ANULANDO VENTA:", vReal);
-
 
     // =====================================================
     // 1. DEVOLUCIÓN DE INVENTARIO
     // =====================================================
-
-    if (
-        Array.isArray(vReal.detalles) &&
-        vReal.detalles.length > 0
-    ) {
-
+    if (Array.isArray(vReal.detalles) && vReal.detalles.length > 0) {
         for (let d of vReal.detalles) {
-
             let cantidad = parseFloat(d.can) || 0;
-
             if (cantidad <= 0) continue;
 
-
-            let sucursalVenta =
-                vReal.sucursal ||
-                (typeof sucursalActual !== "undefined"
-                    ? sucursalActual
-                    : "Matriz");
-
-
-            // Código vendido
-            let codigoVenta = String(
-                d.cod ||
-                d.codigo ||
-                ""
-            );
-
-
-            // Buscar producto original
-            let productoOriginal =
-                inv[codigoVenta] ||
-                null;
-
-
-            // Determinar código maestro
-            let codMaestro =
-                d.cod_maestro ||
-                (productoOriginal
-                    ? (
-                        productoOriginal.cod_maestro ||
-                        productoOriginal.grupo ||
-                        codigoVenta
-                    )
-                    : codigoVenta
-                );
-
-
+            let sucursalVenta = vReal.sucursal || (typeof sucursalActual !== "undefined" ? sucursalActual : "Matriz");
+            let codigoVenta = String(d.cod || d.codigo || "");
+            let productoOriginal = inv[codigoVenta] || null;
+            
+            let codMaestro = d.cod_maestro || (productoOriginal ? (productoOriginal.cod_maestro || productoOriginal.grupo || codigoVenta) : codigoVenta);
             codMaestro = String(codMaestro);
 
-
-            // Si no existe el maestro, intentar con el código vendido
-            if (!inv[codMaestro] && inv[codigoVenta]) {
-                codMaestro = codigoVenta;
-            }
-
-
-            if (!inv[codMaestro]) {
-
-                console.warn(
-                    "⚠️ PRODUCTO NO ENCONTRADO EN INVENTARIO:",
-                    {
-                        codigoVenta,
-                        codMaestro,
-                        detalle: d
-                    }
-                );
-
-                continue;
-            }
-
+            if (!inv[codMaestro] && inv[codigoVenta]) codMaestro = codigoVenta;
+            if (!inv[codMaestro]) continue;
 
             let producto = inv[codMaestro];
 
-
-            // Aseguramos estructura de stock por sucursal
-            if (
-                !producto.stock ||
-                typeof producto.stock !== "object"
-            ) {
-
-                let stockAnteriorGeneral =
-                    parseFloat(producto.stock) ||
-                    parseFloat(producto.existencia) ||
-                    parseFloat(producto.can) ||
-                    0;
-
-
+            // Ajuste local (Memoria de la pantalla)
+            if (!producto.stock || typeof producto.stock !== "object") {
+                let stockAnteriorGeneral = parseFloat(producto.stock) || parseFloat(producto.existencia) || parseFloat(producto.can) || 0;
                 producto.stock = {};
-
-                producto.stock[sucursalVenta] =
-                    stockAnteriorGeneral;
+                producto.stock[sucursalVenta] = stockAnteriorGeneral;
             }
-
-
-            let stockAntes =
-                parseFloat(
-                    producto.stock[sucursalVenta]
-                ) || 0;
-
-
-            let stockDespues =
-                parseFloat(
-                    (stockAntes + cantidad).toFixed(3)
-                );
-
-
-            // DEVOLVEMOS STOCK
-            producto.stock[sucursalVenta] =
-                stockDespues;
-
-
-            console.log(
-                "📦 STOCK DEVUELTO:",
-                {
-                    producto: producto.nom || d.nom,
-                    codigo: codMaestro,
-                    sucursal: sucursalVenta,
-                    antes: stockAntes,
-                    devuelto: cantidad,
-                    despues: stockDespues
-                }
-            );
-
+            let stockAntes = parseFloat(producto.stock[sucursalVenta]) || 0;
+            let stockDespues = parseFloat((stockAntes + cantidad).toFixed(3));
+            producto.stock[sucursalVenta] = stockDespues;
 
             // KARDEX
-            if (
-                typeof registrarEnKardex === "function"
-            ) {
-
+            if (typeof registrarEnKardex === "function") {
                 try {
-
-                    await registrarEnKardex(
-                        codMaestro,
-                        d.nom || producto.nom,
-                        "ANULACIÓN",
-                        cantidad,
-                        0,
-                        0,
-                        stockAntes,
-                        stockDespues,
-                        sucursalVenta
-                    );
-
-                } catch (e) {
-
-                    console.error(
-                        "❌ Error en Kardex:",
-                        e
-                    );
-
-                }
-
+                    await registrarEnKardex(codMaestro, d.nom || producto.nom, "ANULACIÓN", cantidad, 0, 0, stockAntes, stockDespues, sucursalVenta);
+                } catch (e) { console.error("❌ Error en Kardex:", e); }
             }
 
-
-            // Guardar inventario en nube
-            if (typeof db !== "undefined") {
-
+            // 🌟 ESCUDO ANTI-SOBREESCRITURA (POCKETBASE / FIREBASE)
+            if (typeof pb !== "undefined" && codMaestro) {
                 try {
-
-                    await db
-                        .collection("inventario")
-                        .doc(String(codMaestro))
-                        .set(producto);
-
-                    console.log(
-                        "☁️ Inventario actualizado:",
-                        codMaestro
-                    );
-
-                } catch (e) {
-
-                    console.error(
-                        "❌ Error guardando inventario:",
-                        codMaestro,
-                        e
-                    );
-
-                }
-
+                    let pNube = await pb.collection("inventario").getOne(codMaestro);
+                    if (sucursalVenta !== "" && pNube.inv_sucursales && pNube.inv_sucursales[sucursalVenta] !== undefined) {
+                        pNube.inv_sucursales[sucursalVenta] += cantidad;
+                    } else if (pNube.can !== undefined) {
+                        pNube.can += cantidad;
+                    }
+                    await pb.collection("inventario").update(codMaestro, pNube);
+                    console.log("☁️ PB: Inventario sumado (Anulación):", codMaestro);
+                } catch (e) { console.error("❌ Error sumando inventario en PB:", e); }
+            } else if (typeof db !== "undefined" && codMaestro) {
+                try {
+                    let docSnap = await db.collection("inventario").doc(String(codMaestro)).get();
+                    if (docSnap.exists) {
+                        let pNube = docSnap.data();
+                        if (sucursalVenta !== "" && pNube.inv_sucursales && pNube.inv_sucursales[sucursalVenta] !== undefined) {
+                            pNube.inv_sucursales[sucursalVenta] += cantidad;
+                        } else if (pNube.can !== undefined) {
+                            pNube.can += cantidad;
+                        }
+                        await db.collection("inventario").doc(String(codMaestro)).set(pNube);
+                    }
+                } catch (e) { console.error("❌ Error sumando inventario FB:", e); }
             }
-
         }
-
-    } else {
-
-        console.warn(
-            "⚠️ La venta no tiene detalles válidos:",
-            vReal
-        );
-
     }
 
+    try { localStorage.setItem("pos_precision_v6", JSON.stringify(inv)); } catch (e) {}
 
     // =====================================================
-    // 2. GUARDAR INVENTARIO LOCAL
+    // 3. AJUSTE DE CRÉDITO Y RESTO DE LA ANULACIÓN
     // =====================================================
+    let met = String(vReal.metodo || "").toLowerCase();
+    let esCredito = vReal.es_credito || met.includes("cr");
+    let idCliente = vReal.cliente_tel || vReal.cliente || vReal.cli || vReal.nom_cliente || "";
 
-    try {
+    if (esCredito && idCliente && typeof clientes !== "undefined") {
+        let claveCliente = clientes[idCliente] ? idCliente : Object.keys(clientes).find(k => k === idCliente || clientes[k].nom === idCliente || clientes[k].tel === idCliente);
+        if (claveCliente && clientes[claveCliente]) {
+            let dineroARestar = parseFloat(vReal.monto_credito) || parseFloat(vReal.total) || 0;
+            let saldoActual = parseFloat(clientes[claveCliente].saldo) || 0;
+            clientes[claveCliente].saldo = parseFloat(Math.max(0, saldoActual - dineroARestar).toFixed(2));
 
-        localStorage.setItem(
-            "pos_precision_v6",
-            JSON.stringify(inv)
-        );
-
-    } catch (e) {
-
-        console.error(
-            "❌ Error guardando inventario local:",
-            e
-        );
-
-    }
-
-
-    // =====================================================
-    // 3. AJUSTE DE CRÉDITO
-    // =====================================================
-
-    let met =
-        String(vReal.metodo || "")
-        .toLowerCase();
-
-
-    let esCredito =
-        vReal.es_credito ||
-        met.includes("cr");
-
-
-    let idCliente =
-        vReal.cliente_tel ||
-        vReal.cliente ||
-        vReal.cli ||
-        vReal.nom_cliente ||
-        "";
-
-
-    if (
-        esCredito &&
-        idCliente &&
-        typeof clientes !== "undefined"
-    ) {
-
-        let claveCliente =
-            clientes[idCliente]
-                ? idCliente
-                : Object.keys(clientes).find(k =>
-                    k === idCliente ||
-                    clientes[k].nom === idCliente ||
-                    clientes[k].tel === idCliente
-                );
-
-
-        if (
-            claveCliente &&
-            clientes[claveCliente]
-        ) {
-
-            let dineroARestar =
-                parseFloat(vReal.monto_credito) ||
-                parseFloat(vReal.total) ||
-                0;
-
-
-            let saldoActual =
-                parseFloat(
-                    clientes[claveCliente].saldo
-                ) || 0;
-
-
-            let nuevoSaldo =
-                parseFloat(
-                    Math.max(
-                        0,
-                        saldoActual - dineroARestar
-                    ).toFixed(2)
-                );
-
-
-            clientes[claveCliente].saldo =
-                nuevoSaldo;
-
-
-            if (
-                !Array.isArray(
-                    clientes[claveCliente].historial
-                )
-            ) {
-
-                clientes[claveCliente].historial = [];
-
-            }
-
-
+            if (!Array.isArray(clientes[claveCliente].historial)) clientes[claveCliente].historial = [];
             clientes[claveCliente].historial.push({
-
                 id_venta: vReal.id,
-
-                fecha:
-                    typeof getFechaLocal === "function"
-                        ? getFechaLocal()
-                        : new Date()
-                            .toISOString()
-                            .split("T")[0],
-
-                hora:
-                    new Date()
-                        .toLocaleTimeString(),
-
+                fecha: typeof getFechaLocal === "function" ? getFechaLocal() : new Date().toISOString().split("T")[0],
+                hora: new Date().toLocaleTimeString(),
                 tipo: "Anulación",
-
                 monto: -dineroARestar,
-
-                detalle:
-                    `Anulación Ticket #${vReal.id}`
-
+                detalle: `Anulación Ticket #${vReal.id}`
             });
 
-
-            try {
-
-                localStorage.setItem(
-                    "pos_clientes_v1",
-                    JSON.stringify(clientes)
-                );
-
-            } catch (e) {}
-
-
+            try { localStorage.setItem("pos_clientes_v1", JSON.stringify(clientes)); } catch (e) {}
             if (typeof db !== "undefined") {
-
-                try {
-
-                    await db
-                        .collection("clientes")
-                        .doc(String(claveCliente))
-                        .set(
-                            clientes[claveCliente]
-                        );
-
-                } catch (e) {
-
-                    console.error(
-                        "❌ Error actualizando cliente:",
-                        e
-                    );
-
-                }
-
+                try { await db.collection("clientes").doc(String(claveCliente)).set(clientes[claveCliente]); } catch (e) {}
             }
-
         }
-
     }
-
-
-    // =====================================================
-    // 4. MARCAR VENTA COMO ANULADA
-    // =====================================================
 
     vReal.anulada = true;
-
-
-    // También actualizamos el objeto mostrado
     vVisor.anulada = true;
+    let indiceVenta = ventas.findIndex(v => String(v.id) === String(vReal.id));
+    if (indiceVenta !== -1) ventas[indiceVenta].anulada = true;
 
-
-    // Si existe dentro de ventas[], actualizarlo
-    let indiceVenta =
-        ventas.findIndex(v =>
-            String(v.id) === String(vReal.id)
-        );
-
-
-    if (indiceVenta !== -1) {
-
-        ventas[indiceVenta].anulada = true;
-
-    }
-
-
-    // Guardar venta en nube
     if (typeof db !== "undefined") {
-
-        try {
-
-            await db
-                .collection("ventas")
-                .doc(String(vReal.id))
-                .set(vReal);
-
-        } catch (e) {
-
-            console.error(
-                "❌ Error guardando anulación:",
-                e
-            );
-
-        }
-
+        try { await db.collection("ventas").doc(String(vReal.id)).set(vReal); } catch (e) {}
     }
 
-
-    // =====================================================
-    // 5. ACTUALIZAR ACUMULADORES
-    // =====================================================
-
-    if (
-        typeof actualizarAcumuladorDiario ===
-        "function"
-    ) {
-
-        try {
-
-            actualizarAcumuladorDiario(
-                vReal,
-                true
-            );
-
-        } catch (e) {
-
-            console.error(
-                "❌ Error ajustando acumulador:",
-                e
-            );
-
-        }
-
+    if (typeof actualizarAcumuladorDiario === "function") {
+        try { actualizarAcumuladorDiario(vReal, true); } catch (e) {}
     }
 
+    try { localStorage.setItem("pos_ventas_v6", JSON.stringify(ventas)); } catch (e) {}
 
-    // =====================================================
-    // 6. GUARDAR VENTAS LOCALMENTE
-    // =====================================================
+    alert("✅ Venta anulada correctamente.\n\n📦 El stock fue devuelto al inventario.");
 
-    try {
-
-        localStorage.setItem(
-            "pos_ventas_v6",
-            JSON.stringify(ventas)
-        );
-
-    } catch (e) {}
-
-
-    console.log(
-        "✅ VENTA ANULADA COMPLETAMENTE:",
-        vReal.id
-    );
-
-
-    alert(
-        "✅ Venta anulada correctamente.\n\n" +
-        "📦 El stock fue devuelto al inventario."
-    );
-
-
-    // =====================================================
-    // 7. REFRESCAR PANTALLAS
-    // =====================================================
-
-    if (
-        typeof renderVisorActivo === "function"
-    ) {
-        renderVisorActivo();
-    }
-
-
-    if (
-        typeof renderCorte === "function"
-    ) {
-        renderCorte();
-    }
-
-
-    if (
-        typeof renderTablaInventario === "function"
-    ) {
-
-        renderTablaInventario();
-
-    } else if (
-        typeof renderI === "function"
-    ) {
-
-        renderI();
-
-    }
-
-
-    if (
-        typeof renderClientes === "function"
-    ) {
-
-        renderClientes();
-
-    }
-
+    if (typeof renderVisorActivo === "function") renderVisorActivo();
+    if (typeof renderCorte === "function") renderCorte();
+    if (typeof renderTablaInventario === "function") renderTablaInventario();
+    else if (typeof renderI === "function") renderI();
+    if (typeof renderClientes === "function") renderClientes();
 };
-
 window.devolverArticuloVisor = function(indexDetalle) {
     let vRef = visorIndices[currentVisorPos]; 
     let vReal = ventas[vRef.indexGlobal]; 
@@ -6151,7 +5885,6 @@ window.devolverArticuloVisor = function(indexDetalle) {
     }
     
     let sucursalVenta = vReal.sucursal || sucursalActual;
-    
     let pOriginal = inv[d.cod] || {}; 
     let codMaestro = d.cod_maestro || (pOriginal.grupo && inv[pOriginal.grupo] ? pOriginal.grupo : d.cod);
     let pMaestro = inv[codMaestro] || pOriginal;
@@ -6162,17 +5895,34 @@ window.devolverArticuloVisor = function(indexDetalle) {
     } else {
         stockAntesReal = parseFloat(pMaestro.stock) || parseFloat(pMaestro.existencia) || parseFloat(pMaestro.can) || 0;
     }
-    
     let stockDespuesReal = parseFloat((stockAntesReal + c).toFixed(3));
 
     if(inv[codMaestro]) { 
         if(!inv[codMaestro].stock) inv[codMaestro].stock = {}; 
         inv[codMaestro].stock[sucursalVenta] = stockDespuesReal; 
         
-        // ☁️ GUARDADO BLINDADO: Mandamos el producto entero
-        if (typeof db !== 'undefined') {
-            db.collection("inventario").doc(String(codMaestro)).set(inv[codMaestro])
-            .catch(e => console.error("Error devolviendo stock parcial:", e));
+        // 🌟 ESCUDO ANTI-SOBREESCRITURA PARA DEVOLUCIÓN PARCIAL
+        if (typeof pb !== 'undefined' && codMaestro) { 
+            pb.collection('inventario').getOne(codMaestro).then(pNube => {
+                if (sucursalVenta !== '' && pNube.inv_sucursales && pNube.inv_sucursales[sucursalVenta] !== undefined) {
+                    pNube.inv_sucursales[sucursalVenta] += c; // Suma en vivo
+                } else if (pNube.can !== undefined) {
+                    pNube.can += c;
+                }
+                pb.collection('inventario').update(codMaestro, pNube).catch(e => console.warn("Error PB:", e));
+            }).catch(e => console.warn("Error leyendo stock en PB:", e));
+        } else if (typeof db !== 'undefined' && codMaestro) { 
+            db.collection("inventario").doc(String(codMaestro)).get().then(docSnap => {
+                if (docSnap.exists) {
+                    let pNube = docSnap.data();
+                    if (sucursalVenta !== '' && pNube.inv_sucursales && pNube.inv_sucursales[sucursalVenta] !== undefined) {
+                        pNube.inv_sucursales[sucursalVenta] += c;
+                    } else if (pNube.can !== undefined) {
+                        pNube.can += c;
+                    }
+                    db.collection("inventario").doc(String(codMaestro)).set(pNube);
+                }
+            }).catch(e => console.warn("Error FB.", e));
         }
     }
     
@@ -6186,12 +5936,9 @@ window.devolverArticuloVisor = function(indexDetalle) {
 
     if (esCredito && idCliente) {
         let claveCliente = clientes[idCliente] ? idCliente : Object.keys(clientes).find(k => k === idCliente || clientes[k].nom === idCliente || clientes[k].tel === idCliente);
-
         if (claveCliente && clientes[claveCliente]) {
             let saldoActual = parseFloat(clientes[claveCliente].saldo) || 0;
-            let nuevoSaldo = parseFloat((Math.max(0, saldoActual - m)).toFixed(2));
-
-            clientes[claveCliente].saldo = nuevoSaldo;
+            clientes[claveCliente].saldo = parseFloat((Math.max(0, saldoActual - m)).toFixed(2));
             try { localStorage.setItem("pos_clientes_v1", JSON.stringify(clientes)); } catch(e){}
 
             if (typeof db !== 'undefined') {
@@ -6200,16 +5947,7 @@ window.devolverArticuloVisor = function(indexDetalle) {
         }
     } else { 
         let idMov = Date.now(); 
-        let nm = { 
-            id: idMov, 
-            fecha: (typeof getFechaLocal === 'function' ? getFechaLocal() : new Date().toISOString().split('T')[0]), 
-            hora: new Date().toLocaleTimeString(), 
-            cajero: usuarioActual, 
-            sucursal: sucursalVenta, 
-            tipo: 'Retiro', 
-            monto: parseFloat(m.toFixed(2)), 
-            motivo: `DEVOLUCIÓN PARCIAL: ${d.nom}` 
-        }; 
+        let nm = { id: idMov, fecha: (typeof getFechaLocal === 'function' ? getFechaLocal() : new Date().toISOString().split('T')[0]), hora: new Date().toLocaleTimeString(), cajero: usuarioActual, sucursal: sucursalVenta, tipo: 'Retiro', monto: parseFloat(m.toFixed(2)), motivo: `DEVOLUCIÓN PARCIAL: ${d.nom}` }; 
         if (typeof movimientos !== 'undefined') {
             movimientos.push(nm); 
             try { localStorage.setItem("pos_movimientos_v1", JSON.stringify(movimientos)); } catch(e){}
@@ -6220,7 +5958,6 @@ window.devolverArticuloVisor = function(indexDetalle) {
     }
     
     try { localStorage.setItem("pos_ventas_local", JSON.stringify(ventas)); } catch(e){}
-
     let guardarPromesa = (typeof db !== 'undefined') ? db.collection("ventas").doc(String(vReal.id)).set(vReal) : Promise.resolve();
 
     guardarPromesa.then(() => { 
@@ -6230,9 +5967,7 @@ window.devolverArticuloVisor = function(indexDetalle) {
         if(typeof renderTablaInventario === 'function') renderTablaInventario(); 
         else if(typeof renderI === 'function') renderI(); 
         if(typeof renderClientes === 'function') renderClientes(); 
-    }).catch(err => {
-        alert("⚠️ Devolución guardada en memoria local.");
-    });
+    }).catch(err => { alert("⚠️ Devolución guardada en memoria local."); });
 }
 
 // Visor Compras
@@ -7239,11 +6974,40 @@ window.ejecutarTransferencia = function() {
             let cantEnviar = parseFloat(x.can || x.cantidad || 1);
             let stockDespuesReal = parseFloat((stockAntesReal - cantEnviar).toFixed(3));
             
+            // Ajuste en la memoria local
             pMaestro.stock[oriLimpio] = stockDespuesReal; 
             
-            // ☁️ GUARDADO BLINDADO: Mandamos el producto entero
-            if (typeof db !== 'undefined' && db.collection) {
-                db.collection("inventario").doc(String(codMaestro)).set(pMaestro).catch(e => console.error("❌ Error en la nube:", e));
+            // 🌟 ESCUDO ANTI-SOBREESCRITURA (POCKETBASE / FIREBASE)
+            if (typeof pb !== 'undefined' && codMaestro) { 
+                pb.collection('inventario').getOne(String(codMaestro)).then(pNube => {
+                    // Restamos solo la cantidad enviada a lo que sea que haya en la nube en este instante
+                    if (pNube.stock && typeof pNube.stock === 'object') {
+                        pNube.stock[oriLimpio] = (parseFloat(pNube.stock[oriLimpio]) || 0) - cantEnviar;
+                    }
+                    if (pNube.inv_sucursales && typeof pNube.inv_sucursales === 'object') {
+                        pNube.inv_sucursales[oriLimpio] = (parseFloat(pNube.inv_sucursales[oriLimpio]) || 0) - cantEnviar;
+                    }
+                    if (!pNube.stock && !pNube.inv_sucursales && pNube.can !== undefined) {
+                        pNube.can -= cantEnviar;
+                    }
+                    pb.collection('inventario').update(String(codMaestro), pNube).catch(e => console.warn("Error PB:", e));
+                }).catch(e => console.warn("Error leyendo stock en PB:", e));
+            } else if (typeof db !== 'undefined' && db.collection) {
+                db.collection("inventario").doc(String(codMaestro)).get().then(docSnap => {
+                    if (docSnap.exists) {
+                        let pNube = docSnap.data();
+                        if (pNube.stock && typeof pNube.stock === 'object') {
+                            pNube.stock[oriLimpio] = (parseFloat(pNube.stock[oriLimpio]) || 0) - cantEnviar;
+                        }
+                        if (pNube.inv_sucursales && typeof pNube.inv_sucursales === 'object') {
+                            pNube.inv_sucursales[oriLimpio] = (parseFloat(pNube.inv_sucursales[oriLimpio]) || 0) - cantEnviar;
+                        }
+                        if (!pNube.stock && !pNube.inv_sucursales && pNube.can !== undefined) {
+                            pNube.can -= cantEnviar;
+                        }
+                        db.collection("inventario").doc(String(codMaestro)).set(pNube);
+                    }
+                }).catch(e => console.warn("Error FB.", e));
             }
             
             if (typeof registrarEnKardex === 'function') {
@@ -7462,8 +7226,10 @@ function navegarCantidadesRecepcion(e, i) {
         else document.getElementById('r_proc_cod').focus();
     }
 }
-// Paso Final: Guardar recepción y sumar el stock
-window.confirmarRecepcion = function() { 
+// ====================================================================
+// 📥 CONFIRMAR RECEPCIÓN (CON ESCUDO ANTI-SOBREESCRITURA PB/FB)
+// ====================================================================
+window.confirmarRecepcion = async function() { 
     try {
         let tIndex = transferencias.findIndex(x => x.id === idTransferenciaActual); 
         if(tIndex === -1) return alert("❌ No se encontró la transferencia actual."); 
@@ -7475,51 +7241,68 @@ window.confirmarRecepcion = function() {
         
         let detallesFaltantes = []; 
 
-        carR.forEach(x => { 
+        for (let x of carR) { 
             let pO = inv[x.cod] || {};
             if(!pO.stock) pO.stock = {}; 
             
             let cantEnviada = parseFloat(x.can) || 0;
             let cantRecibidaTotal = parseFloat(x.can_rec) || 0;
-
-            // 🟢 1. MANEJO DEL STOCK QUE SÍ LLEGÓ (DESTINO)
-            if(cantRecibidaTotal > 0) { 
-                let stockAntesReal = parseFloat(pO.stock[sucursalActual]) || 0;
-                let stockDespuesReal = parseFloat((stockAntesReal + cantRecibidaTotal).toFixed(3));
-                
-                pO.stock[sucursalActual] = stockDespuesReal; 
-                
-                // ☁️ GUARDADO BLINDADO: Enviamos el producto entero
-                if(typeof db !== 'undefined' && db.collection) {
-                    db.collection("inventario").doc(String(x.cod)).set(pO).catch(e => console.error("Error sumando en Destino:", e));
-                }
-                
-                if(typeof registrarEnKardex === 'function') {
-                    registrarEnKardex(x.cod, x.nom, "TRANSFERENCIA (ENTRADA)", cantRecibidaTotal, pO.pv || 0, x.cReal || pO.cos || 0, stockAntesReal, stockDespuesReal);
-                }
-            } 
-
-            // 🚨 2. MANEJO DEL FALTANTE (DEVOLUCIÓN AL ORIGEN)
             let faltante = parseFloat((cantEnviada - cantRecibidaTotal).toFixed(3));
+
+            let stockAntesReal = parseFloat(pO.stock[sucursalActual]) || 0;
+            let stockDespuesReal = parseFloat((stockAntesReal + cantRecibidaTotal).toFixed(3));
             
-            if (faltante > 0) {
-                detallesFaltantes.push(`- ${faltante} de ${x.nom}`); 
+            let stockAntesOrigen = parseFloat(pO.stock[oriLimpio]) || 0;
+            let stockDespuesOrigen = parseFloat((stockAntesOrigen + faltante).toFixed(3));
 
-                let stockAntesOrigen = parseFloat(pO.stock[oriLimpio]) || 0;
-                let stockDespuesOrigen = parseFloat((stockAntesOrigen + faltante).toFixed(3));
-                
-                pO.stock[oriLimpio] = stockDespuesOrigen;
+            // Ajuste Local (Memoria pantalla)
+            if(cantRecibidaTotal > 0) pO.stock[sucursalActual] = stockDespuesReal; 
+            if(faltante > 0) pO.stock[oriLimpio] = stockDespuesOrigen;
 
-                // ☁️ GUARDADO BLINDADO AL ORIGEN: Enviamos el producto entero
-                if(typeof db !== 'undefined' && db.collection) {
-                    db.collection("inventario").doc(String(x.cod)).set(pO).catch(e => console.error("Error devolviendo a Origen:", e));
-                }
-
-                if(typeof registrarEnKardex === 'function') {
-                    registrarEnKardex(x.cod, x.nom, "DEVOLUCIÓN DE ENVÍO (FALTANTE)", faltante, pO.pv || 0, x.cReal || pO.cos || 0, stockAntesOrigen, stockDespuesOrigen, oriLimpio);
-                }
+            // KARDEX
+            if(cantRecibidaTotal > 0 && typeof registrarEnKardex === 'function') {
+                registrarEnKardex(x.cod, x.nom, "TRANSFERENCIA (ENTRADA)", cantRecibidaTotal, pO.pv || 0, x.cReal || pO.cos || 0, stockAntesReal, stockDespuesReal);
             }
-        }); 
+            if(faltante > 0 && typeof registrarEnKardex === 'function') {
+                registrarEnKardex(x.cod, x.nom, "DEVOLUCIÓN DE ENVÍO (FALTANTE)", faltante, pO.pv || 0, x.cReal || pO.cos || 0, stockAntesOrigen, stockDespuesOrigen, oriLimpio);
+            }
+
+            // 🌟 ESCUDO ANTI-SOBREESCRITURA (POCKETBASE / FIREBASE)
+            if (typeof pb !== 'undefined' && x.cod) {
+                try {
+                    let pNube = await pb.collection('inventario').getOne(String(x.cod));
+                    if (!pNube.inv_sucursales) pNube.inv_sucursales = {};
+                    
+                    if (cantRecibidaTotal > 0) {
+                        pNube.inv_sucursales[sucursalActual] = (parseFloat(pNube.inv_sucursales[sucursalActual]) || 0) + cantRecibidaTotal;
+                    }
+                    if (faltante > 0) {
+                        pNube.inv_sucursales[oriLimpio] = (parseFloat(pNube.inv_sucursales[oriLimpio]) || 0) + faltante;
+                        detallesFaltantes.push(`- ${faltante} de ${x.nom}`); 
+                    }
+                    
+                    await pb.collection('inventario').update(String(x.cod), pNube);
+                } catch (e) { console.error("❌ Error sumando recepción en PB:", e); }
+
+            } else if (typeof db !== 'undefined' && x.cod) {
+                try {
+                    let docSnap = await db.collection("inventario").doc(String(x.cod)).get();
+                    if (docSnap.exists) {
+                        let pNube = docSnap.data();
+                        if (!pNube.inv_sucursales) pNube.inv_sucursales = {};
+                        
+                        if (cantRecibidaTotal > 0) {
+                            pNube.inv_sucursales[sucursalActual] = (parseFloat(pNube.inv_sucursales[sucursalActual]) || 0) + cantRecibidaTotal;
+                        }
+                        if (faltante > 0) {
+                            pNube.inv_sucursales[oriLimpio] = (parseFloat(pNube.inv_sucursales[oriLimpio]) || 0) + faltante;
+                            if (typeof pb === 'undefined') detallesFaltantes.push(`- ${faltante} de ${x.nom}`); 
+                        }
+                        await db.collection("inventario").doc(String(x.cod)).set(pNube);
+                    }
+                } catch (e) { console.error("❌ Error sumando recepción en FB:", e); }
+            }
+        } 
         
         trans.estado = 'completada'; 
         let elObs = document.getElementById('r_proc_obs');
@@ -8469,8 +8252,13 @@ async function ejecutarAnulacionCompra() {
             proveedores[nomProv].saldo = nuevoSaldo;
             try { localStorage.setItem("pos_proveedores_v1", JSON.stringify(proveedores)); } catch(e){}
             
-            // ☁️ 🚀 DEUDA BLINDADA: Firebase descuenta el dinero de forma segura
-            if (typeof db !== 'undefined') {
+            // ☁️ 🚀 DEUDA BLINDADA (Compatible con PB y FB)
+            if (typeof pb !== 'undefined') {
+                pb.collection('proveedores').getOne(nomProv).then(provNube => {
+                    provNube.saldo = (parseFloat(provNube.saldo) || 0) - dineroARestar;
+                    pb.collection('proveedores').update(nomProv, provNube).catch(e => console.warn("Error proveedor PB"));
+                }).catch(e => console.warn("Error leyendo proveedor en PB"));
+            } else if (typeof db !== 'undefined') {
                 db.collection("proveedores").doc(nomProv).set({
                     saldo: firebase.firestore.FieldValue.increment(-dineroARestar)
                 }, { merge: true }).catch(e => console.error("Error financiero en la nube:", e));
@@ -8499,17 +8287,40 @@ async function ejecutarAnulacionCompra() {
                     // Restamos stock localmente
                     pMaestro.stock[sucursalOrigen] = stockDespuesReal;
                     
-                    // ☁️ 🚀 SUBIDA BLINDADA (Firebase resta dinámicamente solo en esta sucursal)
-                    if (typeof db !== 'undefined') {
-                        let campoStock = `stock.${sucursalOrigen}`;
-                        db.collection("inventario").doc(String(codMaestro)).set({
-                            [campoStock]: firebase.firestore.FieldValue.increment(-cantDevuelta)
-                        }, { merge: true });
+                    // 🌟 ESCUDO ANTI-SOBREESCRITURA (POCKETBASE / FIREBASE)
+                    if (typeof pb !== 'undefined' && codMaestro) { 
+                        pb.collection('inventario').getOne(String(codMaestro)).then(pNube => {
+                            if (pNube.stock && typeof pNube.stock === 'object') {
+                                pNube.stock[sucursalOrigen] = (parseFloat(pNube.stock[sucursalOrigen]) || 0) - cantDevuelta;
+                            }
+                            if (pNube.inv_sucursales && typeof pNube.inv_sucursales === 'object') {
+                                pNube.inv_sucursales[sucursalOrigen] = (parseFloat(pNube.inv_sucursales[sucursalOrigen]) || 0) - cantDevuelta;
+                            }
+                            if (!pNube.stock && !pNube.inv_sucursales && pNube.can !== undefined) {
+                                pNube.can -= cantDevuelta;
+                            }
+                            pb.collection('inventario').update(String(codMaestro), pNube).catch(e => console.warn("Error PB:", e));
+                        }).catch(e => console.warn("Error leyendo stock en PB:", e));
+                    } else if (typeof db !== 'undefined' && codMaestro) { 
+                        db.collection("inventario").doc(String(codMaestro)).get().then(docSnap => {
+                            if (docSnap.exists) {
+                                let pNube = docSnap.data();
+                                if (pNube.stock && typeof pNube.stock === 'object') {
+                                    pNube.stock[sucursalOrigen] = (parseFloat(pNube.stock[sucursalOrigen]) || 0) - cantDevuelta;
+                                }
+                                if (pNube.inv_sucursales && typeof pNube.inv_sucursales === 'object') {
+                                    pNube.inv_sucursales[sucursalOrigen] = (parseFloat(pNube.inv_sucursales[sucursalOrigen]) || 0) - cantDevuelta;
+                                }
+                                if (!pNube.stock && !pNube.inv_sucursales && pNube.can !== undefined) {
+                                    pNube.can -= cantDevuelta;
+                                }
+                                db.collection("inventario").doc(String(codMaestro)).set(pNube);
+                            }
+                        }).catch(e => console.warn("Error FB.", e));
                     }
                     
                     if (typeof registrarEnKardex === 'function') {
                         let nomAnotar = item.nom || pOriginal.nom || pMaestro.nom || "Artículo Desconocido";
-                        // Inyectamos la sucursalOrigen para que quede asentado en el lugar correcto
                         registrarEnKardex(codMaestro, nomAnotar, "ANULACIÓN COMPRA", -cantDevuelta, 0, item.cos, stockAntesReal, stockDespuesReal, sucursalOrigen);
                     }
                 }
@@ -8529,8 +8340,10 @@ async function ejecutarAnulacionCompra() {
             console.warn("Memoria local de compras llena, pero se guardará en la nube exitosamente."); 
         }
         
-        if (typeof db !== 'undefined') {
-            // Solo subimos la bandera al documento, no sobreescribimos toda la compra
+        // ☁️ 🚀 MARCAMOS COMPRA COMO ANULADA EN LA NUBE (PB / FB)
+        if (typeof pb !== 'undefined') {
+            pb.collection("compras").update(String(compraReal.id), { anulada: true }).catch(e => console.warn("Error marcando compra en PB", e));
+        } else if (typeof db !== 'undefined') {
             db.collection("compras").doc(String(compraReal.id)).set({ anulada: true }, { merge: true });
         }
 
@@ -8971,7 +8784,8 @@ function mandarARevisionSecundaria() {
 function aprobarYAjustarInventario() {
     if (!sesionEnRevisionActiva) return;
 
-    pedirPinOculto("🔒 Ingrese el PIN de Administrador para guardar:", function(pass) {
+    // Convertimos la función interna a 'async' para poder leer la nube producto por producto
+    pedirPinOculto("🔒 Ingrese el PIN de Administrador para guardar:", async function(pass) {
         if (!pass) return; 
 
         if (!usuariosData || !usuariosData["Admin"] || usuariosData["Admin"].pin !== pass) {
@@ -8994,7 +8808,8 @@ function aprobarYAjustarInventario() {
             }
         });
 
-        sesionEnRevisionActiva.conteo.forEach((item) => {
+        // Usamos 'for..of' en lugar de 'forEach' para que la nube espere su turno correctamente
+        for (let item of sesionEnRevisionActiva.conteo) {
             if (window.memoriaFaltantes.has(String(item.cod))) {
                 
                 let pOriginal = inv[item.cod] || {};
@@ -9006,6 +8821,7 @@ function aprobarYAjustarInventario() {
                     let stockCongelado = item.stock_congelado !== undefined ? parseFloat(item.stock_congelado) : stockActualEnVivo;
                     let conteoDelCajero = parseFloat(item.can_fisica) || 0;
                     
+                    // Esta matemática tuya es oro puro para el escudo
                     let ajusteMatematico = parseFloat((conteoDelCajero - stockCongelado).toFixed(3));
                     let stockFinalCalculado = parseFloat((stockActualEnVivo + ajusteMatematico).toFixed(3));
 
@@ -9013,10 +8829,44 @@ function aprobarYAjustarInventario() {
                     prod.stock[sucursalActual] = stockFinalCalculado;
                     prod.updatedAt = Date.now();
 
-                    // ☁️ GUARDADO BLINDADO: Mandamos el producto entero
-                    if (typeof db !== 'undefined') {
-                        db.collection("inventario").doc(String(codMaestro)).set(prod)
-                        .catch(e => console.error("Error al subir a la nube el código " + codMaestro, e));
+                    // 🌟 ESCUDO ANTI-SOBREESCRITURA (PB / FB)
+                    try {
+                        if (typeof pb !== 'undefined' && codMaestro) {
+                            let pNube = await pb.collection('inventario').getOne(String(codMaestro));
+                            if (!pNube.stock) pNube.stock = {};
+                            if (!pNube.inv_sucursales) pNube.inv_sucursales = {};
+                            
+                            // Sumamos o restamos el ajuste matemático al stock que tenga la nube en ese instante
+                            pNube.stock[sucursalActual] = (parseFloat(pNube.stock[sucursalActual]) || 0) + ajusteMatematico;
+                            pNube.inv_sucursales[sucursalActual] = (parseFloat(pNube.inv_sucursales[sucursalActual]) || 0) + ajusteMatematico;
+                            
+                            if (!pNube.stock && !pNube.inv_sucursales && pNube.can !== undefined) {
+                                pNube.can += ajusteMatematico;
+                            }
+                            pNube.updatedAt = Date.now();
+                            await pb.collection('inventario').update(String(codMaestro), pNube);
+
+                        } else if (typeof db !== 'undefined' && codMaestro) {
+                            let docSnap = await db.collection("inventario").doc(String(codMaestro)).get();
+                            if (docSnap.exists) {
+                                let pNube = docSnap.data();
+                                if (!pNube.stock) pNube.stock = {};
+                                if (!pNube.inv_sucursales) pNube.inv_sucursales = {};
+                                
+                                pNube.stock[sucursalActual] = (parseFloat(pNube.stock[sucursalActual]) || 0) + ajusteMatematico;
+                                pNube.inv_sucursales[sucursalActual] = (parseFloat(pNube.inv_sucursales[sucursalActual]) || 0) + ajusteMatematico;
+                                
+                                if (!pNube.stock && !pNube.inv_sucursales && pNube.can !== undefined) {
+                                    pNube.can += ajusteMatematico;
+                                }
+                                pNube.updatedAt = Date.now();
+                                await db.collection("inventario").doc(String(codMaestro)).set(pNube);
+                            } else {
+                                await db.collection("inventario").doc(String(codMaestro)).set(prod);
+                            }
+                        }
+                    } catch(e) {
+                        console.error("Error al subir a la nube el código " + codMaestro, e);
                     }
 
                     if (typeof registrarEnKardex === 'function') {
@@ -9034,7 +8884,7 @@ function aprobarYAjustarInventario() {
             } else {
                 conteoRestante.push(item);
             }
-        });
+        }
 
         if (itemsAplicados.length === 0) return alert("⚠️ No seleccionaste ninguna casilla. El inventario no cambió.");
 
