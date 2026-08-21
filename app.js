@@ -459,7 +459,7 @@ async function iniciarRadarVentasVeloz() {
         console.log("☁️ Descargando ventas del día:", hoy);
 
         // 👇 SOLUCIÓN: Comillas simples ('') alrededor de ${hoy}
-        let records = await pb.collection('ventas').getList(1, 500, {
+        let records = await pb.collection('ventas').getFullList({
             filter: `data.fecha >= '${hoy}'`, 
             requestKey: null
         });
@@ -2408,7 +2408,15 @@ window.confirmarVenta = async function(cambioFinal = 0) {
                         tipo: "Cargo (Compra)"
                     });
 
-                    if (typeof db !== 'undefined') { 
+                    // Soporte para PB en clientes
+                    if (typeof pb !== 'undefined') {
+                        try {
+                            let provNube = await pb.collection('clientes').getFirstListItem(`id="${telCliente}" || tel="${telCliente}"`);
+                            provNube.saldo = c.saldo;
+                            provNube.historial = c.historial;
+                            await pb.collection('clientes').update(provNube.id, provNube);
+                        } catch(e) { console.warn("Error cliente PB"); }
+                    } else if (typeof db !== 'undefined') { 
                         db.collection("clientes").doc(String(telCliente)).set(c)
                           .then(() => console.log(`✅ Deuda y Ticket de $${montoDeuda} guardados en ${c.nom}`))
                           .catch(e => console.warn("Error subiendo deuda a la nube.", e)); 
@@ -2438,7 +2446,7 @@ window.confirmarVenta = async function(cambioFinal = 0) {
         let suc = typeof sucursalActual !== 'undefined' ? sucursalActual : '';
         let usr = typeof usuarioActual !== 'undefined' ? usuarioActual : '';
 
-        for (let x of carV) { 
+       for (let x of carV) { 
             let pOriginal = inv[x.cod] || {}; 
             let codMaestro = x.maestro_cod || (pOriginal.grupo && inv[pOriginal.grupo] ? pOriginal.grupo : x.cod);
             let pMaestro = inv[codMaestro] || pOriginal;
@@ -2451,7 +2459,7 @@ window.confirmarVenta = async function(cambioFinal = 0) {
                 stockAntes = obtenerStockRealSucursal(pOriginal, suc);
             }
 
-            // 🌟 2. EJECUCIÓN DEL DESCUENTO DE STOCK
+            // 🌟 2. EJECUCIÓN DEL DESCUENTO DE STOCK LOCAL
             if(pOriginal.tipo === 'kit') { 
                 if(pOriginal.comp) pOriginal.comp.forEach(c => { 
                     let compMaestro = (inv[c.cod] && inv[c.cod].grupo && inv[inv[c.cod].grupo]) ? inv[c.cod].grupo : c.cod;
@@ -2466,6 +2474,11 @@ window.confirmarVenta = async function(cambioFinal = 0) {
             if (stockDespues === stockAntes) {
                 stockDespues = stockAntes - cantVendida;
             }
+
+            // 🚀 PARCHE ANTI-LIMBO: FORZAR EL GUARDADO LOCAL INMEDIATO
+            if (!pMaestro.stock) pMaestro.stock = {};
+            pMaestro.stock[suc] = stockDespues;
+            try { localStorage.setItem("pos_precision_v6", JSON.stringify(inv)); } catch(e) {}
 
             let minM = pMaestro.md || 10; 
             let precioVentaNormal = pMaestro.pv || 0;
@@ -2550,7 +2563,7 @@ window.confirmarVenta = async function(cambioFinal = 0) {
                 dep: pOriginal.dep || "General" 
             });
             
-            // 🌟 4. CREACIÓN ATÓMICA DEL REGISTRO KARDEX CON EL STOCK REAL
+            // 🌟 4. CREACIÓN ATÓMICA DEL REGISTRO KARDEX
             let regKardex = {
                 id: Date.now() + "_" + Math.floor(Math.random()*1000),
                 fecha: hoy,
@@ -2581,31 +2594,40 @@ window.confirmarVenta = async function(cambioFinal = 0) {
                 pb.collection('kardex').create(regKardex).catch(e => console.warn("Kardex pb offline:", e));
             }
 
-            // 🌟 5. ACTUALIZACIÓN INTELIGENTE DE STOCK (Resta en vivo sin sobreescribir)
+            // 🌟 5. ACTUALIZACIÓN INTELIGENTE DE STOCK (Buscador PB/FB)
             if (typeof pb !== 'undefined' && codMaestro) { 
-                // VERSIÓN POCKETBASE
-                pb.collection('inventario').getOne(codMaestro).then(productoRealNube => {
-                    if (suc !== '' && productoRealNube.inv_sucursales && productoRealNube.inv_sucursales[suc] !== undefined) {
-                        productoRealNube.inv_sucursales[suc] -= cantVendida;
-                    } else if (productoRealNube.can !== undefined) {
-                        productoRealNube.can -= cantVendida;
+                try {
+                    let idBuscar = String(codMaestro);
+                    let pNube = await pb.collection('inventario').getFirstListItem(`doc_id="${idBuscar}"`);
+                    
+                    if (pNube.data) {
+                        if (!pNube.data.stock) pNube.data.stock = {};
+                        
+                        // 🚀 PARCHE: Mandamos a la nube el número exacto del Kardex, no dejamos que reste a ciegas
+                        pNube.data.stock[suc] = stockDespues;
+                        pNube.data.updatedAt = Date.now();
+                        
+                        await pb.collection('inventario').update(pNube.id, pNube);
                     }
-                    pb.collection('inventario').update(codMaestro, productoRealNube).catch(e => console.warn("Error PB:", e));
-                }).catch(e => console.warn("Error leyendo stock en PB:", e));
-
+                } catch(e) {
+                    console.warn("PocketBase no encontró el producto al intentar restar la venta.", e);
+                }
             } else if (typeof db !== 'undefined' && codMaestro) { 
-                // VERSIÓN FIREBASE (De respaldo)
-                db.collection("inventario").doc(codMaestro).get().then(docSnap => {
+                try {
+                    let docSnap = await db.collection("inventario").doc(String(codMaestro)).get();
                     if (docSnap.exists) {
                         let productoRealNube = docSnap.data();
+                        
                         if (suc !== '' && productoRealNube.inv_sucursales && productoRealNube.inv_sucursales[suc] !== undefined) {
                             productoRealNube.inv_sucursales[suc] -= cantVendida;
                         } else if (productoRealNube.can !== undefined) {
                             productoRealNube.can -= cantVendida;
                         }
-                        db.collection("inventario").doc(codMaestro).set(productoRealNube);
+                        await db.collection("inventario").doc(String(codMaestro)).set(productoRealNube);
                     }
-                }).catch(e => console.warn("Error FB.", e));
+                } catch(e) {
+                    console.warn("Error al restar el inventario en FB.", e);
+                }
             }
         }
 
@@ -2648,7 +2670,16 @@ window.confirmarVenta = async function(cambioFinal = 0) {
         ventas.push(nuevaVenta);
         try { localStorage.setItem("pos_ventas_v6", JSON.stringify(ventas.slice(-200))); } catch(e) { localStorage.setItem("pos_ventas_v6", JSON.stringify(ventas.slice(-50))); }
 
-        if (typeof db !== 'undefined') { db.collection("ventas").doc(String(idVentaNueva)).set(nuevaVenta).catch(e => console.warn("Venta a mochila offline.")); }
+        // 🚀 AHORA SÍ: GUARDADO DE LA VENTA EN POCKETBASE (Y FIREBASE DE RESPALDO)
+        if (typeof pb !== 'undefined') {
+            // 🚀 CORRECCIÓN: Clonamos la venta y borramos tu ID de 13 dígitos
+            let ventaNube = { ...nuevaVenta }; 
+            delete ventaNube.id;               
+            
+            pb.collection("ventas").create(ventaNube).catch(e => console.warn("Venta a PB offline.", e));
+        } else if (typeof db !== 'undefined') { 
+            db.collection("ventas").doc(String(idVentaNueva)).set(nuevaVenta).catch(e => console.warn("Venta a FB offline.")); 
+        }
         
         carV = []; nombreVentaActual = ""; 
         if (typeof forceWholesale !== 'undefined') forceWholesale = false; 
@@ -3644,30 +3675,43 @@ window.procesarGuardadoEInventario = async function(totalCompra, metodoNombre, m
                     let cantTotalAumentar = (c.can || 1) * x.can; 
                     
                     if (maestroComp) {
-                        // Ajuste Local
                         if (!maestroComp.stock) maestroComp.stock = {};
                         maestroComp.stock[sucursalActual] = (maestroComp.stock[sucursalActual] || 0) + cantTotalAumentar;
                         maestroComp.updatedAt = Date.now();
                         
                         let docIdAActualizar = maestroComp === inv[codComp] ? codComp : inv[codComp].grupo;
                         
-                        // 🌟 ESCUDO ANTI-SOBREESCRITURA PARA KITS (PB / FB)
+                        // 🌟 ESCUDO PARA KITS (DOBLE ACTUALIZACIÓN COMO EN AJUSTE_STOCK)
                         if (typeof pb !== 'undefined' && docIdAActualizar) {
                             try {
-                                let pNube = await pb.collection("inventario").getOne(String(docIdAActualizar));
+                                let idBuscarKit = String(docIdAActualizar);
+                                let pNube = await pb.collection("inventario").getFirstListItem(`id="${idBuscarKit}" || cod="${idBuscarKit}" || codigo="${idBuscarKit}"`);
+                                
+                                if (!pNube.stock) pNube.stock = {};
                                 if (!pNube.inv_sucursales) pNube.inv_sucursales = {};
-                                pNube.inv_sucursales[sucursalActual] = (parseFloat(pNube.inv_sucursales[sucursalActual]) || 0) + cantTotalAumentar;
+                                
+                                let nuevoStockK = (parseFloat(pNube.stock[sucursalActual]) || 0) + cantTotalAumentar;
+                                pNube.stock[sucursalActual] = nuevoStockK;
+                                pNube.inv_sucursales[sucursalActual] = nuevoStockK;
                                 pNube.updatedAt = Date.now();
-                                await pb.collection("inventario").update(String(docIdAActualizar), pNube);
+                                
+                                await pb.collection("inventario").update(pNube.id, pNube);
                             } catch(e) { console.warn("Error PB Kit", e); }
+                            
                         } else if (typeof db !== 'undefined' && docIdAActualizar) {
                             try {
                                 let docSnap = await db.collection("inventario").doc(String(docIdAActualizar)).get();
                                 if (docSnap.exists) {
                                     let pNube = docSnap.data();
+                                    
+                                    if (!pNube.stock) pNube.stock = {};
                                     if (!pNube.inv_sucursales) pNube.inv_sucursales = {};
-                                    pNube.inv_sucursales[sucursalActual] = (parseFloat(pNube.inv_sucursales[sucursalActual]) || 0) + cantTotalAumentar;
+                                    
+                                    let nuevoStockK = (parseFloat(pNube.stock[sucursalActual]) || 0) + cantTotalAumentar;
+                                    pNube.stock[sucursalActual] = nuevoStockK;
+                                    pNube.inv_sucursales[sucursalActual] = nuevoStockK;
                                     pNube.updatedAt = Date.now();
+                                    
                                     await db.collection("inventario").doc(String(docIdAActualizar)).set(pNube);
                                 }
                             } catch(e) { console.warn("Error FB Kit", e); }
@@ -3677,7 +3721,6 @@ window.procesarGuardadoEInventario = async function(totalCompra, metodoNombre, m
             } else if (prod) {
                 let maestro = typeof obtenerProductoMaestro === 'function' ? obtenerProductoMaestro(x.cod) : inv[x.cod];
                 
-                // 📸 FOTOGRAFÍA 1: Lectura blindada del stock antes de recibir la compra
                 let stockAntesReal = 0;
                 if (maestro.stock && typeof maestro.stock === 'object') {
                     stockAntesReal = parseFloat(maestro.stock[sucursalActual]) || 0;
@@ -3686,7 +3729,6 @@ window.procesarGuardadoEInventario = async function(totalCompra, metodoNombre, m
                 }
                 if (stockAntesReal < 0) stockAntesReal = 0;
 
-                // 📸 FOTOGRAFÍA 2: Sumamos lo que acaba de llegar en la compra
                 let stockDespuesReal = stockAntesReal + parseFloat(x.can);
 
                 if (!maestro.stock) maestro.stock = {}; 
@@ -3694,18 +3736,8 @@ window.procesarGuardadoEInventario = async function(totalCompra, metodoNombre, m
                 
                 let conceptoKardex = esInventarioInicial ? "CARGA INICIAL" : "COMPRA";
                 
-                // 🌟 ENVIAMOS LAS FOTOS AL KARDEX
                 if (typeof registrarEnKardex === 'function') {
-                    registrarEnKardex(
-                        x.cod, 
-                        prod.nom, 
-                        conceptoKardex, 
-                        x.can, 
-                        x.pre || prod.pv, 
-                        x.cos || prod.cos, 
-                        stockAntesReal, 
-                        stockDespuesReal
-                    );
+                    registrarEnKardex(x.cod, prod.nom, conceptoKardex, x.can, x.pre || prod.pv, x.cos || prod.cos, stockAntesReal, stockDespuesReal);
                 }
 
                 let costoCompraUnitarioBase = 0;
@@ -3721,7 +3753,6 @@ window.procesarGuardadoEInventario = async function(totalCompra, metodoNombre, m
                     let valorViejo = stockAntesReal * costoHistorico;
                     let valorNuevo = x.can * costoCompraUnitarioBase;
                     let piezasTotales = stockAntesReal + x.can;
-
                     let costoPromedio = (valorViejo + valorNuevo) / piezasTotales;
                     
                     prod.cos_promedio = parseFloat(costoPromedio.toFixed(2));
@@ -3741,40 +3772,55 @@ window.procesarGuardadoEInventario = async function(totalCompra, metodoNombre, m
                 prod.updatedAt = Date.now(); 
                 if (maestro !== prod) maestro.updatedAt = Date.now();
                 
-                // 🌟 ESCUDO ANTI-SOBREESCRITURA PARA COMPRAS (PB / FB)
+               // 🌟 ESCUDO PARA PRODUCTOS NORMALES 
                 if (typeof pb !== 'undefined' && x.cod) {
                     try {
-                        let pNube = await pb.collection("inventario").getOne(String(x.cod));
-                        if (!pNube.inv_sucursales) pNube.inv_sucursales = {};
-                        pNube.inv_sucursales[sucursalActual] = (parseFloat(pNube.inv_sucursales[sucursalActual]) || 0) + parseFloat(x.can);
+                        // 1. Buscamos en la columna correcta que sí existe en tu tabla: 'doc_id'
+                        let pNube = await pb.collection("inventario").getFirstListItem(`doc_id="${x.cod}"`);
                         
-                        // Actualizamos los costos y precios que calculaste arriba
-                        if (prod.cos !== undefined) pNube.cos = prod.cos;
-                        if (prod.cos_promedio !== undefined) pNube.cos_promedio = prod.cos_promedio;
-                        if (prod.iva !== undefined) pNube.iva = prod.iva;
-                        if (prod.pv !== undefined) pNube.pv = prod.pv;
-                        if (prod.pre_sucursales) pNube.pre_sucursales = prod.pre_sucursales;
-                        pNube.updatedAt = Date.now();
+                        // 2. Entramos a la caja 'data' que es donde realmente tienes el stock y precios
+                        if (!pNube.data.stock) pNube.data.stock = {};
+                        
+                        let nuevoStockP = (parseFloat(pNube.data.stock[sucursalActual]) || 0) + parseFloat(x.can);
+                        pNube.data.stock[sucursalActual] = nuevoStockP;
+                        
+                        if (prod.cos !== undefined) pNube.data.cos = prod.cos;
+                        if (prod.cos_promedio !== undefined) pNube.data.cos_promedio = prod.cos_promedio;
+                        if (prod.iva !== undefined) pNube.data.iva = prod.iva;
+                        if (prod.pv !== undefined) pNube.data.pv = prod.pv;
+                        if (prod.pre_sucursales) pNube.data.pre_sucursales = prod.pre_sucursales;
+                        pNube.data.updatedAt = Date.now();
 
-                        await pb.collection("inventario").update(String(x.cod), pNube);
+                        // Actualizamos el registro completo
+                        await pb.collection("inventario").update(pNube.id, pNube);
 
-                        // Si hay producto maestro (grupo), también lo actualizamos
+                        // Si es un producto con Grupo/Maestro
                         if (maestro !== prod && prod.grupo) {
-                            let mNube = await pb.collection("inventario").getOne(String(prod.grupo));
-                            if (!mNube.inv_sucursales) mNube.inv_sucursales = {};
-                            mNube.inv_sucursales[sucursalActual] = (parseFloat(mNube.inv_sucursales[sucursalActual]) || 0) + parseFloat(x.can);
-                            mNube.updatedAt = Date.now();
-                            await pb.collection("inventario").update(String(prod.grupo), mNube);
+                            let mNube = await pb.collection("inventario").getFirstListItem(`doc_id="${prod.grupo}"`);
+                            
+                            if (!mNube.data.stock) mNube.data.stock = {};
+                            
+                            let nuevoStockG = (parseFloat(mNube.data.stock[sucursalActual]) || 0) + parseFloat(x.can);
+                            mNube.data.stock[sucursalActual] = nuevoStockG;
+                            mNube.data.updatedAt = Date.now();
+                            
+                            await pb.collection("inventario").update(mNube.id, mNube);
                         }
                     } catch(e) { console.warn("Error PB Compra:", e); }
 
                 } else if (typeof db !== 'undefined' && x.cod) {
+                    // ... (Aquí dejas tu código de Firebase "db" tal cual lo tienes) ...
                     try {
                         let docSnap = await db.collection("inventario").doc(String(x.cod)).get();
                         if (docSnap.exists) {
                             let pNube = docSnap.data();
+                            
+                            if (!pNube.stock) pNube.stock = {};
                             if (!pNube.inv_sucursales) pNube.inv_sucursales = {};
-                            pNube.inv_sucursales[sucursalActual] = (parseFloat(pNube.inv_sucursales[sucursalActual]) || 0) + parseFloat(x.can);
+                            
+                            let nuevoStockP = (parseFloat(pNube.stock[sucursalActual]) || 0) + parseFloat(x.can);
+                            pNube.stock[sucursalActual] = nuevoStockP;
+                            pNube.inv_sucursales[sucursalActual] = nuevoStockP;
                             
                             if (prod.cos !== undefined) pNube.cos = prod.cos;
                             if (prod.cos_promedio !== undefined) pNube.cos_promedio = prod.cos_promedio;
@@ -3790,9 +3836,15 @@ window.procesarGuardadoEInventario = async function(totalCompra, metodoNombre, m
                             let mSnap = await db.collection("inventario").doc(String(prod.grupo)).get();
                             if (mSnap.exists) {
                                 let mNube = mSnap.data();
+                                
+                                if (!mNube.stock) mNube.stock = {};
                                 if (!mNube.inv_sucursales) mNube.inv_sucursales = {};
-                                mNube.inv_sucursales[sucursalActual] = (parseFloat(mNube.inv_sucursales[sucursalActual]) || 0) + parseFloat(x.can);
+                                
+                                let nuevoStockG = (parseFloat(mNube.stock[sucursalActual]) || 0) + parseFloat(x.can);
+                                mNube.stock[sucursalActual] = nuevoStockG;
+                                mNube.inv_sucursales[sucursalActual] = nuevoStockG;
                                 mNube.updatedAt = Date.now();
+                                
                                 await db.collection("inventario").doc(String(prod.grupo)).set(mNube);
                             }
                         }
@@ -3803,7 +3855,7 @@ window.procesarGuardadoEInventario = async function(totalCompra, metodoNombre, m
             console.error("Error aislando producto: ", x.cod, errorItem);
         }
     }
-    
+
     // --- 2. Guardado de datos original usando el objeto 'db' ---
     try { localStorage.setItem("pos_precision_v6", JSON.stringify(inv)); } catch(e) {}
     let idCompra = Date.now();
@@ -3824,22 +3876,40 @@ window.procesarGuardadoEInventario = async function(totalCompra, metodoNombre, m
     
     if (typeof compras === 'undefined') window.compras = [];
     compras.push(objetoCompra); 
-    try { localStorage.setItem("pos_compras_local", JSON.stringify(compras)); } catch(e) {}
     
+    if (compras.length > 100) compras = compras.slice(-100);
+    
+    try { 
+        localStorage.setItem("pos_compras_local", JSON.stringify(compras)); 
+    } catch(e) {
+        localStorage.removeItem("pos_compras_local");
+        compras = compras.slice(-20); 
+        try { localStorage.setItem("pos_compras_local", JSON.stringify(compras)); } catch(err) {}
+    }
+    
+    // ☁️ Guardado en Firebase
     if (typeof db !== 'undefined') {
-        await db.collection("compras").doc(String(idCompra)).set(objetoCompra).catch(e => console.error("Error Nube Compras: ", e));
+        await db.collection("compras").doc(String(idCompra)).set(objetoCompra).catch(e => console.error("Error Nube Compras FB: ", e));
+    }
+    
+    // ☁️ Guardado en PocketBase (Con el truco del ID para que no lo rechace)
+    if (typeof pb !== 'undefined') {
+        try {
+            let compraNube = { ...objetoCompra };
+            delete compraNube.id; 
+            await pb.collection("compras").create(compraNube);
+        } catch(e) {
+            console.warn("Error Nube Compras PB:", e);
+        }
     }
 
-    // --- 💥 3. PARCHE DE AUDITORÍA CONTABLE (Descuento real de efectivo) ---
+    // --- 3. PARCHE DE AUDITORÍA CONTABLE ---
     if (metaPago && metaPago.metodo === "Mixto Especial" && metaPago.cajas_afectadas) {
         let cajas = metaPago.cajas_afectadas;
-        
         for (let cajeroAfectado of Object.keys(cajas)) {
             let montoRetirado = parseFloat(cajas[cajeroAfectado]) || 0;
-            
             if (montoRetirado > 0 && cajeroAfectado !== "Banco_Directo") {
                 let idMov = Date.now() + Math.floor(Math.random() * 1000); 
-                
                 let nuevoRetiro = {
                     id: idMov,
                     fecha: typeof getFechaLocal === 'function' ? getFechaLocal() : new Date().toISOString().split('T')[0],
@@ -3850,15 +3920,12 @@ window.procesarGuardadoEInventario = async function(totalCompra, metodoNombre, m
                     monto: montoRetirado,
                     motivo: `COMPRA MIXTA ESP. (Fondo tomado por Admin para proveedor: ${prov || "General"})`
                 };
-                
                 if (typeof movimientos !== 'undefined') {
                     movimientos.push(nuevoRetiro);
                     try { localStorage.setItem("pos_movimientos_v1", JSON.stringify(movimientos)); } catch(e) {}
                 }
-                
                 if (typeof db !== 'undefined') {
-                    await db.collection("movimientos").doc(String(idMov)).set(nuevoRetiro)
-                        .catch(e => console.error("Error registrando retiro de auditoría:", e));
+                    await db.collection("movimientos").doc(String(idMov)).set(nuevoRetiro).catch(e => console.error("Error retiro auditoría:", e));
                 }
             }
         }
@@ -3866,17 +3933,23 @@ window.procesarGuardadoEInventario = async function(totalCompra, metodoNombre, m
 
     // --- 4. Anotar la deuda en la libreta del proveedor ---
     if (metaPago && metaPago.es_credito && metaPago.monto_credito > 0) {
-        let nombreProv = prov || "Proveedor General";
+        let nomInput = prov || "Proveedor General";
+        let nomLimpio = nomInput.split('_')[0]; 
+        let sucLimpia = String(sucursalActual || "").replace(/📍/g, '').trim();
+        let idUnico = nomLimpio + "_" + sucLimpia;
         
         if (typeof proveedores === 'undefined') window.proveedores = {};
-        if (!proveedores[nombreProv]) {
-            proveedores[nombreProv] = { sucursal: sucursalActual, saldo: 0, historial: [] };
+        
+        if (!proveedores[idUnico]) {
+            proveedores[idUnico] = { nom: nomLimpio, sucursal: sucLimpia, saldo: 0, historial: [] };
+        } else {
+            proveedores[idUnico].nom = nomLimpio;
+            proveedores[idUnico].sucursal = sucLimpia;
         }
         
-        proveedores[nombreProv].saldo = (proveedores[nombreProv].saldo || 0) + metaPago.monto_credito;
-        
-        if (!proveedores[nombreProv].historial) proveedores[nombreProv].historial = [];
-        proveedores[nombreProv].historial.push({ 
+        proveedores[idUnico].saldo = (proveedores[idUnico].saldo || 0) + metaPago.monto_credito;
+        if (!proveedores[idUnico].historial) proveedores[idUnico].historial = [];
+        proveedores[idUnico].historial.push({ 
             fecha: typeof getFechaLocal === 'function' ? getFechaLocal() : new Date().toISOString().split('T')[0], 
             hora: new Date().toLocaleTimeString(), 
             tipo: 'Compra', 
@@ -3885,11 +3958,23 @@ window.procesarGuardadoEInventario = async function(totalCompra, metodoNombre, m
         });
 
         try { localStorage.setItem("pos_proveedores_v1", JSON.stringify(proveedores)); } catch(e) {}
-        if (typeof db !== 'undefined') await db.collection("proveedores").doc(nombreProv).set(proveedores[nombreProv]);
-        
+
+        if (typeof db !== 'undefined') {
+            db.collection("proveedores").doc(idUnico).set(proveedores[idUnico]).catch(e => console.warn("Error Firebase:", e));
+        }
+
+        if (typeof pb !== 'undefined') {
+            let provCrear = { doc_id: String(idUnico), data: proveedores[idUnico] };
+            pb.collection("proveedores").getFirstListItem(`doc_id="${idUnico}"`).then(pvNube => {
+                pvNube.data = proveedores[idUnico];
+                pb.collection("proveedores").update(pvNube.id, pvNube);
+            }).catch(e => {
+                pb.collection("proveedores").create(provCrear);
+            });
+        }
         if (typeof renderProveedores === 'function') renderProveedores();
     }
-
+    
     // --- 5. Limpieza del carrito ---
     carC = []; 
     if (typeof renderC === 'function') renderC(); 
@@ -4676,14 +4761,41 @@ window.confirmarAbonoProv = function() {
 };
 function abrirModalAuthProv(nombre) { window.provActualEliminar = nombre; document.getElementById('auth_prov_nom').innerText = nombre; document.getElementById('auth_admin_pin').value = ''; document.getElementById('modalAuthAdminProv').style.display = 'block'; setTimeout(() => document.getElementById('auth_admin_pin').focus(), 100); }
 function confirmarEliminacionProv() {
-    let prov = window.provActualEliminar; if (!prov || !proveedores[prov]) return;
+    let prov = window.provActualEliminar; 
+    if (!prov || !proveedores[prov]) return;
+    
     let pin = document.getElementById('auth_admin_pin').value;
+    
     if (usuariosData["Admin"] && usuariosData["Admin"].pin === pin) {
-        delete proveedores[prov]; localStorage.setItem("pos_proveedores_v1", JSON.stringify(proveedores));
-        db.collection("proveedores").doc(prov).delete(); cerrarModales(); renderProveedores(); alert("✅ Eliminado.");
-    } else alert("❌ PIN.");
-}
+        // 1. Borramos de la memoria local
+        delete proveedores[prov]; 
+        try { localStorage.setItem("pos_proveedores_v1", JSON.stringify(proveedores)); } catch(e) {}
+        
+        // 2. 🛡️ Borramos en Firebase (BLINDADO CONTRA CRASHES)
+        if (typeof db !== 'undefined') {
+            try {
+                // Si esto falla, ya no estrellará todo el sistema
+                db.collection("proveedores").doc(prov).delete().catch(e => console.warn("Error FB", e));
+            } catch (errDB) {
+                console.warn("Omitiendo Firebase, el comando no es compatible:", errDB);
+            }
+        }
 
+        // 3. 🚀 BORRAMOS EN POCKETBASE (El que de verdad importa)
+        if (typeof pb !== 'undefined') {
+            pb.collection("proveedores").getFirstListItem(`doc_id="${prov}"`).then(pvNube => {
+                pb.collection("proveedores").delete(pvNube.id).catch(e => console.warn("Error borrando en PB", e));
+            }).catch(e => console.warn("No encontrado en PB", e));
+        }
+        
+        if (typeof cerrarModales === 'function') cerrarModales(); 
+        if (typeof renderProveedores === 'function') renderProveedores(); 
+        
+        alert("✅ Proveedor eliminado correctamente.");
+    } else {
+        alert("❌ PIN Incorrecto.");
+    }
+}
 // ====================================================================
 // === DASHBOARD, CORTES Y GASTOS ===
 // ====================================================================
