@@ -2603,8 +2603,9 @@ window.confirmarVenta = async function(cambioFinal = 0) {
                     if (pNube.data) {
                         if (!pNube.data.stock) pNube.data.stock = {};
                         
-                        // 🚀 PARCHE: Mandamos a la nube el número exacto del Kardex, no dejamos que reste a ciegas
-                        pNube.data.stock[suc] = stockDespues;
+                        // 🚀 CORRECCIÓN DE SEGURIDAD MULTI-CAJERO:
+                        // La nube SIEMPRE resta de su propio número actual, nunca obedece ciegamente al total local.
+                        pNube.data.stock[suc] = (parseFloat(pNube.data.stock[suc]) || 0) - cantVendida;
                         pNube.data.updatedAt = Date.now();
                         
                         await pb.collection('inventario').update(pNube.id, pNube);
@@ -2612,6 +2613,7 @@ window.confirmarVenta = async function(cambioFinal = 0) {
                 } catch(e) {
                     console.warn("PocketBase no encontró el producto al intentar restar la venta.", e);
                 }
+            }
             } else if (typeof db !== 'undefined' && codMaestro) { 
                 try {
                     let docSnap = await db.collection("inventario").doc(String(codMaestro)).get();
@@ -10596,3 +10598,30 @@ setTimeout(() => {
 setTimeout(() => {
     if (typeof actualizarTickerPromos === 'function') actualizarTickerPromos();
 }, 2000);
+// 📱 PARCHE PARA CELULARES: Detectar cuando la pantalla se vuelve a encender o se regresa al navegador
+document.addEventListener("visibilitychange", function() {
+    if (document.visibilityState === 'visible') {
+        console.log("📱 El navegador despertó. Forzando actualización de radar...");
+        
+        // Ejecutamos el radar para que descargue lo que pasó mientras el celular dormía
+        if (typeof iniciarRadarVentasVeloz === 'function') {
+            iniciarRadarVentasVeloz();
+        }
+        // Si tienes una función para recargar el inventario, también ponla aquí, por ejemplo:
+        // if (typeof descargarInventarioNube === 'function') descargarInventarioNube();
+    }
+});
+// 📱 ESCUDO ANTI-AMNESIA PARA CELULARES Y TABLETS
+document.addEventListener("visibilitychange", function() {
+    if (document.visibilityState === 'visible') {
+        console.log("📱 El dispositivo despertó. Refrescando inventario para evitar desfases...");
+        
+        // 1. Refrescar el Radar de Ventas
+        if (typeof iniciarRadarVentasVeloz === 'function') {
+            iniciarRadarVentasVeloz();
+        }
+        
+        // 2. Refrescar la memoria de los productos
+        // AQUÍ DEBEMOS PONER TU FUNCIÓN DE CARGA DE INVENTARIO
+    }
+});
