@@ -2342,14 +2342,19 @@ function obtenerStockRealSucursal(prod, suc) {
 window.ventaEnProceso = false; // 🛡️ Candado global
 
 window.confirmarVenta = async function(cambioFinal = 0) {
-    // 🛡️ 1. REVISAMOS EL CANDADO. Si ya está trabajando, ignoramos el clic fantasma.
-    if (window.ventaEnProceso) {
-        console.warn("⏳ Ignorando clic adicional: La venta ya se está procesando...");
+    
+    // 🛡️ 1. CANDADO ANTI-REBOTES DE TIEMPO (Ignora 'Enters' fantasmas por 3 segundos)
+    let tiempoActual = Date.now();
+    if (window.ventaEnProceso || (window.ultimoEnterVenta && (tiempoActual - window.ultimoEnterVenta) < 3000)) {
+        console.warn("⏳ Bloqueando Enter doble fantasma...");
         return; 
     }
     
     // 🛡️ 2. CERRAMOS EL CANDADO
+    window.ultimoEnterVenta = tiempoActual;
     window.ventaEnProceso = true;
+
+   
 
     try {
         let tot = parseFloat(document.getElementById('v_total').innerText); 
@@ -2594,42 +2599,37 @@ window.confirmarVenta = async function(cambioFinal = 0) {
                 pb.collection('kardex').create(regKardex).catch(e => console.warn("Kardex pb offline:", e));
             }
 
-            // 🌟 5. ACTUALIZACIÓN INTELIGENTE DE STOCK (Buscador PB/FB)
+            // 🌟 5. ACTUALIZACIÓN INTELIGENTE DE STOCK (En segundo plano ⚡)
             if (typeof pb !== 'undefined' && codMaestro) { 
-                try {
-                    let idBuscar = String(codMaestro);
-                    let pNube = await pb.collection('inventario').getFirstListItem(`doc_id="${idBuscar}"`);
-                    
-                    if (pNube.data) {
-                        if (!pNube.data.stock) pNube.data.stock = {};
+                // Al envolverlo en (async () => { ... })(), la compu hace esto "escondida" y no frena el ticket
+                (async () => {
+                    try {
+                        let idBuscar = String(codMaestro);
+                        let pNube = await pb.collection('inventario').getFirstListItem(`doc_id="${idBuscar}"`);
                         
-                        // 🚀 CORRECCIÓN DE SEGURIDAD MULTI-CAJERO:
-                        // La nube SIEMPRE resta de su propio número actual, nunca obedece ciegamente al total local.
-                        pNube.data.stock[suc] = (parseFloat(pNube.data.stock[suc]) || 0) - cantVendida;
-                        pNube.data.updatedAt = Date.now();
-                        
-                        await pb.collection('inventario').update(pNube.id, pNube);
-                    }
-                } catch(e) {
-                    console.warn("PocketBase no encontró el producto al intentar restar la venta.", e);
-                }
-            }
-            } else if (typeof db !== 'undefined' && codMaestro) { 
-                try {
-                    let docSnap = await db.collection("inventario").doc(String(codMaestro)).get();
-                    if (docSnap.exists) {
-                        let productoRealNube = docSnap.data();
-                        
-                        if (suc !== '' && productoRealNube.inv_sucursales && productoRealNube.inv_sucursales[suc] !== undefined) {
-                            productoRealNube.inv_sucursales[suc] -= cantVendida;
-                        } else if (productoRealNube.can !== undefined) {
-                            productoRealNube.can -= cantVendida;
+                        if (pNube.data) {
+                            if (!pNube.data.stock) pNube.data.stock = {};
+                            pNube.data.stock[suc] = (parseFloat(pNube.data.stock[suc]) || 0) - cantVendida;
+                            pNube.data.updatedAt = Date.now();
+                            await pb.collection('inventario').update(pNube.id, pNube);
                         }
-                        await db.collection("inventario").doc(String(codMaestro)).set(productoRealNube);
-                    }
-                } catch(e) {
-                    console.warn("Error al restar el inventario en FB.", e);
-                }
+                    } catch(e) { console.warn("Fallo PB background", e); }
+                })();
+            } else if (typeof db !== 'undefined' && codMaestro) { 
+                (async () => {
+                    try {
+                        let docSnap = await db.collection("inventario").doc(String(codMaestro)).get();
+                        if (docSnap.exists) {
+                            let productoRealNube = docSnap.data();
+                            if (suc !== '' && productoRealNube.inv_sucursales && productoRealNube.inv_sucursales[suc] !== undefined) {
+                                productoRealNube.inv_sucursales[suc] -= cantVendida;
+                            } else if (productoRealNube.can !== undefined) {
+                                productoRealNube.can -= cantVendida;
+                            }
+                            await db.collection("inventario").doc(String(codMaestro)).set(productoRealNube);
+                        }
+                    } catch(e) { console.warn("Fallo FB background", e); }
+                })();
             }
         }
 
@@ -10623,5 +10623,24 @@ document.addEventListener("visibilitychange", function() {
         
         // 2. Refrescar la memoria de los productos
         // AQUÍ DEBEMOS PONER TU FUNCIÓN DE CARGA DE INVENTARIO
+    }
+});// 📱 PARCHE ANTI-AMNESIA PARA CELULARES
+let tiempoUltimaVezActivo = Date.now();
+
+document.addEventListener("visibilitychange", function() {
+    if (document.visibilityState === 'visible') {
+        let tiempoDormido = Date.now() - tiempoUltimaVezActivo;
+        
+        // Si el celular estuvo dormido más de 5 minutos (300,000 milisegundos), forzamos reinicio limpio
+        if (tiempoDormido > 300000) {
+            console.log("📱 Despertando de un sueño profundo. Recargando sistema...");
+            window.location.reload(true);
+        } else {
+            // Si solo fue un parpadeo, solo actualizamos el radar de ventas
+            if (typeof iniciarRadarVentasVeloz === 'function') iniciarRadarVentasVeloz();
+        }
+    } else {
+        // Cuando la pantalla se apaga, guardamos la hora exacta
+        tiempoUltimaVezActivo = Date.now();
     }
 });
