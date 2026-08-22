@@ -2343,7 +2343,13 @@ window.ventaEnProceso = false; // 🛡️ Candado global
 
 window.confirmarVenta = async function(cambioFinal = 0) {
     
-    // 🛡️ 1. CANDADO ANTI-REBOTES DE TIEMPO (Ignora 'Enters' fantasmas por 3 segundos)
+    // 🛒 ESCUDO ABSOLUTO: Si el carrito está vacío, ignoramos el enter fantasma de inmediato
+    if (typeof carV === 'undefined' || !carV || carV.length === 0) {
+        console.warn("🛒 Carrito vacío. Bloqueando venta fantasma.");
+        return; 
+    }
+
+    // 🛡️ 1. CANDADO ANTI-REBOTES DE TIEMPO
     let tiempoActual = Date.now();
     if (window.ventaEnProceso || (window.ultimoEnterVenta && (tiempoActual - window.ultimoEnterVenta) < 3000)) {
         console.warn("⏳ Bloqueando Enter doble fantasma...");
@@ -2353,8 +2359,6 @@ window.confirmarVenta = async function(cambioFinal = 0) {
     // 🛡️ 2. CERRAMOS EL CANDADO
     window.ultimoEnterVenta = tiempoActual;
     window.ventaEnProceso = true;
-
-   
 
     try {
         let tot = parseFloat(document.getElementById('v_total').innerText); 
@@ -2416,9 +2420,9 @@ window.confirmarVenta = async function(cambioFinal = 0) {
                     // Soporte para PB en clientes
                     if (typeof pb !== 'undefined') {
                         try {
-                            let provNube = await pb.collection('clientes').getFirstListItem(`id="${telCliente}" || tel="${telCliente}"`);
-                            provNube.saldo = c.saldo;
-                            provNube.historial = c.historial;
+                            let provNube = await pb.collection('clientes').getFirstListItem(`doc_id="${telCliente}"`);
+                            provNube.data.saldo = c.saldo;
+                            provNube.data.historial = c.historial;
                             await pb.collection('clientes').update(provNube.id, provNube);
                         } catch(e) { console.warn("Error cliente PB"); }
                     } else if (typeof db !== 'undefined') { 
@@ -2451,39 +2455,44 @@ window.confirmarVenta = async function(cambioFinal = 0) {
         let suc = typeof sucursalActual !== 'undefined' ? sucursalActual : '';
         let usr = typeof usuarioActual !== 'undefined' ? usuarioActual : '';
 
-       for (let x of carV) { 
+        for (let x of carV) { 
             let pOriginal = inv[x.cod] || {}; 
             let codMaestro = x.maestro_cod || (pOriginal.grupo && inv[pOriginal.grupo] ? pOriginal.grupo : x.cod);
             let pMaestro = inv[codMaestro] || pOriginal;
 
             let cantVendida = parseFloat(x.can) || 1;
 
-            // 🌟 1. LECTURA PRECISA DEL STOCK ANTES DEL COBRO
             let stockAntes = obtenerStockRealSucursal(pMaestro, suc);
             if (stockAntes === 0 && pOriginal) {
                 stockAntes = obtenerStockRealSucursal(pOriginal, suc);
             }
 
-            // 🌟 2. EJECUCIÓN DEL DESCUENTO DE STOCK LOCAL
-            if(pOriginal.tipo === 'kit') { 
-                if(pOriginal.comp) pOriginal.comp.forEach(c => { 
+            // 🚀 SOLUCIÓN AL DOBLE DESCUENTO: 
+            // Eliminamos `descontarStock` y empacamos lo que se debe restar de forma segura
+            let itemsParaDescontar = [];
+            if (pOriginal.tipo === 'kit' && pOriginal.comp) {
+                pOriginal.comp.forEach(c => {
                     let compMaestro = (inv[c.cod] && inv[c.cod].grupo && inv[inv[c.cod].grupo]) ? inv[c.cod].grupo : c.cod;
-                    if(typeof descontarStock === 'function') descontarStock(compMaestro, (c.can || 1) * cantVendida); 
-                }); 
-            } else { 
-                if(typeof descontarStock === 'function') descontarStock(codMaestro, cantVendida); 
-            }
-            
-            // 🌟 3. LECTURA DEL STOCK DESPUÉS DEL COBRO
-            let stockDespues = obtenerStockRealSucursal(pMaestro, suc);
-            if (stockDespues === stockAntes) {
-                stockDespues = stockAntes - cantVendida;
+                    itemsParaDescontar.push({ cod: String(compMaestro), can: (parseFloat(c.can) || 1) * cantVendida });
+                });
+            } else {
+                itemsParaDescontar.push({ cod: String(codMaestro), can: cantVendida });
             }
 
-            // 🚀 PARCHE ANTI-LIMBO: FORZAR EL GUARDADO LOCAL INMEDIATO
-            if (!pMaestro.stock) pMaestro.stock = {};
-            pMaestro.stock[suc] = stockDespues;
+            // 🌟 2. DESCUENTO LOCAL INMEDIATO
+            for (let itemA of itemsParaDescontar) {
+                let pLoc = inv[itemA.cod];
+                if (pLoc) {
+                    if (!pLoc.stock) pLoc.stock = {};
+                    pLoc.stock[suc] = (parseFloat(pLoc.stock[suc]) || 0) - itemA.can;
+                }
+            }
             try { localStorage.setItem("pos_precision_v6", JSON.stringify(inv)); } catch(e) {}
+
+            let stockDespues = obtenerStockRealSucursal(pMaestro, suc);
+            if (stockDespues === stockAntes && pOriginal.tipo !== 'kit') {
+                stockDespues = stockAntes - cantVendida;
+            }
 
             let minM = pMaestro.md || 10; 
             let precioVentaNormal = pMaestro.pv || 0;
@@ -2568,7 +2577,6 @@ window.confirmarVenta = async function(cambioFinal = 0) {
                 dep: pOriginal.dep || "General" 
             });
             
-            // 🌟 4. CREACIÓN ATÓMICA DEL REGISTRO KARDEX
             let regKardex = {
                 id: Date.now() + "_" + Math.floor(Math.random()*1000),
                 fecha: hoy,
@@ -2599,39 +2607,38 @@ window.confirmarVenta = async function(cambioFinal = 0) {
                 pb.collection('kardex').create(regKardex).catch(e => console.warn("Kardex pb offline:", e));
             }
 
-            // 🌟 5. ACTUALIZACIÓN INTELIGENTE DE STOCK (En segundo plano ⚡)
-            if (typeof pb !== 'undefined' && codMaestro) { 
-                // Al envolverlo en (async () => { ... })(), la compu hace esto "escondida" y no frena el ticket
-                (async () => {
-                    try {
-                        let idBuscar = String(codMaestro);
-                        let pNube = await pb.collection('inventario').getFirstListItem(`doc_id="${idBuscar}"`);
-                        
-                        if (pNube.data) {
-                            if (!pNube.data.stock) pNube.data.stock = {};
-                            pNube.data.stock[suc] = (parseFloat(pNube.data.stock[suc]) || 0) - cantVendida;
-                            pNube.data.updatedAt = Date.now();
-                            await pb.collection('inventario').update(pNube.id, pNube);
-                        }
-                    } catch(e) { console.warn("Fallo PB background", e); }
-                })();
-            } else if (typeof db !== 'undefined' && codMaestro) { 
-                (async () => {
-                    try {
-                        let docSnap = await db.collection("inventario").doc(String(codMaestro)).get();
-                        if (docSnap.exists) {
-                            let productoRealNube = docSnap.data();
-                            if (suc !== '' && productoRealNube.inv_sucursales && productoRealNube.inv_sucursales[suc] !== undefined) {
-                                productoRealNube.inv_sucursales[suc] -= cantVendida;
-                            } else if (productoRealNube.can !== undefined) {
-                                productoRealNube.can -= cantVendida;
+            // 🌟 5. ACTUALIZACIÓN INTELIGENTE EN LA NUBE (En segundo plano ⚡)
+            for (let itemA of itemsParaDescontar) {
+                if (typeof pb !== 'undefined' && itemA.cod) { 
+                    (async () => {
+                        try {
+                            let pNube = await pb.collection('inventario').getFirstListItem(`doc_id="${itemA.cod}"`);
+                            if (pNube.data) {
+                                if (!pNube.data.stock) pNube.data.stock = {};
+                                pNube.data.stock[suc] = (parseFloat(pNube.data.stock[suc]) || 0) - itemA.can;
+                                pNube.data.updatedAt = Date.now();
+                                await pb.collection('inventario').update(pNube.id, pNube);
                             }
-                            await db.collection("inventario").doc(String(codMaestro)).set(productoRealNube);
-                        }
-                    } catch(e) { console.warn("Fallo FB background", e); }
-                })();
+                        } catch(e) { console.warn("Fallo PB background en venta", e); }
+                    })();
+                } else if (typeof db !== 'undefined' && itemA.cod) { 
+                    (async () => {
+                        try {
+                            let docSnap = await db.collection("inventario").doc(String(itemA.cod)).get();
+                            if (docSnap.exists) {
+                                let productoRealNube = docSnap.data();
+                                if (suc !== '' && productoRealNube.inv_sucursales && productoRealNube.inv_sucursales[suc] !== undefined) {
+                                    productoRealNube.inv_sucursales[suc] -= itemA.can;
+                                } else if (productoRealNube.can !== undefined) {
+                                    productoRealNube.can -= itemA.can;
+                                }
+                                await db.collection("inventario").doc(String(itemA.cod)).set(productoRealNube);
+                            }
+                        } catch(e) { console.warn("Fallo FB background en venta", e); }
+                    })();
+                }
             }
-        }
+        } // Fin del ciclo For del carrito
 
         if (sumaTotalCobrada > (tot + 0.01)) {
             let ahorroGlobal = sumaTotalCobrada - tot;
@@ -2660,7 +2667,7 @@ window.confirmarVenta = async function(cambioFinal = 0) {
         if (elCajero) elCajero.innerText = usr;
         
         let nuevaVenta = { 
-            id: idVentaNueva, fecha: hoy, hora: horaVenta, 
+            id: idVentaNueva, doc_id: String(idVentaNueva), fecha: hoy, hora: horaVenta, 
             cajero: usr, sucursal: suc, total: tot, 
             nom: nomClienteTicket,
             metodo: metodosStr, pagos: pagosActuales, 
@@ -2672,12 +2679,9 @@ window.confirmarVenta = async function(cambioFinal = 0) {
         ventas.push(nuevaVenta);
         try { localStorage.setItem("pos_ventas_v6", JSON.stringify(ventas.slice(-200))); } catch(e) { localStorage.setItem("pos_ventas_v6", JSON.stringify(ventas.slice(-50))); }
 
-        // 🚀 AHORA SÍ: GUARDADO DE LA VENTA EN POCKETBASE (Y FIREBASE DE RESPALDO)
+        // 🚀 GUARDADO DE LA VENTA EN NUBE (FORMATO CORRECTO PARA PB)
         if (typeof pb !== 'undefined') {
-            // 🚀 CORRECCIÓN: Clonamos la venta y borramos tu ID de 13 dígitos
-            let ventaNube = { ...nuevaVenta }; 
-            delete ventaNube.id;               
-            
+            let ventaNube = { doc_id: String(idVentaNueva), data: nuevaVenta }; 
             pb.collection("ventas").create(ventaNube).catch(e => console.warn("Venta a PB offline.", e));
         } else if (typeof db !== 'undefined') { 
             db.collection("ventas").doc(String(idVentaNueva)).set(nuevaVenta).catch(e => console.warn("Venta a FB offline.")); 
@@ -2713,10 +2717,10 @@ window.confirmarVenta = async function(cambioFinal = 0) {
         console.error("Error catastrofico en Venta:", err); 
         alert("⚠️ Hubo un error al procesar la venta: " + err.message); 
     } finally {
-        // 🛡️ 3. ABRIMOS EL CANDADO (Se ejecuta siempre al final, haya error o no)
+        // 🛡️ 3. ABRIMOS EL CANDADO SIEMPRE
         setTimeout(() => {
             window.ventaEnProceso = false;
-        }, 1000); // 1 segundo de enfriamiento para limpiar la pantalla por completo
+        }, 1000); 
     }
 };
 // Granel
@@ -3662,7 +3666,7 @@ window.finalizarCompra = async function() {
     }
 };
 
-window.procesarGuardadoEInventario = async function(totalCompra, metodoNombre, metaPago) {
+ window.procesarGuardadoEInventario = async function(totalCompra, metodoNombre, metaPago) {
     let prov = document.getElementById('c_proveedor') ? document.getElementById('c_proveedor').value.trim() : "";
     let esInventarioInicial = document.getElementById('c_inventario_inicial') ? document.getElementById('c_inventario_inicial').checked : false;
 
@@ -3683,40 +3687,38 @@ window.procesarGuardadoEInventario = async function(totalCompra, metodoNombre, m
                         
                         let docIdAActualizar = maestroComp === inv[codComp] ? codComp : inv[codComp].grupo;
                         
-                        // 🌟 ESCUDO PARA KITS (DOBLE ACTUALIZACIÓN COMO EN AJUSTE_STOCK)
+                        // 🌟 ESCUDO PARA KITS (En segundo plano ⚡)
                         if (typeof pb !== 'undefined' && docIdAActualizar) {
-                            try {
-                                let idBuscarKit = String(docIdAActualizar);
-                                let pNube = await pb.collection("inventario").getFirstListItem(`id="${idBuscarKit}" || cod="${idBuscarKit}" || codigo="${idBuscarKit}"`);
-                                
-                                if (!pNube.stock) pNube.stock = {};
-                                if (!pNube.inv_sucursales) pNube.inv_sucursales = {};
-                                
-                                let nuevoStockK = (parseFloat(pNube.stock[sucursalActual]) || 0) + cantTotalAumentar;
-                                pNube.stock[sucursalActual] = nuevoStockK;
-                                pNube.inv_sucursales[sucursalActual] = nuevoStockK;
-                                pNube.updatedAt = Date.now();
-                                
-                                await pb.collection("inventario").update(pNube.id, pNube);
-                            } catch(e) { console.warn("Error PB Kit", e); }
-                            
+                            (async () => {
+                                try {
+                                    let idBuscarKit = String(docIdAActualizar);
+                                    let pNube = await pb.collection("inventario").getFirstListItem(`doc_id="${idBuscarKit}"`);
+                                    
+                                    if (pNube.data) {
+                                        if (!pNube.data.stock) pNube.data.stock = {};
+                                        pNube.data.stock[sucursalActual] = (parseFloat(pNube.data.stock[sucursalActual]) || 0) + cantTotalAumentar;
+                                        pNube.data.updatedAt = Date.now();
+                                        await pb.collection("inventario").update(pNube.id, pNube);
+                                    }
+                                } catch(e) { console.warn("Error PB Kit async", e); }
+                            })();
                         } else if (typeof db !== 'undefined' && docIdAActualizar) {
-                            try {
-                                let docSnap = await db.collection("inventario").doc(String(docIdAActualizar)).get();
-                                if (docSnap.exists) {
-                                    let pNube = docSnap.data();
-                                    
-                                    if (!pNube.stock) pNube.stock = {};
-                                    if (!pNube.inv_sucursales) pNube.inv_sucursales = {};
-                                    
-                                    let nuevoStockK = (parseFloat(pNube.stock[sucursalActual]) || 0) + cantTotalAumentar;
-                                    pNube.stock[sucursalActual] = nuevoStockK;
-                                    pNube.inv_sucursales[sucursalActual] = nuevoStockK;
-                                    pNube.updatedAt = Date.now();
-                                    
-                                    await db.collection("inventario").doc(String(docIdAActualizar)).set(pNube);
-                                }
-                            } catch(e) { console.warn("Error FB Kit", e); }
+                            (async () => {
+                                try {
+                                    let docSnap = await db.collection("inventario").doc(String(docIdAActualizar)).get();
+                                    if (docSnap.exists) {
+                                        let pNube = docSnap.data();
+                                        if (!pNube.stock) pNube.stock = {};
+                                        if (!pNube.inv_sucursales) pNube.inv_sucursales = {};
+                                        
+                                        let nuevoStockK = (parseFloat(pNube.stock[sucursalActual]) || 0) + cantTotalAumentar;
+                                        pNube.stock[sucursalActual] = nuevoStockK;
+                                        pNube.inv_sucursales[sucursalActual] = nuevoStockK;
+                                        pNube.updatedAt = Date.now();
+                                        await db.collection("inventario").doc(String(docIdAActualizar)).set(pNube);
+                                    }
+                                } catch(e) { console.warn("Error FB Kit async", e); }
+                            })();
                         }
                     }
                 }
@@ -3774,83 +3776,75 @@ window.procesarGuardadoEInventario = async function(totalCompra, metodoNombre, m
                 prod.updatedAt = Date.now(); 
                 if (maestro !== prod) maestro.updatedAt = Date.now();
                 
-               // 🌟 ESCUDO PARA PRODUCTOS NORMALES 
+               // 🌟 ESCUDO PARA PRODUCTOS NORMALES (En segundo plano ⚡)
                 if (typeof pb !== 'undefined' && x.cod) {
-                    try {
-                        // 1. Buscamos en la columna correcta que sí existe en tu tabla: 'doc_id'
-                        let pNube = await pb.collection("inventario").getFirstListItem(`doc_id="${x.cod}"`);
-                        
-                        // 2. Entramos a la caja 'data' que es donde realmente tienes el stock y precios
-                        if (!pNube.data.stock) pNube.data.stock = {};
-                        
-                        let nuevoStockP = (parseFloat(pNube.data.stock[sucursalActual]) || 0) + parseFloat(x.can);
-                        pNube.data.stock[sucursalActual] = nuevoStockP;
-                        
-                        if (prod.cos !== undefined) pNube.data.cos = prod.cos;
-                        if (prod.cos_promedio !== undefined) pNube.data.cos_promedio = prod.cos_promedio;
-                        if (prod.iva !== undefined) pNube.data.iva = prod.iva;
-                        if (prod.pv !== undefined) pNube.data.pv = prod.pv;
-                        if (prod.pre_sucursales) pNube.data.pre_sucursales = prod.pre_sucursales;
-                        pNube.data.updatedAt = Date.now();
-
-                        // Actualizamos el registro completo
-                        await pb.collection("inventario").update(pNube.id, pNube);
-
-                        // Si es un producto con Grupo/Maestro
-                        if (maestro !== prod && prod.grupo) {
-                            let mNube = await pb.collection("inventario").getFirstListItem(`doc_id="${prod.grupo}"`);
+                    (async () => {
+                        try {
+                            let pNube = await pb.collection("inventario").getFirstListItem(`doc_id="${x.cod}"`);
                             
-                            if (!mNube.data.stock) mNube.data.stock = {};
-                            
-                            let nuevoStockG = (parseFloat(mNube.data.stock[sucursalActual]) || 0) + parseFloat(x.can);
-                            mNube.data.stock[sucursalActual] = nuevoStockG;
-                            mNube.data.updatedAt = Date.now();
-                            
-                            await pb.collection("inventario").update(mNube.id, mNube);
-                        }
-                    } catch(e) { console.warn("Error PB Compra:", e); }
-
-                } else if (typeof db !== 'undefined' && x.cod) {
-                    // ... (Aquí dejas tu código de Firebase "db" tal cual lo tienes) ...
-                    try {
-                        let docSnap = await db.collection("inventario").doc(String(x.cod)).get();
-                        if (docSnap.exists) {
-                            let pNube = docSnap.data();
-                            
-                            if (!pNube.stock) pNube.stock = {};
-                            if (!pNube.inv_sucursales) pNube.inv_sucursales = {};
-                            
-                            let nuevoStockP = (parseFloat(pNube.stock[sucursalActual]) || 0) + parseFloat(x.can);
-                            pNube.stock[sucursalActual] = nuevoStockP;
-                            pNube.inv_sucursales[sucursalActual] = nuevoStockP;
-                            
-                            if (prod.cos !== undefined) pNube.cos = prod.cos;
-                            if (prod.cos_promedio !== undefined) pNube.cos_promedio = prod.cos_promedio;
-                            if (prod.iva !== undefined) pNube.iva = prod.iva;
-                            if (prod.pv !== undefined) pNube.pv = prod.pv;
-                            if (prod.pre_sucursales) pNube.pre_sucursales = prod.pre_sucursales;
-                            pNube.updatedAt = Date.now();
-
-                            await db.collection("inventario").doc(String(x.cod)).set(pNube);
-                        }
-                        
-                        if (maestro !== prod && prod.grupo) {
-                            let mSnap = await db.collection("inventario").doc(String(prod.grupo)).get();
-                            if (mSnap.exists) {
-                                let mNube = mSnap.data();
+                            if (pNube.data) {
+                                if (!pNube.data.stock) pNube.data.stock = {};
+                                pNube.data.stock[sucursalActual] = (parseFloat(pNube.data.stock[sucursalActual]) || 0) + parseFloat(x.can);
                                 
-                                if (!mNube.stock) mNube.stock = {};
-                                if (!mNube.inv_sucursales) mNube.inv_sucursales = {};
-                                
-                                let nuevoStockG = (parseFloat(mNube.stock[sucursalActual]) || 0) + parseFloat(x.can);
-                                mNube.stock[sucursalActual] = nuevoStockG;
-                                mNube.inv_sucursales[sucursalActual] = nuevoStockG;
-                                mNube.updatedAt = Date.now();
-                                
-                                await db.collection("inventario").doc(String(prod.grupo)).set(mNube);
+                                if (prod.cos !== undefined) pNube.data.cos = prod.cos;
+                                if (prod.cos_promedio !== undefined) pNube.data.cos_promedio = prod.cos_promedio;
+                                if (prod.iva !== undefined) pNube.data.iva = prod.iva;
+                                if (prod.pv !== undefined) pNube.data.pv = prod.pv;
+                                if (prod.pre_sucursales) pNube.data.pre_sucursales = prod.pre_sucursales;
+                                pNube.data.updatedAt = Date.now();
+
+                                await pb.collection("inventario").update(pNube.id, pNube);
                             }
-                        }
-                    } catch(e) { console.warn("Error FB Compra:", e); }
+
+                            if (maestro !== prod && prod.grupo) {
+                                let mNube = await pb.collection("inventario").getFirstListItem(`doc_id="${prod.grupo}"`);
+                                if (mNube.data) {
+                                    if (!mNube.data.stock) mNube.data.stock = {};
+                                    mNube.data.stock[sucursalActual] = (parseFloat(mNube.data.stock[sucursalActual]) || 0) + parseFloat(x.can);
+                                    mNube.data.updatedAt = Date.now();
+                                    await pb.collection("inventario").update(mNube.id, mNube);
+                                }
+                            }
+                        } catch(e) { console.warn("Error PB Compra background:", e); }
+                    })();
+                } else if (typeof db !== 'undefined' && x.cod) {
+                    (async () => {
+                        try {
+                            let docSnap = await db.collection("inventario").doc(String(x.cod)).get();
+                            if (docSnap.exists) {
+                                let pNube = docSnap.data();
+                                if (!pNube.stock) pNube.stock = {};
+                                if (!pNube.inv_sucursales) pNube.inv_sucursales = {};
+                                
+                                let nuevoStockP = (parseFloat(pNube.stock[sucursalActual]) || 0) + parseFloat(x.can);
+                                pNube.stock[sucursalActual] = nuevoStockP;
+                                pNube.inv_sucursales[sucursalActual] = nuevoStockP;
+                                
+                                if (prod.cos !== undefined) pNube.cos = prod.cos;
+                                if (prod.cos_promedio !== undefined) pNube.cos_promedio = prod.cos_promedio;
+                                if (prod.iva !== undefined) pNube.iva = prod.iva;
+                                if (prod.pv !== undefined) pNube.pv = prod.pv;
+                                if (prod.pre_sucursales) pNube.pre_sucursales = prod.pre_sucursales;
+                                pNube.updatedAt = Date.now();
+
+                                await db.collection("inventario").doc(String(x.cod)).set(pNube);
+                            }
+                            
+                            if (maestro !== prod && prod.grupo) {
+                                let mSnap = await db.collection("inventario").doc(String(prod.grupo)).get();
+                                if (mSnap.exists) {
+                                    let mNube = mSnap.data();
+                                    if (!mNube.stock) mNube.stock = {};
+                                    if (!mNube.inv_sucursales) mNube.inv_sucursales = {};
+                                    let nuevoStockG = (parseFloat(mNube.stock[sucursalActual]) || 0) + parseFloat(x.can);
+                                    mNube.stock[sucursalActual] = nuevoStockG;
+                                    mNube.inv_sucursales[sucursalActual] = nuevoStockG;
+                                    mNube.updatedAt = Date.now();
+                                    await db.collection("inventario").doc(String(prod.grupo)).set(mNube);
+                                }
+                            }
+                        } catch(e) { console.warn("Error FB Compra background:", e); }
+                    })();
                 }
             }
         } catch (errorItem) {
@@ -3891,18 +3885,22 @@ window.procesarGuardadoEInventario = async function(totalCompra, metodoNombre, m
     
     // ☁️ Guardado en Firebase
     if (typeof db !== 'undefined') {
-        await db.collection("compras").doc(String(idCompra)).set(objetoCompra).catch(e => console.error("Error Nube Compras FB: ", e));
+        db.collection("compras").doc(String(idCompra)).set(objetoCompra).catch(e => console.error("Error Nube Compras FB: ", e));
     }
     
-    // ☁️ Guardado en PocketBase (Con el truco del ID para que no lo rechace)
+    // 🚀 CORRECCIÓN: Guardado en PocketBase con estructura { doc_id, data }
     if (typeof pb !== 'undefined') {
-        try {
-            let compraNube = { ...objetoCompra };
-            delete compraNube.id; 
-            await pb.collection("compras").create(compraNube);
-        } catch(e) {
-            console.warn("Error Nube Compras PB:", e);
-        }
+        (async () => {
+            try {
+                let compraNube = { 
+                    doc_id: String(idCompra),
+                    data: objetoCompra // Empaquetamos todo el JSON aquí adentro para que PB lo lea
+                };
+                await pb.collection("compras").create(compraNube);
+            } catch(e) {
+                console.warn("Error Nube Compras PB:", e);
+            }
+        })();
     }
 
     // --- 3. PARCHE DE AUDITORÍA CONTABLE ---
@@ -3927,7 +3925,7 @@ window.procesarGuardadoEInventario = async function(totalCompra, metodoNombre, m
                     try { localStorage.setItem("pos_movimientos_v1", JSON.stringify(movimientos)); } catch(e) {}
                 }
                 if (typeof db !== 'undefined') {
-                    await db.collection("movimientos").doc(String(idMov)).set(nuevoRetiro).catch(e => console.error("Error retiro auditoría:", e));
+                    db.collection("movimientos").doc(String(idMov)).set(nuevoRetiro).catch(e => console.error("Error retiro auditoría:", e));
                 }
             }
         }
@@ -3966,13 +3964,16 @@ window.procesarGuardadoEInventario = async function(totalCompra, metodoNombre, m
         }
 
         if (typeof pb !== 'undefined') {
-            let provCrear = { doc_id: String(idUnico), data: proveedores[idUnico] };
-            pb.collection("proveedores").getFirstListItem(`doc_id="${idUnico}"`).then(pvNube => {
-                pvNube.data = proveedores[idUnico];
-                pb.collection("proveedores").update(pvNube.id, pvNube);
-            }).catch(e => {
-                pb.collection("proveedores").create(provCrear);
-            });
+            (async () => {
+                let provCrear = { doc_id: String(idUnico), data: proveedores[idUnico] };
+                try {
+                    let pvNube = await pb.collection("proveedores").getFirstListItem(`doc_id="${idUnico}"`);
+                    pvNube.data = proveedores[idUnico];
+                    await pb.collection("proveedores").update(pvNube.id, pvNube);
+                } catch(e) {
+                    await pb.collection("proveedores").create(provCrear).catch(er => console.warn(er));
+                }
+            })();
         }
         if (typeof renderProveedores === 'function') renderProveedores();
     }
@@ -5879,26 +5880,34 @@ window.anularVentaVisor = async function() {
                 try { await registrarEnKardex(codMaestro, d.nom || producto.nom, "ANULACIÓN", cantidad, 0, 0, stockAntes, stockDespues, sucursalVenta); } catch (e) {}
             }
 
+            // 🌟 ESCUDO EN SEGUNDO PLANO PARA INVENTARIO ⚡
             if (typeof pb !== "undefined" && codMaestro) {
-                try {
-                    let pNube = await pb.collection("inventario").getFirstListItem(`id="${codMaestro}" || cod="${codMaestro}" || codigo="${codMaestro}"`);
-                    if (sucursalVenta !== "" && pNube.inv_sucursales && pNube.inv_sucursales[sucursalVenta] !== undefined) {
-                        pNube.inv_sucursales[sucursalVenta] += cantidad;
-                    } else if (pNube.can !== undefined) {
-                        pNube.can += cantidad;
-                    }
-                    await pb.collection("inventario").update(pNube.id, pNube);
-                } catch (e) { console.error("❌ Error PB inventario:", e); }
+                (async () => {
+                    try {
+                        let pNube = await pb.collection("inventario").getFirstListItem(`doc_id="${codMaestro}"`);
+                        if (pNube.data) {
+                            if (!pNube.data.stock) pNube.data.stock = {};
+                            pNube.data.stock[sucursalVenta] = (parseFloat(pNube.data.stock[sucursalVenta]) || 0) + cantidad;
+                            pNube.data.updatedAt = Date.now();
+                            await pb.collection("inventario").update(pNube.id, pNube);
+                        }
+                    } catch (e) { console.warn("❌ Error PB inventario anulación async:", e); }
+                })();
             } else if (typeof db !== "undefined" && codMaestro) {
-                try {
-                    let docSnap = await db.collection("inventario").doc(String(codMaestro)).get();
-                    if (docSnap.exists) {
-                        let pNube = docSnap.data();
-                        if (sucursalVenta !== "" && pNube.inv_sucursales && pNube.inv_sucursales[sucursalVenta] !== undefined) pNube.inv_sucursales[sucursalVenta] += cantidad;
-                        else if (pNube.can !== undefined) pNube.can += cantidad;
-                        await db.collection("inventario").doc(String(codMaestro)).set(pNube);
-                    }
-                } catch (e) { console.error("❌ Error FB inventario:", e); }
+                (async () => {
+                    try {
+                        let docSnap = await db.collection("inventario").doc(String(codMaestro)).get();
+                        if (docSnap.exists) {
+                            let pNube = docSnap.data();
+                            if (!pNube.stock) pNube.stock = {};
+                            
+                            if (pNube.stock) pNube.stock[sucursalVenta] = (parseFloat(pNube.stock[sucursalVenta]) || 0) + cantidad;
+                            else if (pNube.inv_sucursales) pNube.inv_sucursales[sucursalVenta] = (parseFloat(pNube.inv_sucursales[sucursalVenta]) || 0) + cantidad;
+                            
+                            await db.collection("inventario").doc(String(codMaestro)).set(pNube);
+                        }
+                    } catch (e) { console.warn("❌ Error FB inventario anulación async:", e); }
+                })();
             }
         }
     }
@@ -5930,8 +5939,20 @@ window.anularVentaVisor = async function() {
             });
 
             try { localStorage.setItem("pos_clientes_v1", JSON.stringify(clientes)); } catch (e) {}
-            if (typeof db !== "undefined") {
-                try { await db.collection("clientes").doc(String(claveCliente)).set(clientes[claveCliente]); } catch (e) {}
+            
+            // 🌟 BLINDAJE PB / FB CLIENTES EN SEGUNDO PLANO ⚡
+            if (typeof pb !== "undefined") {
+                (async () => {
+                    try {
+                        let clNube = await pb.collection("clientes").getFirstListItem(`doc_id="${claveCliente}"`);
+                        if (clNube.data) {
+                            clNube.data.saldo = (parseFloat(clNube.data.saldo) || 0) - dineroARestar;
+                            await pb.collection("clientes").update(clNube.id, clNube);
+                        }
+                    } catch(e) { console.warn("Error restando deuda cliente PB", e); }
+                })();
+            } else if (typeof db !== "undefined") {
+                db.collection("clientes").doc(String(claveCliente)).set(clientes[claveCliente]).catch(e => {});
             }
         }
     }
@@ -5944,19 +5965,22 @@ window.anularVentaVisor = async function() {
     let indiceVenta = ventas.findIndex(v => String(v.id) === String(vReal.id));
     if (indiceVenta !== -1) ventas[indiceVenta].anulada = true;
 
-    // 🚀 ACTUALIZAMOS LA VENTA EN LA NUBE PARA QUE LOS DEMÁS CELULARES SE ENTEREN
+    // 🚀 ACTUALIZAMOS LA VENTA EN LA NUBE EN SEGUNDO PLANO ⚡
     if (typeof pb !== "undefined") {
-        try {
-            let idBuscar = String(vReal.doc_id || vReal.id);
+        (async () => {
             try {
-                await pb.collection("ventas").update(idBuscar, vReal);
-            } catch(e) {
-                let vNube = await pb.collection("ventas").getFirstListItem(`id="${idBuscar}" || doc_id="${idBuscar}"`);
-                await pb.collection("ventas").update(vNube.id, vReal);
-            }
-        } catch (errNube) { console.error("Error marcando venta como anulada en PB", errNube); }
+                let idBuscar = String(vReal.doc_id || vReal.id);
+                let vNube = await pb.collection("ventas").getFirstListItem(`doc_id="${idBuscar}"`);
+                if (vNube.data) {
+                    vNube.data.anulada = true;
+                    await pb.collection("ventas").update(vNube.id, vNube);
+                } else {
+                    await pb.collection("ventas").update(vNube.id, vReal);
+                }
+            } catch (errNube) { console.warn("Error marcando venta como anulada en PB", errNube); }
+        })();
     } else if (typeof db !== "undefined") {
-        try { await db.collection("ventas").doc(String(vReal.id)).set(vReal); } catch (e) {}
+        db.collection("ventas").doc(String(vReal.id)).set(vReal).catch(e => {});
     }
 
     if (typeof actualizarAcumuladorDiario === "function") {
@@ -5973,11 +5997,11 @@ window.anularVentaVisor = async function() {
     else if (typeof renderI === "function") renderI();
     if (typeof renderClientes === "function") renderClientes();
 };
+
 window.devolverArticuloVisor = async function(indexDetalle) {
     let vRef = visorIndices[currentVisorPos]; 
     if (!vRef) return;
 
-    // 🌟 CORRECCIÓN CRÍTICA: Buscar el ticket por su ID real, NO por su posición
     let vReal = ventas.find(v => String(v.id) === String(vRef.id));
     if (!vReal) vReal = ventas[vRef.indexGlobal] || vRef;
 
@@ -6021,36 +6045,33 @@ window.devolverArticuloVisor = async function(indexDetalle) {
         if(!inv[codMaestro].stock) inv[codMaestro].stock = {}; 
         inv[codMaestro].stock[sucursalVenta] = stockDespuesReal; 
 
-        // 🌟 ESCUDO ANTI-DUPLICADOS PARA DEVOLUCIÓN (Buscador Inteligente PB)
+        // 🌟 ESCUDO PB PARA INVENTARIO (SEGUNDO PLANO ⚡)
         if (typeof pb !== 'undefined' && codMaestro) { 
-            try {
-                let idBuscar = String(codMaestro);
-                let pNube = await pb.collection('inventario').getFirstListItem(`id="${idBuscar}" || cod="${idBuscar}" || codigo="${idBuscar}"`);
-                
-                if (!pNube.inv_sucursales) pNube.inv_sucursales = {};
-                
-                if (sucursalVenta !== '' && pNube.inv_sucursales[sucursalVenta] !== undefined) {
-                    pNube.inv_sucursales[sucursalVenta] += c; // Suma en vivo
-                } else if (pNube.can !== undefined) {
-                    pNube.can += c;
-                }
-                await pb.collection('inventario').update(pNube.id, pNube);
-            } catch(e) {
-                console.warn("PocketBase no localizó el código. Guardado local.");
-            }
-        } else if (typeof db !== 'undefined' && codMaestro) { 
-            try {
-                let docSnap = await db.collection("inventario").doc(String(codMaestro)).get();
-                if (docSnap.exists) {
-                    let pNube = docSnap.data();
-                    if (sucursalVenta !== '' && pNube.inv_sucursales && pNube.inv_sucursales[sucursalVenta] !== undefined) {
-                        pNube.inv_sucursales[sucursalVenta] += c;
-                    } else if (pNube.can !== undefined) {
-                        pNube.can += c;
+            (async () => {
+                try {
+                    let idBuscar = String(codMaestro);
+                    let pNube = await pb.collection('inventario').getFirstListItem(`doc_id="${idBuscar}"`);
+                    if (pNube.data) {
+                        if (!pNube.data.stock) pNube.data.stock = {};
+                        pNube.data.stock[sucursalVenta] = (parseFloat(pNube.data.stock[sucursalVenta]) || 0) + c;
+                        pNube.data.updatedAt = Date.now();
+                        await pb.collection('inventario').update(pNube.id, pNube);
                     }
-                    await db.collection("inventario").doc(String(codMaestro)).set(pNube);
-                }
-            } catch(e) { console.warn("Error FB.", e); }
+                } catch(e) { console.warn("Error PB inventario dev asíncrono", e); }
+            })();
+        } else if (typeof db !== 'undefined' && codMaestro) { 
+            (async () => {
+                try {
+                    let docSnap = await db.collection("inventario").doc(String(codMaestro)).get();
+                    if (docSnap.exists) {
+                        let pNube = docSnap.data();
+                        if (!pNube.stock) pNube.stock = {};
+                        if (pNube.stock) pNube.stock[sucursalVenta] = (parseFloat(pNube.stock[sucursalVenta]) || 0) + c;
+                        else if (pNube.inv_sucursales) pNube.inv_sucursales[sucursalVenta] = (parseFloat(pNube.inv_sucursales[sucursalVenta]) || 0) + c;
+                        await db.collection("inventario").doc(String(codMaestro)).set(pNube);
+                    }
+                } catch(e) { console.warn("Error FB inventario dev asíncrono.", e); }
+            })();
         }
     }
 
@@ -6069,15 +6090,19 @@ window.devolverArticuloVisor = async function(indexDetalle) {
             clientes[claveCliente].saldo = parseFloat((Math.max(0, saldoActual - m)).toFixed(2));
             try { localStorage.setItem("pos_clientes_v1", JSON.stringify(clientes)); } catch(e){}
 
-            // Escudo PB Clientes
+            // 🌟 ESCUDO PB CLIENTES (SEGUNDO PLANO ⚡)
             if (typeof pb !== 'undefined') {
-                try {
-                    let provNube = await pb.collection('clientes').getFirstListItem(`id="${claveCliente}" || tel="${claveCliente}"`);
-                    provNube.saldo = (parseFloat(provNube.saldo) || 0) - m;
-                    await pb.collection('clientes').update(provNube.id, provNube);
-                } catch(e) { console.warn("Error restando deuda cliente PB"); }
+                (async () => {
+                    try {
+                        let provNube = await pb.collection('clientes').getFirstListItem(`doc_id="${claveCliente}"`);
+                        if (provNube.data) {
+                            provNube.data.saldo = (parseFloat(provNube.data.saldo) || 0) - m;
+                            await pb.collection('clientes').update(provNube.id, provNube);
+                        }
+                    } catch(e) { console.warn("Error restando deuda cliente PB", e); }
+                })();
             } else if (typeof db !== 'undefined') {
-                db.collection("clientes").doc(String(claveCliente)).set({ saldo: firebase.firestore.FieldValue.increment(-m) }, { merge: true }).catch(e => console.error(e));
+                db.collection("clientes").doc(String(claveCliente)).set({ saldo: firebase.firestore.FieldValue.increment(-m) }, { merge: true }).catch(e => {});
             }
         }
     } else { 
@@ -6094,31 +6119,33 @@ window.devolverArticuloVisor = async function(indexDetalle) {
 
     try { localStorage.setItem("pos_ventas_v6", JSON.stringify(ventas)); } catch(e){}
 
-    // 🚀 ACTUALIZAMOS EL TICKET EN LA NUBE PARA QUE TODOS LO VEAN MODIFICADO
-    try {
-        if (typeof pb !== 'undefined') {
-            let idBuscar = String(vReal.doc_id || vReal.id);
+    // 🚀 ACTUALIZAMOS EL TICKET EN LA NUBE PARA QUE TODOS LO VEAN MODIFICADO ⚡
+    if (typeof pb !== 'undefined') {
+        (async () => {
             try {
-                await pb.collection("ventas").update(idBuscar, vReal);
-            } catch(e) {
-                let vNube = await pb.collection("ventas").getFirstListItem(`id="${idBuscar}" || doc_id="${idBuscar}"`);
-                await pb.collection("ventas").update(vNube.id, vReal);
-            }
-        } else if (typeof db !== 'undefined') {
-            await db.collection("ventas").doc(String(vReal.id)).set(vReal);
-        }
-
-        alert("✅ Devolución procesada en la nube: $" + m.toFixed(2)); 
-        if(typeof renderVisorActivo === 'function') renderVisorActivo(); 
-        if(typeof renderCorte === 'function') renderCorte(); 
-        if(typeof renderTablaInventario === 'function') renderTablaInventario(); 
-        else if(typeof renderI === 'function') renderI(); 
-        if(typeof renderClientes === 'function') renderClientes(); 
-    } catch(err) {
-        alert("⚠️ Devolución guardada en memoria local (No hay conexión).");
+                let idBuscar = String(vReal.doc_id || vReal.id);
+                let vNube = await pb.collection("ventas").getFirstListItem(`doc_id="${idBuscar}"`);
+                if (vNube.data) {
+                    vNube.data.total = vReal.total;
+                    vNube.data.detalles = vReal.detalles;
+                    vNube.data.anulada = vReal.anulada;
+                    await pb.collection("ventas").update(vNube.id, vNube);
+                } else {
+                    await pb.collection("ventas").update(vNube.id, vReal);
+                }
+            } catch(e) { console.warn("Error actualizando parcial en PB", e); }
+        })();
+    } else if (typeof db !== 'undefined') {
+        db.collection("ventas").doc(String(vReal.id)).set(vReal).catch(e => {});
     }
-}
 
+    alert("✅ Devolución procesada: $" + m.toFixed(2)); 
+    if(typeof renderVisorActivo === 'function') renderVisorActivo(); 
+    if(typeof renderCorte === 'function') renderCorte(); 
+    if(typeof renderTablaInventario === 'function') renderTablaInventario(); 
+    else if(typeof renderI === 'function') renderI(); 
+    if(typeof renderClientes === 'function') renderClientes(); 
+};
 // Visor Compras
 let visorComprasIndices = []; let currentVisorCompraPos = 0;
 async function abrirVisorCompras() { 
@@ -7126,37 +7153,44 @@ window.ejecutarTransferencia = function() {
             // Ajuste en la memoria local
             pMaestro.stock[oriLimpio] = stockDespuesReal; 
             
-            // 🌟 ESCUDO ANTI-SOBREESCRITURA (POCKETBASE / FIREBASE)
+            // 🌟 ESCUDO ANTI-SOBREESCRITURA (En segundo plano ⚡)
             if (typeof pb !== 'undefined' && codMaestro) { 
-                pb.collection('inventario').getOne(String(codMaestro)).then(pNube => {
-                    // Restamos solo la cantidad enviada a lo que sea que haya en la nube en este instante
-                    if (pNube.stock && typeof pNube.stock === 'object') {
-                        pNube.stock[oriLimpio] = (parseFloat(pNube.stock[oriLimpio]) || 0) - cantEnviar;
-                    }
-                    if (pNube.inv_sucursales && typeof pNube.inv_sucursales === 'object') {
-                        pNube.inv_sucursales[oriLimpio] = (parseFloat(pNube.inv_sucursales[oriLimpio]) || 0) - cantEnviar;
-                    }
-                    if (!pNube.stock && !pNube.inv_sucursales && pNube.can !== undefined) {
-                        pNube.can -= cantEnviar;
-                    }
-                    pb.collection('inventario').update(String(codMaestro), pNube).catch(e => console.warn("Error PB:", e));
-                }).catch(e => console.warn("Error leyendo stock en PB:", e));
+                (async () => {
+                    try {
+                        let idBuscar = String(codMaestro);
+                        let pNube = await pb.collection('inventario').getFirstListItem(`doc_id="${idBuscar}"`);
+                        
+                        if (pNube.data) {
+                            if (!pNube.data.stock) pNube.data.stock = {};
+                            
+                            // Restamos a lo que tenga la nube en este instante
+                            pNube.data.stock[oriLimpio] = (parseFloat(pNube.data.stock[oriLimpio]) || 0) - cantEnviar;
+                            pNube.data.updatedAt = Date.now();
+                            
+                            await pb.collection('inventario').update(pNube.id, pNube);
+                        }
+                    } catch(e) { console.warn("Fallo PB background en traspaso", e); }
+                })();
             } else if (typeof db !== 'undefined' && db.collection) {
-                db.collection("inventario").doc(String(codMaestro)).get().then(docSnap => {
-                    if (docSnap.exists) {
-                        let pNube = docSnap.data();
-                        if (pNube.stock && typeof pNube.stock === 'object') {
-                            pNube.stock[oriLimpio] = (parseFloat(pNube.stock[oriLimpio]) || 0) - cantEnviar;
+                (async () => {
+                    try {
+                        let docSnap = await db.collection("inventario").doc(String(codMaestro)).get();
+                        if (docSnap.exists) {
+                            let pNube = docSnap.data();
+                            
+                            // Restamos a lo que tenga Firebase en este instante
+                            if (pNube.stock && typeof pNube.stock === 'object') {
+                                pNube.stock[oriLimpio] = (parseFloat(pNube.stock[oriLimpio]) || 0) - cantEnviar;
+                            } else if (pNube.inv_sucursales && typeof pNube.inv_sucursales === 'object') {
+                                pNube.inv_sucursales[oriLimpio] = (parseFloat(pNube.inv_sucursales[oriLimpio]) || 0) - cantEnviar;
+                            } else if (pNube.can !== undefined) {
+                                pNube.can -= cantEnviar;
+                            }
+                            
+                            await db.collection("inventario").doc(String(codMaestro)).set(pNube);
                         }
-                        if (pNube.inv_sucursales && typeof pNube.inv_sucursales === 'object') {
-                            pNube.inv_sucursales[oriLimpio] = (parseFloat(pNube.inv_sucursales[oriLimpio]) || 0) - cantEnviar;
-                        }
-                        if (!pNube.stock && !pNube.inv_sucursales && pNube.can !== undefined) {
-                            pNube.can -= cantEnviar;
-                        }
-                        db.collection("inventario").doc(String(codMaestro)).set(pNube);
-                    }
-                }).catch(e => console.warn("Error FB.", e));
+                    } catch(e) { console.warn("Fallo FB background en traspaso", e); }
+                })();
             }
             
             if (typeof registrarEnKardex === 'function') {
@@ -7416,40 +7450,50 @@ window.confirmarRecepcion = async function() {
                 registrarEnKardex(x.cod, x.nom, "DEVOLUCIÓN DE ENVÍO (FALTANTE)", faltante, pO.pv || 0, x.cReal || pO.cos || 0, stockAntesOrigen, stockDespuesOrigen, oriLimpio);
             }
 
-            // 🌟 ESCUDO ANTI-SOBREESCRITURA (POCKETBASE / FIREBASE)
+            // 🌟 ESCUDO ANTI-SOBREESCRITURA (En segundo plano ⚡)
             if (typeof pb !== 'undefined' && x.cod) {
-                try {
-                    let pNube = await pb.collection('inventario').getOne(String(x.cod));
-                    if (!pNube.inv_sucursales) pNube.inv_sucursales = {};
-                    
-                    if (cantRecibidaTotal > 0) {
-                        pNube.inv_sucursales[sucursalActual] = (parseFloat(pNube.inv_sucursales[sucursalActual]) || 0) + cantRecibidaTotal;
-                    }
-                    if (faltante > 0) {
-                        pNube.inv_sucursales[oriLimpio] = (parseFloat(pNube.inv_sucursales[oriLimpio]) || 0) + faltante;
-                        detallesFaltantes.push(`- ${faltante} de ${x.nom}`); 
-                    }
-                    
-                    await pb.collection('inventario').update(String(x.cod), pNube);
-                } catch (e) { console.error("❌ Error sumando recepción en PB:", e); }
-
-            } else if (typeof db !== 'undefined' && x.cod) {
-                try {
-                    let docSnap = await db.collection("inventario").doc(String(x.cod)).get();
-                    if (docSnap.exists) {
-                        let pNube = docSnap.data();
-                        if (!pNube.inv_sucursales) pNube.inv_sucursales = {};
+                (async () => {
+                    try {
+                        let idBuscar = String(x.cod);
+                        // Buscamos por doc_id correcto
+                        let pNube = await pb.collection('inventario').getFirstListItem(`doc_id="${idBuscar}"`);
                         
-                        if (cantRecibidaTotal > 0) {
-                            pNube.inv_sucursales[sucursalActual] = (parseFloat(pNube.inv_sucursales[sucursalActual]) || 0) + cantRecibidaTotal;
+                        if (pNube.data) {
+                            if (!pNube.data.stock) pNube.data.stock = {};
+                            
+                            if (cantRecibidaTotal > 0) {
+                                pNube.data.stock[sucursalActual] = (parseFloat(pNube.data.stock[sucursalActual]) || 0) + cantRecibidaTotal;
+                            }
+                            if (faltante > 0) {
+                                pNube.data.stock[oriLimpio] = (parseFloat(pNube.data.stock[oriLimpio]) || 0) + faltante;
+                            }
+                            
+                            pNube.data.updatedAt = Date.now();
+                            await pb.collection('inventario').update(pNube.id, pNube);
                         }
-                        if (faltante > 0) {
-                            pNube.inv_sucursales[oriLimpio] = (parseFloat(pNube.inv_sucursales[oriLimpio]) || 0) + faltante;
-                            if (typeof pb === 'undefined') detallesFaltantes.push(`- ${faltante} de ${x.nom}`); 
+                    } catch (e) { console.warn("❌ Error sumando recepción en PB background:", e); }
+                })();
+            } else if (typeof db !== 'undefined' && x.cod) {
+                (async () => {
+                    try {
+                        let docSnap = await db.collection("inventario").doc(String(x.cod)).get();
+                        if (docSnap.exists) {
+                            let pNube = docSnap.data();
+                            if (!pNube.stock) pNube.stock = {};
+                            
+                            if (cantRecibidaTotal > 0) {
+                                if (pNube.stock) pNube.stock[sucursalActual] = (parseFloat(pNube.stock[sucursalActual]) || 0) + cantRecibidaTotal;
+                                else if (pNube.inv_sucursales) pNube.inv_sucursales[sucursalActual] = (parseFloat(pNube.inv_sucursales[sucursalActual]) || 0) + cantRecibidaTotal;
+                            }
+                            if (faltante > 0) {
+                                if (pNube.stock) pNube.stock[oriLimpio] = (parseFloat(pNube.stock[oriLimpio]) || 0) + faltante;
+                                else if (pNube.inv_sucursales) pNube.inv_sucursales[oriLimpio] = (parseFloat(pNube.inv_sucursales[oriLimpio]) || 0) + faltante;
+                            }
+                            
+                            await db.collection("inventario").doc(String(x.cod)).set(pNube);
                         }
-                        await db.collection("inventario").doc(String(x.cod)).set(pNube);
-                    }
-                } catch (e) { console.error("❌ Error sumando recepción en FB:", e); }
+                    } catch (e) { console.warn("❌ Error sumando recepción en FB background:", e); }
+                })();
             }
         } 
         
@@ -8369,6 +8413,7 @@ function anularCompraAdmin(idCompra) {
 }
 
 // 2. Esta función se dispara cuando tecleas la clave y le das a "ANULAR"
+// 2. Esta función se dispara cuando tecleas la clave y le das a "ANULAR"
 async function ejecutarAnulacionCompra() {
     let passwordIngresada = document.getElementById("input_password_anular").value;
     if (passwordIngresada === "") return alert("⚠️ Por favor ingresa una contraseña.");
@@ -8388,7 +8433,7 @@ async function ejecutarAnulacionCompra() {
         // 🌟 SUCURSAL REAL DE LA COMPRA: Usamos la sucursal marcada en el ticket
         let sucursalOrigen = compraReal.sucursal || sucursalActual;
 
-        // 🌟 1. AJUSTE FINANCIERO DEL PROVEEDOR BLINDADO
+        // 🌟 1. AJUSTE FINANCIERO DEL PROVEEDOR BLINDADO (En segundo plano ⚡)
         let nomProv = compraReal.proveedor || compraReal.prov || "";
         let esCredito = compraReal.es_credito || (compraReal.metodo && String(compraReal.metodo).toLowerCase().includes('cr'));
 
@@ -8401,12 +8446,17 @@ async function ejecutarAnulacionCompra() {
             proveedores[nomProv].saldo = nuevoSaldo;
             try { localStorage.setItem("pos_proveedores_v1", JSON.stringify(proveedores)); } catch(e){}
             
-            // ☁️ 🚀 DEUDA BLINDADA (Compatible con PB y FB)
+            // ☁️ 🚀 DEUDA BLINDADA PB/FB
             if (typeof pb !== 'undefined') {
-                pb.collection('proveedores').getOne(nomProv).then(provNube => {
-                    provNube.saldo = (parseFloat(provNube.saldo) || 0) - dineroARestar;
-                    pb.collection('proveedores').update(nomProv, provNube).catch(e => console.warn("Error proveedor PB"));
-                }).catch(e => console.warn("Error leyendo proveedor en PB"));
+                (async () => {
+                    try {
+                        let provNube = await pb.collection('proveedores').getFirstListItem(`doc_id="${nomProv}"`);
+                        if (provNube.data) {
+                            provNube.data.saldo = (parseFloat(provNube.data.saldo) || 0) - dineroARestar;
+                            await pb.collection('proveedores').update(provNube.id, provNube);
+                        }
+                    } catch(e) { console.warn("Error proveedor PB anulación", e); }
+                })();
             } else if (typeof db !== 'undefined') {
                 db.collection("proveedores").doc(nomProv).set({
                     saldo: firebase.firestore.FieldValue.increment(-dineroARestar)
@@ -8414,7 +8464,7 @@ async function ejecutarAnulacionCompra() {
             }
         }
 
-        // 📦 2. DEVOLUCIÓN DE STOCK Y KARDEX BLINDADA
+        // 📦 2. DEVOLUCIÓN DE STOCK Y KARDEX BLINDADA (En segundo plano ⚡)
         let listaArticulos = compraReal.items || compraReal.detalles || [];
         listaArticulos.forEach(item => {
             try {
@@ -8436,36 +8486,35 @@ async function ejecutarAnulacionCompra() {
                     // Restamos stock localmente
                     pMaestro.stock[sucursalOrigen] = stockDespuesReal;
                     
-                    // 🌟 ESCUDO ANTI-SOBREESCRITURA (POCKETBASE / FIREBASE)
+                    // 🌟 ESCUDO ANTI-SOBREESCRITURA 
                     if (typeof pb !== 'undefined' && codMaestro) { 
-                        pb.collection('inventario').getOne(String(codMaestro)).then(pNube => {
-                            if (pNube.stock && typeof pNube.stock === 'object') {
-                                pNube.stock[sucursalOrigen] = (parseFloat(pNube.stock[sucursalOrigen]) || 0) - cantDevuelta;
-                            }
-                            if (pNube.inv_sucursales && typeof pNube.inv_sucursales === 'object') {
-                                pNube.inv_sucursales[sucursalOrigen] = (parseFloat(pNube.inv_sucursales[sucursalOrigen]) || 0) - cantDevuelta;
-                            }
-                            if (!pNube.stock && !pNube.inv_sucursales && pNube.can !== undefined) {
-                                pNube.can -= cantDevuelta;
-                            }
-                            pb.collection('inventario').update(String(codMaestro), pNube).catch(e => console.warn("Error PB:", e));
-                        }).catch(e => console.warn("Error leyendo stock en PB:", e));
+                        (async () => {
+                            try {
+                                let pNube = await pb.collection('inventario').getFirstListItem(`doc_id="${codMaestro}"`);
+                                if (pNube.data) {
+                                    if (!pNube.data.stock) pNube.data.stock = {};
+                                    pNube.data.stock[sucursalOrigen] = (parseFloat(pNube.data.stock[sucursalOrigen]) || 0) - cantDevuelta;
+                                    pNube.data.updatedAt = Date.now();
+                                    await pb.collection('inventario').update(pNube.id, pNube);
+                                }
+                            } catch(e) { console.warn("Error PB stock anulación:", e); }
+                        })();
                     } else if (typeof db !== 'undefined' && codMaestro) { 
-                        db.collection("inventario").doc(String(codMaestro)).get().then(docSnap => {
-                            if (docSnap.exists) {
-                                let pNube = docSnap.data();
-                                if (pNube.stock && typeof pNube.stock === 'object') {
-                                    pNube.stock[sucursalOrigen] = (parseFloat(pNube.stock[sucursalOrigen]) || 0) - cantDevuelta;
+                        (async () => {
+                            try {
+                                let docSnap = await db.collection("inventario").doc(String(codMaestro)).get();
+                                if (docSnap.exists) {
+                                    let pNube = docSnap.data();
+                                    if (!pNube.stock) pNube.stock = {};
+                                    if (!pNube.inv_sucursales) pNube.inv_sucursales = {};
+                                    
+                                    if (pNube.stock[sucursalOrigen] !== undefined) pNube.stock[sucursalOrigen] = (parseFloat(pNube.stock[sucursalOrigen]) || 0) - cantDevuelta;
+                                    else pNube.inv_sucursales[sucursalOrigen] = (parseFloat(pNube.inv_sucursales[sucursalOrigen]) || 0) - cantDevuelta;
+                                    
+                                    await db.collection("inventario").doc(String(codMaestro)).set(pNube);
                                 }
-                                if (pNube.inv_sucursales && typeof pNube.inv_sucursales === 'object') {
-                                    pNube.inv_sucursales[sucursalOrigen] = (parseFloat(pNube.inv_sucursales[sucursalOrigen]) || 0) - cantDevuelta;
-                                }
-                                if (!pNube.stock && !pNube.inv_sucursales && pNube.can !== undefined) {
-                                    pNube.can -= cantDevuelta;
-                                }
-                                db.collection("inventario").doc(String(codMaestro)).set(pNube);
-                            }
-                        }).catch(e => console.warn("Error FB.", e));
+                            } catch(e) { console.warn("Error FB stock anulación.", e); }
+                        })();
                     }
                     
                     if (typeof registrarEnKardex === 'function') {
@@ -8481,17 +8530,25 @@ async function ejecutarAnulacionCompra() {
         // 🛡️ PARACAÍDAS DE MEMORIA PARA EL INVENTARIO
         try { localStorage.setItem("pos_precision_v6", JSON.stringify(inv)); } catch(e){}
 
-        // 🏷️ 3. SELLAMOS LA COMPRA COMO ANULADA
+        // 🏷️ 3. SELLAMOS LA COMPRA COMO ANULADA (En segundo plano ⚡)
         compraReal.anulada = true;
         try { 
             localStorage.setItem("pos_compras_local", JSON.stringify(compras)); 
         } catch(e) { 
-            console.warn("Memoria local de compras llena, pero se guardará en la nube exitosamente."); 
+            console.warn("Memoria local de compras llena."); 
         }
         
         // ☁️ 🚀 MARCAMOS COMPRA COMO ANULADA EN LA NUBE (PB / FB)
         if (typeof pb !== 'undefined') {
-            pb.collection("compras").update(String(compraReal.id), { anulada: true }).catch(e => console.warn("Error marcando compra en PB", e));
+            (async () => {
+                try {
+                    let compNube = await pb.collection("compras").getFirstListItem(`doc_id="${compraReal.id}"`);
+                    if (compNube.data) {
+                        compNube.data.anulada = true;
+                        await pb.collection("compras").update(compNube.id, compNube);
+                    }
+                } catch(e) { console.warn("Error marcando compra anulada en PB", e); }
+            })();
         } else if (typeof db !== 'undefined') {
             db.collection("compras").doc(String(compraReal.id)).set({ anulada: true }, { merge: true });
         }
@@ -8978,44 +9035,41 @@ function aprobarYAjustarInventario() {
                     prod.stock[sucursalActual] = stockFinalCalculado;
                     prod.updatedAt = Date.now();
 
-                    // 🌟 ESCUDO ANTI-SOBREESCRITURA (PB / FB)
-                    try {
-                        if (typeof pb !== 'undefined' && codMaestro) {
-                            let pNube = await pb.collection('inventario').getOne(String(codMaestro));
-                            if (!pNube.stock) pNube.stock = {};
-                            if (!pNube.inv_sucursales) pNube.inv_sucursales = {};
-                            
-                            // Sumamos o restamos el ajuste matemático al stock que tenga la nube en ese instante
-                            pNube.stock[sucursalActual] = (parseFloat(pNube.stock[sucursalActual]) || 0) + ajusteMatematico;
-                            pNube.inv_sucursales[sucursalActual] = (parseFloat(pNube.inv_sucursales[sucursalActual]) || 0) + ajusteMatematico;
-                            
-                            if (!pNube.stock && !pNube.inv_sucursales && pNube.can !== undefined) {
-                                pNube.can += ajusteMatematico;
-                            }
-                            pNube.updatedAt = Date.now();
-                            await pb.collection('inventario').update(String(codMaestro), pNube);
-
-                        } else if (typeof db !== 'undefined' && codMaestro) {
-                            let docSnap = await db.collection("inventario").doc(String(codMaestro)).get();
-                            if (docSnap.exists) {
-                                let pNube = docSnap.data();
-                                if (!pNube.stock) pNube.stock = {};
-                                if (!pNube.inv_sucursales) pNube.inv_sucursales = {};
+                    // 🌟 ESCUDO ANTI-SOBREESCRITURA (En segundo plano ⚡)
+                    if (typeof pb !== 'undefined' && codMaestro) {
+                        (async () => {
+                            try {
+                                let idBuscar = String(codMaestro);
+                                let pNube = await pb.collection('inventario').getFirstListItem(`doc_id="${idBuscar}"`);
                                 
-                                pNube.stock[sucursalActual] = (parseFloat(pNube.stock[sucursalActual]) || 0) + ajusteMatematico;
-                                pNube.inv_sucursales[sucursalActual] = (parseFloat(pNube.inv_sucursales[sucursalActual]) || 0) + ajusteMatematico;
-                                
-                                if (!pNube.stock && !pNube.inv_sucursales && pNube.can !== undefined) {
-                                    pNube.can += ajusteMatematico;
+                                if (pNube.data) {
+                                    if (!pNube.data.stock) pNube.data.stock = {};
+                                    // Sumamos o restamos el ajuste matemático al stock que tenga la nube en ese instante
+                                    pNube.data.stock[sucursalActual] = (parseFloat(pNube.data.stock[sucursalActual]) || 0) + ajusteMatematico;
+                                    pNube.data.updatedAt = Date.now();
+                                    
+                                    await pb.collection('inventario').update(pNube.id, pNube);
                                 }
-                                pNube.updatedAt = Date.now();
-                                await db.collection("inventario").doc(String(codMaestro)).set(pNube);
-                            } else {
-                                await db.collection("inventario").doc(String(codMaestro)).set(prod);
-                            }
-                        }
-                    } catch(e) {
-                        console.error("Error al subir a la nube el código " + codMaestro, e);
+                            } catch(e) { console.warn("Error al subir a PB background " + codMaestro, e); }
+                        })();
+                    } else if (typeof db !== 'undefined' && codMaestro) {
+                        (async () => {
+                            try {
+                                let docSnap = await db.collection("inventario").doc(String(codMaestro)).get();
+                                if (docSnap.exists) {
+                                    let pNube = docSnap.data();
+                                    if (!pNube.stock) pNube.stock = {};
+                                    if (!pNube.inv_sucursales) pNube.inv_sucursales = {};
+                                    
+                                    if (pNube.stock[sucursalActual] !== undefined) pNube.stock[sucursalActual] = (parseFloat(pNube.stock[sucursalActual]) || 0) + ajusteMatematico;
+                                    else if (pNube.inv_sucursales[sucursalActual] !== undefined) pNube.inv_sucursales[sucursalActual] = (parseFloat(pNube.inv_sucursales[sucursalActual]) || 0) + ajusteMatematico;
+                                    else if (pNube.can !== undefined) pNube.can += ajusteMatematico;
+                                    
+                                    pNube.updatedAt = Date.now();
+                                    await db.collection("inventario").doc(String(codMaestro)).set(pNube);
+                                }
+                            } catch(e) { console.warn("Error al subir a FB background " + codMaestro, e); }
+                        })();
                     }
 
                     if (typeof registrarEnKardex === 'function') {
@@ -9046,7 +9100,7 @@ function aprobarYAjustarInventario() {
         };
 
         if (typeof db !== 'undefined') {
-            db.collection("historial_auditorias").doc("AUDIT_PARCIAL_" + Date.now()).set(registroHistorico);
+            db.collection("historial_auditorias").doc("AUDIT_PARCIAL_" + Date.now()).set(registroHistorico).catch(e=>console.warn(e));
         }
 
         let pendientes = JSON.parse(localStorage.getItem('pos_sesiones_inventario') || "[]");
@@ -9911,14 +9965,32 @@ window.abrirMontoInicialCaja = async function() {
     let montoInput = prompt("💵 Ingresa el Fondo Inicial de Caja para abrir turno:", "0.00");
     if (montoInput === null) return; 
 
-    let montoInicial = parseFloat(montoInput) || 0;
+    let textoLimpio = String(montoInput).trim();
+    let montoInicial = parseFloat(textoLimpio) || 0;
+
+    // 🛑 1. LÍMITE LÓGICO DE CAJA
+    if (montoInicial > 20000) {
+        alert("❌ Monto rechazado por seguridad (Mayor a $20,000.00).\n\nSi necesitas ingresar tanto dinero, hazlo después con un movimiento de entrada.");
+        return;
+    }
+
+    if (montoInicial < 0) {
+        alert("❌ El monto inicial no puede ser negativo.");
+        return;
+    }
+
+    // 🛡️ 2. TRAMPA ANTI-ESCÁNER (Consume el flujo automático)
+    // El escáner gastó su 'Enter' en el prompt. Este mensaje detendrá la pantalla.
+    if (!confirm(`🤔 ¿Confirmas que vas a abrir la caja con exactamente $${montoInicial.toFixed(2)}?`)) {
+        return; 
+    }
     
-    // 🌟 RESTAURAMOS A TU LÓGICA ORIGINAL
+    // 🌟 3. EJECUCIÓN (TU LÓGICA ORIGINAL)
     let sucReal = String(typeof sucursalActual !== 'undefined' ? sucursalActual : "Matriz").replace(/📍/g, '').trim();
     let cajeroActual = String(typeof usuarioActual !== 'undefined' ? usuarioActual : "Cajero").trim();
 
     let datosSesion = {
-        sucursal: sucReal, // <-- Vuelve a ser estricto por local
+        sucursal: sucReal,
         cajero: cajeroActual,
         estado: 'abierta',
         monto_inicial: montoInicial,
@@ -9943,7 +10015,6 @@ window.abrirMontoInicialCaja = async function() {
         alert("❌ No se pudo guardar el turno en PocketBase.");
     }
 };
-
 // Variable temporal para recordar el dinero que pidió el sistema
 window.efectivoEsperadoTemporal = 0;
 
@@ -9967,7 +10038,10 @@ window.cerrarTurnoActual = function() {
     
     let fondo = parseFloat(window.sesionCajaActual.monto_inicial) || 0;
     
-    // 🔥 FUNCION ESCUDO: Verifica la hora exacta para evitar fantasmas
+    // 🌟 CORRECCIÓN CRÍTICA: Extraemos la hora exacta en que se abrió la caja (Milisegundos)
+    let tiempoApertura = new Date(window.sesionCajaActual.fecha_apertura || window.sesionCajaActual.created || Date.now()).getTime();
+    
+    // 🔥 FUNCION ESCUDO: Verifica la hora exacta para evitar fantasmas de turnos pasados
     const perteneceAlTurno = (item) => {
         if (item.id_sesion_caja) return item.id_sesion_caja === idSesion; 
         
@@ -9975,9 +10049,17 @@ window.cerrarTurnoActual = function() {
         let esDeHoy = (item.fecha === fechaHoy && (item.sucursal || "Matriz") === sucTurno);
         if (!esDeHoy) return false;
         
-        // ⏰ EL SECRETO: Verificamos si sucedió ANTES de abrir la caja
-        if (item.id && !isNaN(item.id) && idSesion && !isNaN(idSesion)) {
-            if (Number(item.id) < Number(idSesion)) return false; // Fantasma eliminado 👻🚫
+        // ⏰ NUEVO ESCUDO DE TIEMPO (Compatible con PocketBase y Firebase)
+        let timestampItem = 0;
+        if (item.id && !isNaN(item.id)) {
+            timestampItem = Number(item.id);
+        } else if (item.id && typeof item.id === 'string' && item.id.includes('_')) {
+            timestampItem = Number(item.id.split('_')[0]);
+        }
+        
+        if (timestampItem > 0 && tiempoApertura > 0) {
+            // Si el ticket se cobró ANTES de que se abriera esta caja, es del turno anterior. ¡Bloqueado! 🚫
+            if (timestampItem < (tiempoApertura - 5000)) return false; 
         }
         return true;
     };
@@ -9989,7 +10071,7 @@ window.cerrarTurnoActual = function() {
             let metodo = v.metodo || ""; 
             if (!metodo.includes("Efectivo") || v.cajero !== cajeroTurno) return;
             
-            if (!perteneceAlTurno(v)) return; // <-- APLICAMOS EL ESCUDO
+            if (!perteneceAlTurno(v)) return; // <-- APLICAMOS EL ESCUDO DE TIEMPO
 
             let total = parseFloat(v.total) || 0;
             if (v.anulada === true || v.cancelada === true || v.estado === 'anulado') ventasAnuladas += total;
@@ -10007,7 +10089,7 @@ window.cerrarTurnoActual = function() {
             let tipo = m.tipo || ""; 
             if (m.anulado === true || m.cancelado === true || m.cajero !== cajeroTurno) return;
             
-            if (!perteneceAlTurno(m)) return; // <-- APLICAMOS EL ESCUDO
+            if (!perteneceAlTurno(m)) return; // <-- APLICAMOS EL ESCUDO DE TIEMPO
 
             let monto = parseFloat(m.monto) || 0;
             if (tipo.includes("Ingreso") || tipo.includes("Entrada")) {
@@ -10015,6 +10097,9 @@ window.cerrarTurnoActual = function() {
                 listaIngresos.push(m);
             }
             if (tipo.includes("Retiro") || tipo.includes("Gasto")) {
+                // 🌟 PARCHE DEVOLUCIÓN: Ignoramos el retiro fantasma de la devolución parcial (evita descuento doble)
+                if (m.motivo && String(m.motivo).includes("DEVOLUCIÓN PARCIAL")) return;
+
                 retirosGastos += monto;
                 listaGastos.push(m);
             }
@@ -10028,7 +10113,7 @@ window.cerrarTurnoActual = function() {
             let metodo = c.metodo || ""; 
             if (!metodo.includes("Efectivo") || c.cajero !== cajeroTurno) return;
             
-            if (!perteneceAlTurno(c)) return; // <-- APLICAMOS EL ESCUDO
+            if (!perteneceAlTurno(c)) return; // <-- APLICAMOS EL ESCUDO DE TIEMPO
 
             let total = parseFloat(c.total) || 0;
             if (c.anulada === true || c.cancelada === true || c.estado === 'anulado') comprasAnuladas += total;
