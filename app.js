@@ -1626,11 +1626,6 @@ function abrirAjusteStock(cod) {
 }
 
 
-function abrirAuthReiniciarInv() {
-    document.getElementById('auth_reiniciar_pin').value = '';
-    document.getElementById('modalAuthReiniciarInv').style.display = 'block';
-    setTimeout(() => document.getElementById('auth_reiniciar_pin').focus(), 100);
-}
 
 function confirmarReiniciarInv() {
     let pin = document.getElementById('auth_reiniciar_pin').value;
@@ -2666,6 +2661,22 @@ window.confirmarVenta = async function(cambioFinal = 0) {
         let elCajero = document.getElementById('ticket_cajero');
         if (elCajero) elCajero.innerText = usr;
         
+        // --- INYECCIÓN ACUMULADOR (Atrapar Efectivo Real) ---
+        let efectivoRealACaja = 0;
+        if (pagosActuales.length > 0) {
+            pagosActuales.forEach(p => {
+                if(p.metodo && p.metodo.toLowerCase().includes('efectivo')) {
+                    efectivoRealACaja += (parseFloat(p.montoAplicado) || 0);
+                }
+            });
+        } else if (metodosStr.toLowerCase().includes('efectivo')) {
+            efectivoRealACaja = tot;
+        }
+
+        if (efectivoRealACaja > 0 && typeof window.actualizarAcumuladorSesion === 'function') {
+            window.actualizarAcumuladorSesion('venta_efectivo', efectivoRealACaja);
+        }
+        // ----------------------------------------------------
         let nuevaVenta = { 
             id: idVentaNueva, doc_id: String(idVentaNueva), fecha: hoy, hora: horaVenta, 
             cajero: usr, sucursal: suc, total: tot, 
@@ -3120,6 +3131,56 @@ function renderTablaPausadas() {
     if(lista) {
         lista.innerHTML = html;
     }
+    // =========================================================
+// 📡 ESCÁNER EN VIVO: Sincronización celular-PC al instante
+// =========================================================
+if (typeof pb !== 'undefined') {
+    // Escuchamos cualquier cambio en la colección de pausadas
+    pb.collection('pausadas').subscribe('*', function (e) {
+        
+        // 1. Si la PC (u otro cajero) CREÓ o ACTUALIZÓ una venta pausada:
+        if (e.action === 'create' || e.action === 'update') {
+            let registroNube = e.record.data || e.record; // Dependiendo de cómo guardes el JSON
+            
+            // Buscamos si ya la tenemos en la memoria del celular
+            let index = pausadas.findIndex(p => String(p.id) === String(registroNube.id) || String(p.id) === String(e.record.doc_id));
+            
+            if (index !== -1) {
+                pausadas[index] = registroNube; // Actualizamos
+            } else {
+                pausadas.push(registroNube); // Agregamos la nueva
+            }
+        } 
+        // 2. Si alguien la COBRÓ o ELIMINÓ, la borramos del celular
+        else if (e.action === 'delete') {
+            pausadas = pausadas.filter(p => String(p.id) !== String(e.record.doc_id) && String(p.id) !== String(e.record.id));
+        }
+
+        // 🌟 3. REACCIÓN AUTOMÁTICA EN LA PANTALLA DEL CELULAR 🌟
+        
+        // Actualizamos la campanita/contador sin tocar nada
+        if (typeof actualizarContadorPausadas === 'function') {
+            actualizarContadorPausadas();
+        }
+
+        // Si el cajero tiene la ventana de pausadas abierta en ese momento, 
+        // ¡la tabla se actualiza sola frente a sus ojos!
+        let modal = document.getElementById('modalPausadas');
+        if (modal && modal.style.display === 'block') {
+            let sucLimpia = String(typeof sucursalActual !== 'undefined' ? sucursalActual : 'Matriz').replace(/📍/g, '').trim().toLowerCase();
+            
+            pausadasFiltradas = pausadas.filter(p => {
+                if(!p || p.nom === "FANTASMA") return false;
+                let sucVenta = String(p.sucursal || 'Matriz').replace(/📍/g, '').trim().toLowerCase();
+                return sucVenta === sucLimpia;
+            });
+            
+            if (typeof renderTablaPausadas === 'function') {
+                renderTablaPausadas();
+            }
+        }
+    }).catch(err => console.warn("No se pudo iniciar el escáner de pausadas:", err));
+}
 
 }
 
@@ -3736,7 +3797,7 @@ window.procesarGuardadoEInventario = async function(totalCompra, metodoNombre, m
                 } else {
                     stockAntesReal = parseFloat(maestro.stock) || parseFloat(maestro.existencia) || parseFloat(maestro.can) || 0;
                 }
-                if (stockAntesReal < 0) stockAntesReal = 0;
+               // if (stockAntesReal < 0) stockAntesReal = 0;//
 
                 let stockDespuesReal = stockAntesReal + parseFloat(x.can);
 
@@ -3884,7 +3945,16 @@ window.procesarGuardadoEInventario = async function(totalCompra, metodoNombre, m
     
     if (typeof compras === 'undefined') window.compras = [];
     compras.push(objetoCompra); 
-    
+    // --- INYECCIÓN ACUMULADOR (Compras en Efectivo) ---
+    // Registramos la salida de dinero SOLO si se pagó en Efectivo de la caja actual
+    // (Omitimos el "Mixto Especial" porque ese ya genera Retiros de auditoría automáticamente)
+    if (metodoNombre && metodoNombre.toLowerCase().includes("efectivo")) {
+        let esMixtoEspecial = metaPago && metaPago.metodo === "Mixto Especial";
+        if (!esMixtoEspecial && typeof window.actualizarAcumuladorSesion === 'function') {
+            window.actualizarAcumuladorSesion('compra_efectivo', totalCompra);
+        }
+    }
+    // ----------------------------------------------------
     if (compras.length > 100) compras = compras.slice(-100);
     
     try { 
@@ -4936,9 +5006,13 @@ window.guardarMovimiento = async function() {
             cajero: miNombre, sucursal: sucMov, tipo: 'Retiro', monto: monto, motivo: descripcionUnica 
         };
         
-        // 🔥 CORRECCIÓN AQUÍ: Forzamos la creación del arreglo si no existe
         window.movimientos = window.movimientos || [];
         window.movimientos.push(mRetiro);
+        
+        // 🌟 INYECCIÓN ACUMULADOR 1: La transferencia es un RETIRO de tu caja
+        if (typeof window.actualizarAcumuladorSesion === 'function') {
+            window.actualizarAcumuladorSesion('retiro', monto);
+        }
 
         try {
             await fetch("https://sexy-starling.pikapod.net/api/collections/movimientos/records", {
@@ -4971,9 +5045,13 @@ window.guardarMovimiento = async function() {
             cajero: miNombre, sucursal: sucMov, tipo: tipo, monto: monto, motivo: motivo 
         };
 
-        // 🔥 CORRECCIÓN AQUÍ: Forzamos la creación del arreglo si no existe
         window.movimientos = window.movimientos || [];
         window.movimientos.push(nuevoMov); 
+        
+        // 🌟 INYECCIÓN ACUMULADOR 2: Variables corregidas
+        if (typeof window.actualizarAcumuladorSesion === 'function') {
+            window.actualizarAcumuladorSesion(tipo, monto); 
+        }
 
         try {
             await fetch("https://sexy-starling.pikapod.net/api/collections/movimientos/records", {
@@ -5037,9 +5115,36 @@ window.abrirModalDevolucion = async function(idRecord, datosModal) {
 
 
 
-function registrarGasto() { let monto = parseFloat(prompt("💸 ¿Cuánto vas a retirar?")); if (isNaN(monto) || monto <= 0) return; let motivo = prompt("¿Motivo?"); if (!motivo) return; procesarRetiroCaja(monto, `GASTO: ${motivo.toUpperCase()}`); }
+window.registrarGasto = function() { 
+    let monto = parseFloat(prompt("💸 ¿Cuánto vas a retirar de la caja?")); 
+    if (isNaN(monto) || monto <= 0) return; 
+    
+    let motivo = prompt("¿Motivo del gasto?"); 
+    if (!motivo) return; 
+    
+    // Función original que usabas
+    if (typeof procesarRetiroCaja === 'function') {
+        procesarRetiroCaja(monto, `GASTO: ${motivo.toUpperCase()}`); 
+    }
+    
+    // 🌟 INYECCIÓN ACUMULADOR: Le avisamos a la nube que salió dinero
+    if (typeof window.actualizarAcumuladorSesion === 'function') {
+        window.actualizarAcumuladorSesion('retiro', monto);
+    }
+    
+    if (typeof renderCorte === 'function') renderCorte();
+};
 window.registrarPrecorte = function() { 
-    let ef = (typeof calcularEfectivoEnCaja === 'function') ? calcularEfectivoEnCaja() : (currentCorteData ? currentCorteData.esperado : 0); 
+    // 🌟 Leemos el esperado exacto desde nuestra sesión en vivo (Acumulador)
+    let ef = 0;
+    if (window.sesionCajaActual && window.sesionCajaActual.efectivo_esperado !== undefined) {
+        ef = parseFloat(window.sesionCajaActual.efectivo_esperado) || 0;
+    } else if (typeof calcularEfectivoEnCaja === 'function') {
+        ef = calcularEfectivoEnCaja();
+    } else {
+        ef = (typeof currentCorteData !== 'undefined' && currentCorteData ? currentCorteData.esperado : 0);
+    }
+
     let monto = parseFloat(prompt(`✂️ PRECORTE DE CAJA\nEfectivo Esperado: $${ef.toFixed(2)}\n¿Cuánto vas a retirar a bóveda/dueño?`)); 
     
     if (isNaN(monto) || monto <= 0) return; 
@@ -5047,7 +5152,18 @@ window.registrarPrecorte = function() {
 
     if (ef > 0 && monto > ef && !confirm(`⚠️ El monto a retirar ($${monto.toFixed(2)}) es mayor al efectivo calculado ($${ef.toFixed(2)}). ¿Deseas continuar?`)) return; 
     
-    procesarRetiroCaja(monto, "PRECORTE"); 
+    // 1. Procesa el retiro original
+    if (typeof procesarRetiroCaja === 'function') {
+        procesarRetiroCaja(monto, "PRECORTE"); 
+    }
+    
+    // 🌟 2. INYECCIÓN ACUMULADOR: Le avisa a la nube para no causar faltantes
+    if (typeof window.actualizarAcumuladorSesion === 'function') {
+        window.actualizarAcumuladorSesion('retiro', monto);
+    }
+    
+    // 3. Refresca la pantalla
+    if (typeof renderCorte === 'function') renderCorte();
 };
 
 window.procesarRetiroCaja = function(monto, motivo) {
@@ -6000,7 +6116,19 @@ window.anularVentaVisor = async function() {
     }
 
     try { localStorage.setItem("pos_ventas_v6", JSON.stringify(ventas)); } catch (e) {}
-
+    // --- INYECCIÓN ACUMULADOR (Anulación) ---
+    let efectivoADescontar = 0;
+    if (vReal.pagos && vReal.pagos.length > 0) {
+        vReal.pagos.forEach(p => {
+            if(p.metodo && p.metodo.toLowerCase().includes('efectivo')) efectivoADescontar += (parseFloat(p.montoAplicado) || 0);
+        });
+    } else if (vReal.metodo && vReal.metodo.toLowerCase().includes('efectivo')) {
+        efectivoADescontar = vReal.total;
+    }
+    if (efectivoADescontar > 0 && typeof window.actualizarAcumuladorSesion === 'function') {
+        window.actualizarAcumuladorSesion('anulacion_venta', efectivoADescontar);
+    }
+    // ----------------------------------------
     alert("✅ Venta anulada correctamente.\n\n📦 El stock fue devuelto al inventario.");
 
     if (typeof renderVisorActivo === "function") renderVisorActivo();
@@ -6125,6 +6253,9 @@ window.devolverArticuloVisor = async function(indexDetalle) {
             tipo: 'Retiro', monto: parseFloat(m.toFixed(2)), motivo: `DEVOLUCIÓN PARCIAL: ${d.nom}`,
             id_venta_origen: vReal.id 
         }; 
+        if (typeof window.actualizarAcumuladorSesion === 'function') {
+    window.actualizarAcumuladorSesion('retiro', m); // 'm' es el dinero devuelto
+}
         if (typeof movimientos !== 'undefined') {
             movimientos.push(nm); 
             try { localStorage.setItem("pos_movimientos_v1", JSON.stringify(movimientos)); } catch(e){}
@@ -6492,24 +6623,6 @@ function focoCajaEnter(e, nextId) {
 
 
 
-function reiniciarFaltantes() {
-    if (!confirm("⚠️ ¿Estás seguro de poner en CERO todos los contadores de 'Faltantes / Vendidos sin Stock' en esta sucursal?")) return;
-
-    Object.keys(inv).forEach(k => {
-        let p = inv[k];
-        if (p.sold_without_stock && p.sold_without_stock[sucursalActual] > 0) {
-            p.sold_without_stock[sucursalActual] = 0;
-            // Lo enviamos a la nube para actualizar el registro
-            if (typeof db !== 'undefined') {
-                db.collection("inventario").doc(k).set(p).catch(e => console.error("Error al limpiar faltante:", e));
-            }
-        }
-    });
-
-    localStorage.setItem("pos_precision_v6", JSON.stringify(inv));
-    if (typeof renderI === 'function') renderI();
-    alert("✅ Faltantes reiniciados a 0 con éxito.");
-}
 
 window.toggleMayoreo = function() {
     forceWholesale = !forceWholesale; 
@@ -6764,13 +6877,13 @@ window.registrarEnKardex = function(productoCod, productoNom, tipoMov, cantidad,
         stockDespues = stockMaestro;
     }
 
-    // 🛡️ REDONDEO QUIRÚRGICO: Evitamos la "basura matemática" de JavaScript
-    let c_cantidad = parseFloat(parseFloat(cantidad).toFixed(3)) || 0;
-    let c_stockAntes = parseFloat(parseFloat(stockAntes).toFixed(3)) || 0;
-    let c_stockDespues = parseFloat(parseFloat(stockDespues).toFixed(3)) || 0;
+    // 🛡️ REDONDEO QUIRÚRGICO: Evitamos la "basura matemática" de JavaScript y los guiones vacíos
+    let c_cantidad = parseFloat(parseFloat(cantidad || 0).toFixed(3)) || 0;
+    let c_stockAntes = parseFloat(parseFloat(stockAntes || 0).toFixed(3)) || 0;
+    let c_stockDespues = parseFloat(parseFloat(stockDespues || 0).toFixed(3)) || 0;
     
-    let c_precio = parseFloat(parseFloat(precio).toFixed(2)) || 0;
-    let c_costo = parseFloat(parseFloat(costo).toFixed(2)) || 0;
+    let c_precio = parseFloat(parseFloat(precio || 0).toFixed(2)) || 0;
+    let c_costo = parseFloat(parseFloat(costo || 0).toFixed(2)) || 0;
 
     let idKardex = Date.now() + Math.floor(Math.random() * 1000);
     let nuevoRegistro = {
@@ -6781,7 +6894,7 @@ window.registrarEnKardex = function(productoCod, productoNom, tipoMov, cantidad,
         
         // 🚀 GUARDAMOS EN LA BÓVEDA DEL MAESTRO
         codigo: codigoFinal, 
-        nombre: productoNom, 
+        nombre: productoNom || "Producto Desconocido", 
         tipo: tipoMov,
         
         // 📸 FOTOGRAFÍAS CORREGIDAS A 3 DECIMALES
@@ -6797,11 +6910,26 @@ window.registrarEnKardex = function(productoCod, productoNom, tipoMov, cantidad,
         cajero: (typeof usuarioActual !== 'undefined' ? usuarioActual : "Admin")
     };
 
-    // ☁️ 🚀 SUBIDA A LA NUBE DIRECTA (Sin saturar localStorage)
+    // ☁️ 🚀 SUBIDA A POCKETBASE (El Motor Principal)
+    if (typeof pb !== 'undefined') {
+        (async () => {
+            try {
+                let kardexNube = { 
+                    doc_id: String(idKardex),
+                    data: nuevoRegistro
+                };
+                await pb.collection("kardex").create(kardexNube);
+            } catch(e) {
+                console.warn("❌ Error guardando Kardex en PocketBase:", e);
+            }
+        })();
+    }
+
+    // ☁️ SUBIDA A FIREBASE (Como Respaldo si aún lo usas)
     if (typeof db !== 'undefined') {
         db.collection("kardex").doc(String(idKardex)).set(nuevoRegistro).catch(e => console.error("❌ Error guardando Kardex en Nube:", e));
     }
-}
+};
 
 // =========================================================================
 // 📊 RENDERIZADO PASIVO DEL KARDEX (NO ALTERA PESTAÑAS)
@@ -8572,6 +8700,35 @@ async function ejecutarAnulacionCompra() {
         if (visorComprasIndices && visorComprasIndices[currentVisorCompraPos]) {
             visorComprasIndices[currentVisorCompraPos].anulada = true;
         }
+        // ☁️ 🚀 MARCAMOS COMPRA COMO ANULADA EN LA NUBE (PB / FB)
+        if (typeof pb !== 'undefined') {
+            (async () => {
+                try {
+                    let compNube = await pb.collection("compras").getFirstListItem(`doc_id="${compraReal.id}"`);
+                    if (compNube.data) {
+                        compNube.data.anulada = true;
+                        await pb.collection("compras").update(compNube.id, compNube);
+                    }
+                } catch(e) { console.warn("Error marcando compra anulada en PB", e); }
+            })();
+        } else if (typeof db !== 'undefined') {
+            db.collection("compras").doc(String(compraReal.id)).set({ anulada: true }, { merge: true });
+        }
+
+        if (visorComprasIndices && visorComprasIndices[currentVisorCompraPos]) {
+            visorComprasIndices[currentVisorCompraPos].anulada = true;
+        }
+
+        // ====================================================================
+        // 🌟 INYECCIÓN ACUMULADOR (Regresamos el efectivo al cajón) 🌟
+        if (compraReal.metodo && String(compraReal.metodo).toLowerCase().includes("efectivo")) {
+            if (typeof window.actualizarAcumuladorSesion === 'function') {
+                // Mandamos el total en NEGATIVO para que la matemática devuelva el dinero a la caja
+                window.actualizarAcumuladorSesion('compra_efectivo', -parseFloat(compraReal.total || 0));
+            }
+        }
+        // ====================================================================
+
 
         alert("✅ Compra anulada. Se restó el stock y el saldo del proveedor en su sucursal correspondiente.");
         
@@ -9977,87 +10134,124 @@ if (document.readyState === 'complete' || document.readyState === 'interactive')
         setTimeout(() => { window.cargarSesionCajaActiva(); }, 300);
     });
 }
+
+window.actualizarAcumuladorSesion = async function(tipo, monto_exacto_efectivo) {
+    if (!window.sesionCajaActual || !window.sesionCajaActual.id) return;
+    let cant = parseFloat(monto_exacto_efectivo) || 0;
+    if (cant <= 0) return;
+
+    // 1. Base local (Garantiza que nunca se pierda dinero si parpadea el WiFi)
+    let s = window.sesionCajaActual;
+    
+    let vEfe = parseFloat(s.total_ventas_efectivo) || 0;
+    let ing = parseFloat(s.total_ingresos) || 0;
+    let gas = parseFloat(s.total_gastos) || 0;
+    let comp = parseFloat(s.total_compras_efectivo) || 0;
+    let fondo = parseFloat(s.monto_inicial) || 0;
+
+    let t = String(tipo).toLowerCase().trim();
+
+    // 2. Operación Matemática Estricta
+    if (t.includes('venta_efectivo')) vEfe += cant;
+    else if (t.includes('anulacion_venta')) vEfe = Math.max(0, vEfe - cant);
+    else if (t.includes('ingreso') || t.includes('entrada')) ing += cant;
+    else if (t.includes('retiro') || t.includes('gasto')) gas += cant;
+    else if (t.includes('compra_efectivo')) comp += cant;
+
+    let esperado = parseFloat((fondo + vEfe + ing - gas - comp).toFixed(2));
+
+    // 3. Auto-sanación Local Inmediata
+    s.total_ventas_efectivo = vEfe;
+    s.total_ingresos = ing;
+    s.total_gastos = gas;
+    s.total_compras_efectivo = comp;
+    s.efectivo_esperado = esperado;
+    
+    window.sesionCajaActual = s;
+    try { localStorage.setItem("pos_sesion_activa", JSON.stringify(s)); } catch(e){}
+
+    // 4. Subida a PocketBase en segundo plano ⚡
+    if (typeof pb !== 'undefined') {
+        try {
+            // Al enviar el total consolidado, si hubo un fallo de red antes, 
+            // esta nueva operación corrige el desfase automáticamente.
+            await pb.collection('cajas_sesiones').update(s.id, {
+                total_ventas_efectivo: vEfe,
+                total_ingresos: ing,
+                total_gastos: gas,
+                total_compras_efectivo: comp,
+                efectivo_esperado: esperado
+            });
+        } catch (e) {
+            console.warn("Nube lenta. El acumulador se guardó localmente y sanará en la próxima operación.");
+        }
+    }
+};
 window.abrirMontoInicialCaja = async function() {
     let montoInput = prompt("💵 Ingresa el Fondo Inicial de Caja para abrir turno:", "0.00");
     if (montoInput === null) return; 
 
-    let textoLimpio = String(montoInput).trim();
-    let montoInicial = parseFloat(textoLimpio) || 0;
+    let montoInicial = parseFloat(String(montoInput).trim()) || 0;
+    if (montoInicial > 20000 || montoInicial < 0) return alert("❌ Monto inválido. Máximo $20,000.");
+    if (!confirm(`🤔 ¿Confirmas que vas a abrir la caja con exactamente $${montoInicial.toFixed(2)}?`)) return;
 
-    // 🛑 1. LÍMITE LÓGICO DE CAJA
-    if (montoInicial > 20000) {
-        alert("❌ Monto rechazado por seguridad (Mayor a $20,000.00).\n\nSi necesitas ingresar tanto dinero, hazlo después con un movimiento de entrada.");
-        return;
-    }
-
-    if (montoInicial < 0) {
-        alert("❌ El monto inicial no puede ser negativo.");
-        return;
-    }
-
-    // 🛡️ 2. TRAMPA ANTI-ESCÁNER (Consume el flujo automático)
-    // El escáner gastó su 'Enter' en el prompt. Este mensaje detendrá la pantalla.
-    if (!confirm(`🤔 ¿Confirmas que vas a abrir la caja con exactamente $${montoInicial.toFixed(2)}?`)) {
-        return; 
-    }
-    
-    // 🌟 3. EJECUCIÓN (TU LÓGICA ORIGINAL)
     let sucReal = String(typeof sucursalActual !== 'undefined' ? sucursalActual : "Matriz").replace(/📍/g, '').trim();
     let cajeroActual = String(typeof usuarioActual !== 'undefined' ? usuarioActual : "Cajero").trim();
 
     let datosSesion = {
-        sucursal: sucReal,
-        cajero: cajeroActual,
-        estado: 'abierta',
-        monto_inicial: montoInicial,
-        fecha_apertura: new Date().toISOString(), 
-        efectivo_esperado: montoInicial,
-        efectivo_contado: 0,
-        diferencia_caja: 0
+        sucursal: sucReal, cajero: cajeroActual, estado: 'abierta', monto_inicial: montoInicial,
+        total_ventas_efectivo: 0, total_ingresos: 0, total_gastos: 0, total_compras_efectivo: 0,
+        fecha_apertura: new Date().toISOString(), efectivo_esperado: montoInicial, efectivo_contado: 0, diferencia_caja: 0
     };
 
     try {
         let record = await pb.collection('cajas_sesiones').create(datosSesion);
         window.sesionCajaActual = record;
         localStorage.setItem("pos_sesion_activa", JSON.stringify(record));
-
         alert(`🟢 Turno abierto con éxito.\nFondo Inicial: $${montoInicial.toFixed(2)}`);
-
-        if (typeof window.actualizarIndicadorTurnoUI === 'function') {
-            window.actualizarIndicadorTurnoUI();
-        }
-    } catch (error) {
-        console.error("Error al abrir turno:", error);
-        alert("❌ No se pudo guardar el turno en PocketBase.");
-    }
+        if (typeof window.actualizarIndicadorTurnoUI === 'function') window.actualizarIndicadorTurnoUI();
+    } catch (e) { alert("❌ No se pudo guardar en PocketBase."); }
 };
 // Variable temporal para recordar el dinero que pidió el sistema
 window.efectivoEsperadoTemporal = 0;
 
-window.cerrarTurnoActual = function() {
+window.cerrarTurnoActual = async function() {
     if (!window.sesionCajaActual || window.sesionCajaActual.estado !== 'abierta') return alert("⚠️ No hay sesión abierta.");
-    
-    if (typeof renderCorte === 'function') {
-        let hoy = typeof getFechaLocal === 'function' ? getFechaLocal() : new Date().toISOString().split('T')[0];
-        let inputInicio = document.getElementById('corte_fecha_inicio');
-        let inputFin = document.getElementById('corte_fecha_fin');
-        if (inputInicio) inputInicio.value = hoy;
-        if (inputFin) inputFin.value = hoy;
-        renderCorte();
+
+    let sId = window.sesionCajaActual.id;
+    let s = window.sesionCajaActual;
+
+    // 1. Pide la confirmación estricta de EFECTIVO a la nube
+    if (typeof pb !== 'undefined' && sId) {
+        try { 
+            s = await pb.collection('cajas_sesiones').getOne(sId); 
+            window.sesionCajaActual = s;
+        } catch(e) {}
     }
 
-    let idSesion = window.sesionCajaActual.id;
-    let sucTurno = window.sesionCajaActual.sucursal || String(typeof sucursalActual !== 'undefined' ? sucursalActual : "Matriz").replace(/📍/g, '').trim();
-    let cajeroTurno = window.sesionCajaActual.cajero;
+    let fondo = parseFloat(s.monto_inicial) || 0;
+    let vEfe = parseFloat(s.total_ventas_efectivo) || 0;
+    let ing = parseFloat(s.total_ingresos) || 0;
+    let gas = parseFloat(s.total_gastos) || 0;
+    let comp = parseFloat(s.total_compras_efectivo) || 0;
+
+    let efEsperado = parseFloat((fondo + vEfe + ing - gas - comp).toFixed(2));
+    window.efectivoEsperadoTemporal = efEsperado; 
+
+    // =======================================================================
+    // 🔍 2. EXTRACCIÓN VISUAL PARA AUDITORÍA (Tarjetas, Transferencias, Crédito)
+    // =======================================================================
+    let totalTar = 0, totalTrans = 0, totalCred = 0;
+    let listaTar = [], listaTrans = [], listaCred = [];
+
+    let idSesion = s.id;
+    let sucTurno = s.sucursal;
     let fechaHoy = typeof getFechaLocal === 'function' ? getFechaLocal() : new Date().toISOString().split('T')[0];
-    
-    let fondo = parseFloat(window.sesionCajaActual.monto_inicial) || 0;
-    let tiempoApertura = new Date(window.sesionCajaActual.fecha_apertura || window.sesionCajaActual.created || Date.now()).getTime();
-    
-    // 🛡️ ESCUDO DE TIEMPO Y SUCURSAL
+    let tiempoApertura = new Date(s.fecha_apertura || s.created || Date.now()).getTime();
+
+    // Filtro para saber qué tickets pertenecen a este turno exacto
     const perteneceAlTurno = (item) => {
         if (item.id_sesion_caja) return item.id_sesion_caja === idSesion; 
-        
         let esDeHoy = (item.fecha === fechaHoy && (item.sucursal || "Matriz") === sucTurno);
         if (!esDeHoy) return false;
         
@@ -10070,101 +10264,72 @@ window.cerrarTurnoActual = function() {
         }
         return true;
     };
-    
-    // 🧮 1. VENTAS
-    let ventasEfectivo = 0, ventasAnuladas = 0;
+
     if (typeof ventas !== 'undefined' && Array.isArray(ventas)) {
         ventas.forEach(v => {
-            let metodo = v.metodo || ""; 
-            if (!metodo.includes("Efectivo") || v.cajero !== cajeroTurno) return;
-            if (!perteneceAlTurno(v)) return; 
-
-            let total = parseFloat(v.total) || 0;
-            if (v.anulada === true || v.cancelada === true || v.estado === 'anulado') ventasAnuladas += total;
-            else ventasEfectivo += total; 
-        });
-    }
-    
-    // 🧮 2. INGRESOS Y GASTOS (Con Compensación Inteligente)
-    let ingresosExtra = 0, retirosGastos = 0, compensacionDevoluciones = 0;
-    let listaIngresos = [];
-    let listaGastos = [];
-
-    if (typeof movimientos !== 'undefined' && Array.isArray(movimientos)) {
-        movimientos.forEach(m => {
-            let tipo = m.tipo || ""; 
-            if (m.anulado === true || m.cancelado === true || m.cajero !== cajeroTurno) return;
-            if (!perteneceAlTurno(m)) return; 
-
-            let monto = parseFloat(m.monto) || 0;
-            if (tipo.includes("Ingreso") || tipo.includes("Entrada")) {
-                ingresosExtra += monto;
-                listaIngresos.push(m);
-            }
-            if (tipo.includes("Retiro") || tipo.includes("Gasto")) {
-                
-                // 🌟 MAGIA MATEMÁTICA: Si es devolución, sacamos el dinero pero equilibramos las ventas de hoy
-                if (m.motivo && String(m.motivo).includes("DEVOLUCIÓN PARCIAL") && m.id_venta_origen) {
-                    let ventaOrigen = ventas.find(v => String(v.id) === String(m.id_venta_origen));
-                    if (ventaOrigen && perteneceAlTurno(ventaOrigen)) {
-                        compensacionDevoluciones += monto; // Evita el descuento doble en la balanza
-                    }
-                }
-
-                retirosGastos += monto; // EL DINERO SÍ SALE DEL CORTE
-                listaGastos.push(m);
+            if (!perteneceAlTurno(v) || v.anulada || v.cancelada) return;
+            
+            // Evaluamos si fue pago mixto (dividido) o método único
+            if (v.pagos && Array.isArray(v.pagos) && v.pagos.length > 0) {
+                v.pagos.forEach(p => {
+                    let m = String(p.metodo || "").toLowerCase();
+                    let amt = parseFloat(p.montoAplicado) || 0;
+                    if (m.includes("tarjeta")) { totalTar += amt; listaTar.push({ hora: v.hora, monto: amt, folio: v.id }); }
+                    else if (m.includes("transferencia")) { totalTrans += amt; listaTrans.push({ hora: v.hora, monto: amt, folio: v.id }); }
+                    else if (m.includes("crédito") || m.includes("credito")) { totalCred += amt; listaCred.push({ hora: v.hora, monto: amt, folio: v.id, cliente: v.nom }); }
+                });
+            } else {
+                let m = String(v.metodo || "").toLowerCase();
+                let total = parseFloat(v.total) || 0;
+                if (m.includes("tarjeta")) { totalTar += total; listaTar.push({ hora: v.hora, monto: total, folio: v.id }); }
+                else if (m.includes("transferencia")) { totalTrans += total; listaTrans.push({ hora: v.hora, monto: total, folio: v.id }); }
+                else if (m.includes("crédito") || m.includes("credito")) { totalCred += total; listaCred.push({ hora: v.hora, monto: total, folio: v.id, cliente: v.nom }); }
             }
         });
     }
 
-    // 🧮 3. COMPRAS
-    let comprasEfectivo = 0, comprasAnuladas = 0;
-    if (typeof compras !== 'undefined' && Array.isArray(compras)) {
-        compras.forEach(c => {
-            let metodo = c.metodo || ""; 
-            if (!metodo.includes("Efectivo") || c.cajero !== cajeroTurno) return;
-            if (!perteneceAlTurno(c)) return; 
-
-            let total = parseFloat(c.total) || 0;
-            if (c.anulada === true || c.cancelada === true || c.estado === 'anulado') comprasAnuladas += total;
-            else comprasEfectivo += total;
-        });
-    }
-
-    // 🧮 BALANCE FINAL PERFECTO
-    let efEsperado = fondo + (ventasEfectivo + compensacionDevoluciones) + ingresosExtra - retirosGastos - comprasEfectivo;
-    window.efectivoEsperadoTemporal = efEsperado; 
-
-    // 📝 CONSTRUCCIÓN DEL TEXTO MATEMÁTICO (Para el Arqueo)
-    let detalleMatematico = `Fondo Inicial: $${fondo.toFixed(2)}\n(+) Ventas: $${ventasEfectivo.toFixed(2)}`;
+    // =======================================================================
+    // 📝 3. CONSTRUCCIÓN DEL TICKET DE ARQUEO
+    // =======================================================================
     
-    if (compensacionDevoluciones > 0) {
-        detalleMatematico += `\n   *(+ $${compensacionDevoluciones.toFixed(2)} Balance devoluciones mismo turno)`;
-    }
-    if (ventasAnuladas > 0) detalleMatematico += `\n   *(Omitidas $${ventasAnuladas.toFixed(2)} por ticket anulado completo)`;
-    
-    detalleMatematico += `\n(+) Otros Ingresos: $${ingresosExtra.toFixed(2)}\n(-) Gastos y Retiros: $${retirosGastos.toFixed(2)}\n(-) Compras: $${comprasEfectivo.toFixed(2)}`;
+    // Bloque 1: El Efectivo Intocable (Matemática Estricta)
+    let detalleMatematico = `--- CORTE DE CAJA (EFECTIVO FÍSICO) ---\n\n`;
+    detalleMatematico += `Fondo Inicial: $${fondo.toFixed(2)}\n`;
+    detalleMatematico += `(+) Ventas en Efectivo: $${vEfe.toFixed(2)}\n`;
+    detalleMatematico += `(+) Entradas Extras: $${ing.toFixed(2)}\n`;
+    detalleMatematico += `(-) Retiros y Gastos: $${gas.toFixed(2)}\n`;
+    detalleMatematico += `(-) Compras pagadas: $${comp.toFixed(2)}\n`;
+    detalleMatematico += `--------------------------------\n`;
+    detalleMatematico += `(=) ESPERADO EN CAJÓN: $${efEsperado.toFixed(2)}\n\n`;
 
-    detalleMatematico += `\n\n--- DETALLE DE MOVIMIENTOS ---`;
+    // Bloque 2: Auditoría Digital (Tarjetas, Transferencias y Crédito)
+    detalleMatematico += `--- AUDITORÍA DE PAGOS DIGITALES Y CRÉDITO ---\n`;
     
-    if (listaIngresos.length > 0) {
-        detalleMatematico += `\n\n🟢 OTROS INGRESOS:`;
-        listaIngresos.forEach(m => {
-            detalleMatematico += `\n + $${parseFloat(m.monto).toFixed(2)} | ${m.motivo || 'Ingreso'} (${m.hora})`;
-        });
-    }
-    
-    if (listaGastos.length > 0) {
-        detalleMatematico += `\n\n🔴 GASTOS Y RETIROS:`;
-        listaGastos.forEach(m => {
-            detalleMatematico += `\n - $${parseFloat(m.monto).toFixed(2)} | ${m.motivo || 'Gasto'} (${m.hora})`;
-        });
+    // Desglose de Tarjetas
+    if (totalTar > 0) {
+        detalleMatematico += `\n💳 TARJETAS (Total: $${totalTar.toFixed(2)} | ${listaTar.length} cobros)\n`;
+        listaTar.forEach(t => detalleMatematico += `   • $${t.monto.toFixed(2)} - Hora: ${t.hora} (Folio: ${t.folio})\n`);
+    } else {
+        detalleMatematico += `\n💳 TARJETAS: Sin movimientos\n`;
     }
 
-    if (listaIngresos.length === 0 && listaGastos.length === 0) {
-        detalleMatematico += `\n\n(No hay ingresos ni gastos registrados)`;
+    // Desglose de Transferencias
+    if (totalTrans > 0) {
+        detalleMatematico += `\n📲 TRANSFERENCIAS (Total: $${totalTrans.toFixed(2)} | ${listaTrans.length} cobros)\n`;
+        listaTrans.forEach(t => detalleMatematico += `   • $${t.monto.toFixed(2)} - Hora: ${t.hora} (Folio: ${t.folio})\n`);
+    } else {
+        detalleMatematico += `\n📲 TRANSFERENCIAS: Sin movimientos\n`;
     }
 
+    // Desglose de Créditos Fiados
+    if (totalCred > 0) {
+        detalleMatematico += `\n📝 CRÉDITOS OTORGADOS (Total: $${totalCred.toFixed(2)} | ${listaCred.length} fiados)\n`;
+        listaCred.forEach(t => detalleMatematico += `   • $${t.monto.toFixed(2)} - Hora: ${t.hora} (Cliente: ${t.cliente})\n`);
+    } else {
+        detalleMatematico += `\n📝 CRÉDITOS OTORGADOS: Sin movimientos\n`;
+    }
+
+    // 4. Inyección en la pantalla
     let divDetalle = document.getElementById('arqueo_detalle');
     if (divDetalle) {
         divDetalle.innerText = detalleMatematico;
@@ -10172,6 +10337,13 @@ window.cerrarTurnoActual = function() {
         document.querySelectorAll('.arq-input').forEach(input => input.value = '');
         document.getElementById('arqueo_total_contado').innerText = "0.00";
         document.getElementById('modalArqueo').style.display = 'flex';
+        // 💾 Guardamos esto en la memoria para que el botón de "Cerrar Turno" lo pueda atrapar
+    window.auditoriaTurnoTemporal = {
+        tarjetas: totalTar,
+        transferencias: totalTrans,
+        creditos: totalCred,
+        reporte_texto: detalleMatematico
+    };
     }
 };
 // 🧮 2. CALCULADORA EN TIEMPO REAL
@@ -10202,7 +10374,7 @@ window.confirmarCierreArqueo = async function() {
         return alert("❌ No hay sesión abierta para cerrar.");
     }
 
-    // 2. Extraemos los valores matemáticos del arqueo
+    // 2. Extraemos los valores matemáticos del arqueo de efectivo
     let esperado = parseFloat(window.efectivoEsperadoTemporal) || 0;
     let contado = parseFloat(document.getElementById('arqueo_total_contado').innerText) || 0;
     let diferencia = parseFloat((contado - esperado).toFixed(2));
@@ -10212,6 +10384,9 @@ window.confirmarCierreArqueo = async function() {
     if (!confirm(msj)) return;
 
     let ahora = new Date().toISOString();
+    
+    // Extraemos los datos digitales que preparamos en la pantalla anterior
+    let auditoria = window.auditoriaTurnoTemporal || { tarjetas: 0, transferencias: 0, creditos: 0, reporte_texto: "" };
 
     // 🌟 4. ACTUALIZAMOS POCKETBASE EN TIEMPO REAL ('cajas_sesiones')
     try {
@@ -10221,7 +10396,12 @@ window.confirmarCierreArqueo = async function() {
                 fecha_cierre: ahora,
                 efectivo_esperado: esperado,
                 efectivo_contado: contado,
-                diferencia_caja: diferencia
+                diferencia_caja: diferencia,
+                // 👇 NUEVOS CAMPOS QUE SE GUARDAN EN LA NUBE 👇
+                total_tarjetas: auditoria.tarjetas,
+                total_transferencias: auditoria.transferencias,
+                total_creditos: auditoria.creditos,
+                reporte_detallado: auditoria.reporte_texto
             });
         }
     } catch (err) {
@@ -10230,6 +10410,9 @@ window.confirmarCierreArqueo = async function() {
 
     // 5. CERRAR OFICIALMENTE LA SESIÓN EN MEMORIA Y DISCO LOCAL
     window.sesionCajaActual = null;
+    window.efectivoEsperadoTemporal = 0;
+    window.auditoriaTurnoTemporal = null;
+    
     localStorage.removeItem("pos_sesion_activa");
     localStorage.removeItem("pos_sesion_caja");
 
@@ -10253,7 +10436,7 @@ window.confirmarCierreArqueo = async function() {
     if (typeof window.actualizarIndicadorTurnoUI === 'function') window.actualizarIndicadorTurnoUI();
     if (typeof renderCorte === 'function') renderCorte();
 
-    alert("✅ Turno cerrado exitosamente.");
+    alert("✅ Turno cerrado exitosamente. El reporte completo se ha guardado en la nube.");
 };
 // 🌟 VERIFICADOR AUTOMÁTICO DE TURNO AL ENTRAR AL SISTEMA
 window.verificarOAbrirTurnoAlLogin = async function() {
