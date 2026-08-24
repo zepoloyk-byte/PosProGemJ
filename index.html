@@ -410,8 +410,7 @@
                 
                 <button onclick="abrirModalRecepciones()" style="background:var(--orange); color:white; border:none; padding:10px 15px; border-radius:8px; cursor:pointer; font-weight:bold; position:relative; font-size:13px;">📦 RECEPCIONES <span id="btn_recepciones_badge" style="background:red; color:white; border-radius:50%; padding:2px 6px; font-size:10px; display:none; margin-left:5px;"></span></button>
                 <button onclick="abrirTransferencia()" style="background:var(--kit); color:white; border:none; padding:10px 15px; border-radius:8px; cursor:pointer; font-weight:bold; font-size:13px;">🚚 ENVIAR</button>
-                <button onclick="reiniciarFaltantes()" style="background:var(--danger); color:white; border:none; padding:10px 15px; border-radius:8px; cursor:pointer; font-weight:bold; font-size:13px;">🔄 RESET FALTANTES</button>
-                <button onclick="abrirAuthReiniciarInv()" style="background:#343a40; color:white; border:none; padding:10px 15px; border-radius:8px; cursor:pointer; font-weight:bold; font-size:13px;">🚨 STOCK A CERO</button>
+                
                 <button onclick="document.getElementById('modalImport').style.display='block'" style="background:var(--p); color:white; border:none; padding:10px 15px; border-radius:8px; cursor:pointer; font-weight:bold; font-size:13px;">📥 EXCEL</button>
                 <button onclick="abrirCorteCaja()" style="background:#851414; color:white; border:none; padding:10px 15px; border-radius:8px; cursor:pointer; font-weight:bold; border-left: 4px solid red; font-size:13px; box-shadow: 0 4px 6px rgba(0,0,0,0.15);" title="Cierre de Turno / Corte Z">🛑 CERRAR CAJA</button>
                 <button id="btn_hacer_inv_ciego" style="background:#17a2b8; color:white; font-weight:bold; padding: 8px 12px; border:none; border-radius:5px; cursor:pointer; margin-right: 5px; box-shadow: 0 2px 4px rgba(0,0,0,0.2);" onclick="abrirModalInventarioCiego()">📦 HACER INV. CIEGO</button>
@@ -1643,6 +1642,12 @@
         </div>
 
         <div style="padding: 15px; overflow-y: auto;">
+            
+            <!-- 🌟 BOTÓN DE ACTUALIZACIÓN INYECTADO AQUÍ 🌟 -->
+            <button id="btn_refresh_arqueo" onclick="refrescarAuditoriaCaja()" style="background: #e9ecef; color: #0d6efd; border: 1px solid #0d6efd; padding: 10px; border-radius: 8px; cursor: pointer; font-weight: bold; width: 100%; margin-bottom: 15px; transition: 0.2s;">
+                🔄 Actualizar Auditoría desde la Nube
+            </button>
+
             <!-- Desglose Matemático -->
             <div style="background: #f8f9fa; border-left: 4px solid #0d6efd; padding: 10px; font-family: monospace; font-size: 14px; white-space: pre-wrap; margin-bottom: 15px;" id="arqueo_detalle">
                 Calculando...

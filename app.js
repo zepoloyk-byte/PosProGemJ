@@ -10251,6 +10251,11 @@ window.cerrarTurnoActual = async function() {
 
     // Filtro para saber qué tickets pertenecen a este turno exacto
     const perteneceAlTurno = (item) => {
+        // 🌟 NUEVO FILTRO ESTRICTO DE CAJERO 🌟
+        let cajeroVenta = String(item.cajero || item.usuario || "Admin").toLowerCase().trim();
+        let cajeroTurnoActual = String(s.cajero || "Admin").toLowerCase().trim();
+        if (cajeroVenta !== cajeroTurnoActual) return false; // ¡Rechaza la venta del otro!
+        
         if (item.id_sesion_caja) return item.id_sesion_caja === idSesion; 
         let esDeHoy = (item.fecha === fechaHoy && (item.sucursal || "Matriz") === sucTurno);
         if (!esDeHoy) return false;
@@ -10344,6 +10349,35 @@ window.cerrarTurnoActual = async function() {
         creditos: totalCred,
         reporte_texto: detalleMatematico
     };
+    }
+};
+window.refrescarAuditoriaCaja = async function() {
+    let btn = document.getElementById('btn_refresh_arqueo');
+    let detalle = document.getElementById('arqueo_detalle');
+
+    // 1. Cambiamos el botón a estado de carga
+    if (btn) {
+        btn.innerHTML = "⏳ Conectando a la nube...";
+        btn.style.opacity = "0.7";
+        btn.style.pointerEvents = "none"; // Evita doble clic
+    }
+
+    // 2. Limpiamos el texto para que el cajero VEA que está pasando algo
+    if (detalle) {
+        detalle.innerText = "⏳ Descargando tickets y transferencias desde PocketBase...\nPor favor espera un momento.";
+    }
+
+    // 3. Hacemos una pausa artificial de 800 milisegundos para que el ojo humano lo note
+    await new Promise(resolve => setTimeout(resolve, 800));
+
+    // 4. Volvemos a ejecutar la función maestra (Forzamos la lectura de la nube)
+    await window.cerrarTurnoActual();
+
+    // 5. Regresamos el botón a la normalidad
+    if (btn) {
+        btn.innerHTML = "🔄 Actualizar Auditoría desde la Nube";
+        btn.style.opacity = "1";
+        btn.style.pointerEvents = "auto";
     }
 };
 // 🧮 2. CALCULADORA EN TIEMPO REAL
