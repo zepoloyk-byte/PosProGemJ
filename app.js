@@ -442,72 +442,50 @@ db.collection("movimientos").onSnapshot((querySnapshot) => {
     if (tabActual === 'r-tab') renderCorte();
 });
 
-// 🚀 RADAR ULTRARRÁPIDO DE VENTAS (Cero demoras al abrir)
-// 🚀 RADAR ULTRARRÁPIDO DE VENTAS CORREGIDO
+// 🚀 RADAR ULTRARRÁPIDO DE VENTAS (Cero demoras al abrir) - BLINDADO
 async function iniciarRadarVentasVeloz() {
-    let mapa = {};
-    
-    // 🛡️ 1. Primero cargamos lo local de inmediato para tener datos en pantalla y que no se quede en cero
-    let ventasLocales = JSON.parse(localStorage.getItem("pos_ventas_v6") || "[]");
-    ventasLocales.forEach(v => { if(v && v.id) mapa[v.id] = v; });
-    ventas = Object.values(mapa).sort((a,b) => a.id - b.id);
-    if (typeof renderCorte === 'function') renderCorte();
-
     try {
-        let hoy = typeof getFechaLocal === 'function' ? getFechaLocal() : new Date().toLocaleString("sv-SE", { timeZone: "America/Mexico_City" }).substring(0, 10);
-        
-        console.log("☁️ Descargando ventas del día:", hoy);
+        if (typeof pb === 'undefined') return;
+        let fechaHoy = typeof getFechaLocal === 'function' ? getFechaLocal() : new Date().toISOString().split('T')[0];
+        console.log("☁️ Descargando ventas del día:", fechaHoy);
 
-        // 👇 SOLUCIÓN: Comillas simples ('') alrededor de ${hoy}
-        let records = await pb.collection('ventas').getFullList({
-            filter: `data.fecha >= '${hoy}'`, 
+        // Atrapamos cualquier error de red (como cuando el celular despierta) sin romper la consola
+        let res = await pb.collection('ventas').getList(1, 100, {
+            sort: '-created',
             requestKey: null
-        });
+        }).catch(() => null);
 
-        console.log("☁️ Registros recibidos:", records.items.length);
+        if (!res) return;
 
-        records.items.forEach(r => {
-            // Conservamos los datos Y el ID real del documento
-            let ticketNube = {
-                ...(r.data || {}),
-                id: r.doc_id || r.id || (r.data ? r.data.id : null)
-            };
+        // Extraemos los items de forma segura para evitar el error "reading 'length'"
+        let items = Array.isArray(res) ? res : (res.items || []);
+        if (!Array.isArray(items) || items.length === 0) return;
 
-            if (!ticketNube.id) {
-                console.warn("⚠️ Ticket sin ID, se ignora:", r);
-                return;
+        let listaDescargada = items.map(r => {
+            let data = (r && r.data) ? r.data : r;
+            if (typeof data === 'string') {
+                try { data = JSON.parse(data); } catch(e) {}
             }
+            return data;
+        }).filter(v => v && v.fecha && v.fecha >= fechaHoy);
 
-            if (!ventas.some(vLocal => String(vLocal.id) === String(ticketNube.id))) {
-                ventas.push(ticketNube);
-            }
-        });
-
-        console.log("📦 Ventas después de descarga:", ventas.length);
-        if (typeof renderCorte === 'function') renderCorte();
-
-    } catch (e) {
-        console.error("❌ Error al auto-descargar el día en radar:", e);
-    }
-
-    // 📡 Mantenemos la oreja parada para ventas nuevas en vivo
-    pb.collection("ventas").subscribe('*', function(e) {
-        if (e.action === 'create' || e.action === 'update') {
-            if (e.record && e.record.data) {
-                let idx = ventas.findIndex(x => String(x.id) === String(e.record.data.id));
-                if (idx > -1) ventas[idx] = e.record.data;
-                else ventas.push(e.record.data);
-            }
-        } else if (e.action === 'delete') {
-            if (e.record && e.record.data) {
-                ventas = ventas.filter(x => String(x.id) !== String(e.record.data.id));
-            }
+        if (listaDescargada && listaDescargada.length > 0) {
+            window.ventas = window.ventas || [];
+            let mapa = new Map();
+            window.ventas.forEach(v => { if (v && v.id) mapa.set(String(v.id), v); });
+            listaDescargada.forEach(v => { if (v && v.id) mapa.set(String(v.id), v); });
+            window.ventas = Array.from(mapa.values());
+            
+            // Usamos pos_ventas_v6 que es tu versión actual
+            try { localStorage.setItem("pos_ventas_v6", JSON.stringify(window.ventas)); } catch(e) {}
+            if (typeof renderCorte === 'function') renderCorte();
         }
-        localStorage.setItem("pos_ventas_v6", JSON.stringify(ventas.slice(-300))); // RAM ligera
-        if (tabActual === 'r-tab' && typeof renderCorte === 'function') renderCorte();
-    });
+    } catch (err) {
+        console.warn("Radar ventas en pausa temporal:", err);
+    }
 }
 iniciarRadarVentasVeloz();
+
 // Compras (Radar Inmune a pérdida de IDs en PikaPod)
 db.collection("compras").onSnapshot((querySnapshot) => {
     let nuevasCompras = [];
@@ -1684,7 +1662,7 @@ function recalcGanEdicion() {
     }
 }
 
-function guardarEdicion() {
+async function guardarEdicion() {
     let codViejo = document.getElementById('e_cod_original').value; 
     let codNuevo = document.getElementById('e_cod').value.trim(); 
     let nuevoNom = document.getElementById('e_nom').value.trim();
@@ -1697,18 +1675,17 @@ function guardarEdicion() {
     let nuevoPm = parseFloat(document.getElementById('e_pm').value) || 0;
     let nuevoMd = parseFloat(document.getElementById('e_md').value) || 10;
     
-    // 🌟 NUEVO: Capturamos el Código Maestro
+    // Capturamos el Código Maestro
     let inputGrupo = document.getElementById('e_grupo');
     let nuevoGrupo = inputGrupo ? inputGrupo.value.trim() : "";
 
     if(!codNuevo) return alert("❌ El código no puede estar vacío.");
     if(!nuevoNom) return alert("❌ El nombre no puede estar vacío.");
     
-    // Validamos que el Maestro exista (para que no lo enlacen a un fantasma)
+    // Validamos que el Maestro exista
     if (nuevoGrupo && !inv[nuevoGrupo]) {
         return alert(`❌ El Código Maestro "${nuevoGrupo}" no existe en el inventario.`);
     }
-    // Evitamos que un producto sea su propio maestro en un bucle infinito
     if (nuevoGrupo === codNuevo) {
         return alert("❌ Un producto no puede ser maestro de sí mismo.");
     }
@@ -1716,7 +1693,8 @@ function guardarEdicion() {
     let pO = inv[codViejo] || {};
     let stockReal = 0;
     if (pO.stock && typeof pO.stock === 'object') {
-        stockReal = parseFloat(pO.stock[sucursalActual]) || 0;
+        let suc = typeof sucursalActual !== 'undefined' ? sucursalActual : 'Matriz';
+        stockReal = parseFloat(pO.stock[suc]) || 0;
     } else {
         stockReal = parseFloat(pO.stock) || parseFloat(pO.existencia) || parseFloat(pO.can) || 0;
     }
@@ -1728,36 +1706,50 @@ function guardarEdicion() {
         inv[codNuevo].cos = nuevoCos; inv[codNuevo].iva = nuevoIva; inv[codNuevo].gan = nuevaGan;
         inv[codNuevo].pv = nuevoPv; inv[codNuevo].pm = nuevoPm; inv[codNuevo].md = nuevoMd;
         
-        // 🌟 NUEVO: Asignamos el enlace Maestro
-        if (nuevoGrupo) {
-            inv[codNuevo].grupo = nuevoGrupo;
-        } else {
-            delete inv[codNuevo].grupo; // Si lo dejaron vacío, rompemos el enlace
-        }
+        if (nuevoGrupo) inv[codNuevo].grupo = nuevoGrupo;
+        else delete inv[codNuevo].grupo;
         
         inv[codNuevo].updatedAt = Date.now(); 
         
         delete inv[codViejo];
-        db.collection("inventario").doc(String(codViejo)).delete();
         
-        db.collection("inventario").doc(String(codNuevo)).set(inv[codNuevo])
-        .then(()=>alert("✅ Actualizado")).catch(e=>console.log(e));
+        // ☁️ POCKETBASE: Borra el viejo y crea el nuevo
+        if (typeof pb !== 'undefined') {
+            try {
+                let oldRec = await pb.collection('inventario').getFirstListItem(`doc_id="${codViejo}"`, { requestKey: null });
+                if (oldRec) await pb.collection('inventario').delete(oldRec.id, { requestKey: null });
+            } catch(e) {}
+            try {
+                await pb.collection('inventario').create({ doc_id: String(codNuevo), data: inv[codNuevo] }, { requestKey: null });
+            } catch(e) { console.warn("Error creando en PB:", e); }
+        } else if (typeof db !== 'undefined') {
+            db.collection("inventario").doc(String(codViejo)).delete();
+            db.collection("inventario").doc(String(codNuevo)).set(inv[codNuevo]);
+        }
+        alert("✅ Código y producto actualizados");
     } else {
         inv[codViejo].nom = nuevoNom; inv[codViejo].dep = nuevoDep; inv[codViejo].tipo = nuevoTipo;
         inv[codViejo].cos = nuevoCos; inv[codViejo].iva = nuevoIva; inv[codViejo].gan = nuevaGan;
         inv[codViejo].pv = nuevoPv; inv[codViejo].pm = nuevoPm; inv[codViejo].md = nuevoMd;
         
-        // 🌟 NUEVO: Asignamos el enlace Maestro
-        if (nuevoGrupo) {
-            inv[codViejo].grupo = nuevoGrupo;
-        } else {
-            delete inv[codViejo].grupo;
-        }
+        if (nuevoGrupo) inv[codViejo].grupo = nuevoGrupo;
+        else delete inv[codViejo].grupo;
         
         inv[codViejo].updatedAt = Date.now();
         
-        db.collection("inventario").doc(String(codViejo)).set(inv[codViejo])
-        .then(()=>alert("✅ Guardado")).catch(e=>console.log(e));
+        // ☁️ POCKETBASE: Actualiza el existente
+        if (typeof pb !== 'undefined') {
+            try {
+                let rec = await pb.collection('inventario').getFirstListItem(`doc_id="${codViejo}"`, { requestKey: null });
+                await pb.collection('inventario').update(rec.id, { data: inv[codViejo] }, { requestKey: null });
+            } catch(e) {
+                // Si por alguna razón no existía en la nube, lo crea
+                try { await pb.collection('inventario').create({ doc_id: String(codViejo), data: inv[codViejo] }, { requestKey: null }); } catch(err){}
+            }
+        } else if (typeof db !== 'undefined') {
+            db.collection("inventario").doc(String(codViejo)).set(inv[codViejo]);
+        }
+        alert("✅ Precios guardados");
     }
     
     localStorage.setItem("pos_precision_v6", JSON.stringify(inv)); 
@@ -1767,7 +1759,8 @@ function guardarEdicion() {
         registrarEnKardex(codAuditar, nuevoNom, "EDICIÓN", 0, nuevoPv, nuevoCos, stockReal, stockReal);
     }
     
-    cerrarModales(); renderTablaInventario();
+    if(typeof cerrarModales === 'function') cerrarModales(); 
+    if(typeof renderTablaInventario === 'function') renderTablaInventario();
 }
 function eliminarProductoDesdeEdicion() {
     let cod = document.getElementById('e_cod_original').value;
@@ -2661,12 +2654,17 @@ window.confirmarVenta = async function(cambioFinal = 0) {
         let elCajero = document.getElementById('ticket_cajero');
         if (elCajero) elCajero.innerText = usr;
         
-        // --- INYECCIÓN ACUMULADOR (Atrapar Efectivo Real) ---
+       // --- INYECCIÓN ACUMULADOR (Efectivo y Métodos Digitales) ---
         let efectivoRealACaja = 0;
+        let idSesionTurno = (window.sesionCajaActual && window.sesionCajaActual.id) ? window.sesionCajaActual.id : null;
+
         if (pagosActuales.length > 0) {
             pagosActuales.forEach(p => {
-                if(p.metodo && p.metodo.toLowerCase().includes('efectivo')) {
-                    efectivoRealACaja += (parseFloat(p.montoAplicado) || 0);
+                let m = (p.metodo || "").toLowerCase();
+                let montoAp = parseFloat(p.montoAplicado) || 0;
+
+                if (m.includes('efectivo')) {
+                    efectivoRealACaja += montoAp;
                 }
             });
         } else if (metodosStr.toLowerCase().includes('efectivo')) {
@@ -2676,24 +2674,46 @@ window.confirmarVenta = async function(cambioFinal = 0) {
         if (efectivoRealACaja > 0 && typeof window.actualizarAcumuladorSesion === 'function') {
             window.actualizarAcumuladorSesion('venta_efectivo', efectivoRealACaja);
         }
-        // ----------------------------------------------------
+        // -----------------------------------------------------------
+
         let nuevaVenta = { 
-            id: idVentaNueva, doc_id: String(idVentaNueva), fecha: hoy, hora: horaVenta, 
-            cajero: usr, sucursal: suc, total: tot, 
+            id: idVentaNueva, 
+            doc_id: String(idVentaNueva), 
+            id_sesion_caja: idSesionTurno, // 🌟 Vínculo directo con la sesión activa
+            fecha: hoy, 
+            hora: horaVenta, 
+            cajero: usr, 
+            sucursal: suc, 
+            total: tot, 
             nom: nomClienteTicket,
-            metodo: metodosStr, pagos: pagosActuales, 
-            recibido: totalPagado, cambio: cambioReal,    
-            items: carV.map(x=>x.nom||'').join(','), detalles: detallesParaGuardar, anulada: false 
+            metodo: metodosStr, 
+            pagos: pagosActuales, 
+            recibido: totalPagado, 
+            cambio: cambioReal,    
+            items: carV.map(x => x.nom || '').join(','), 
+            detalles: detallesParaGuardar, 
+            anulada: false 
         };
 
         if (typeof ventas === 'undefined') window.ventas = [];
-        ventas.push(nuevaVenta);
-        try { localStorage.setItem("pos_ventas_v6", JSON.stringify(ventas.slice(-200))); } catch(e) { localStorage.setItem("pos_ventas_v6", JSON.stringify(ventas.slice(-50))); }
+        window.ventas.push(nuevaVenta);
+        try { localStorage.setItem("pos_ventas_v6", JSON.stringify(window.ventas.slice(-200))); } catch(e) {}
 
-        // 🚀 GUARDADO DE LA VENTA EN NUBE (FORMATO CORRECTO PARA PB)
+        // 🚀 GUARDADO DE LA VENTA EN NUBE (Con diagnóstico exacto de error)
         if (typeof pb !== 'undefined') {
-            let ventaNube = { doc_id: String(idVentaNueva), data: nuevaVenta }; 
-            pb.collection("ventas").create(ventaNube).catch(e => console.warn("Venta a PB offline.", e));
+            try {
+                let ventaNube = { 
+                    doc_id: String(idVentaNueva), 
+                    data: nuevaVenta 
+                };
+                let respPB = await pb.collection("ventas").create(ventaNube, { requestKey: null });
+                console.log("✅ Venta subida con éxito a PocketBase:", respPB.id);
+            } catch (errPB) {
+                console.error("❌ ERROR AL CREAR VENTA EN POCKETBASE:", errPB);
+                if (errPB.data) {
+                    console.error("Detalle del error del servidor:", JSON.stringify(errPB.data));
+                }
+            }
         } else if (typeof db !== 'undefined') { 
             db.collection("ventas").doc(String(idVentaNueva)).set(nuevaVenta).catch(e => console.warn("Venta a FB offline.")); 
         }
@@ -4609,11 +4629,10 @@ function guardarCliente() {
     }
 }
 function abrirModalAbono(tel) { telAbonoActual = tel; document.getElementById('abono_nom').innerText = clientes[tel].nom; document.getElementById('abono_deuda').innerText = (clientes[tel].saldo||0).toFixed(2); document.getElementById('abono_monto').value = ''; document.getElementById('modalAbono').style.display = 'block'; setTimeout(()=>document.getElementById('abono_monto').focus(), 100); }
-window.confirmarAbono = function() {
-    // 1. Usamos tu variable original exacta
+window.confirmarAbono = async function() {
     let telCli = telAbonoActual; 
     
-    if(!telCli || !clientes[telCli]) return alert("❌ Cliente no encontrado. Cierra la ventana e intenta de nuevo.");
+    if (!telCli || !clientes[telCli]) return alert("❌ Cliente no encontrado. Cierra la ventana e intenta de nuevo.");
     
     let c = clientes[telCli];
     let monto = parseFloat(document.getElementById('abono_monto').value) || 0;
@@ -4621,39 +4640,47 @@ window.confirmarAbono = function() {
     
     if (monto <= 0) return alert("❌ Ingresa un monto válido mayor a 0.");
     
-    // 2. Tomamos el saldo global real
     let saldoAnterior = parseFloat(c.saldo) || 0;
-
-    // 3. DESCONTAMOS LA DEUDA
     c.saldo = parseFloat(Math.max(0, saldoAnterior - monto).toFixed(2));
     
     let hoy = typeof getFechaLocal === 'function' ? getFechaLocal() : new Date().toISOString().split('T')[0];
     let hora = new Date().toLocaleTimeString();
 
-    // 4. REGISTRAR EN EL ESTADO DE CUENTA
     if (!c.historial) c.historial = [];
     c.historial.push({
         id_venta: Date.now(), 
         fecha: hoy, 
-        hora: hora,
+        hora: hora, 
         tipo: 'Abono', 
         monto: -monto, 
         detalle: `Pago en ${metodo}`
     });
 
-    // 5. GUARDAR EN MEMORIA Y EN LA NUBE
+    // Guardado local y nube
     clientes[telCli] = c;
     try { localStorage.setItem("pos_clientes_v7", JSON.stringify(clientes)); } catch(e){}
-    if (typeof db !== 'undefined') {
+    
+    if (typeof pb !== 'undefined') {
+        (async () => {
+            try {
+                let cliNube = await pb.collection('clientes').getFirstListItem(`doc_id="${telCli}"`, { requestKey: null });
+                if (cliNube && cliNube.id) {
+                    await pb.collection('clientes').update(cliNube.id, { data: c }, { requestKey: null });
+                }
+            } catch (e) {
+                console.warn("Error actualizando cliente en PB:", e);
+            }
+        })();
+    } else if (typeof db !== 'undefined') {
         try { db.collection("clientes").doc(String(telCli)).set(c); } catch(e) {}
     }
 
-    // 6. REGISTRAR EL INGRESO EN LA CAJA
-    if (metodo === "Efectivo") {
+    // Registro del ingreso en caja si fue en efectivo
+    if (metodo && metodo.toLowerCase().includes("efectivo")) {
         let idMov = Date.now();
         let miNombre = typeof usuarioActual !== 'undefined' ? usuarioActual : 'Cajero';
         let idSesionTurno = (window.sesionCajaActual ? window.sesionCajaActual.id : null);
-        let sucMov = typeof sucursalActual !== 'undefined' ? sucursalActual : 'Matriz';
+        let sucMov = String(typeof sucursalActual !== 'undefined' ? sucursalActual : 'Matriz').replace(/📍/g, '').trim();
 
         let nuevoMov = { 
             id: idMov, 
@@ -4667,24 +4694,36 @@ window.confirmarAbono = function() {
             motivo: `Abono de deuda: ${c.nom}` 
         };
         
-        if(typeof movimientos === 'undefined') window.movimientos = [];
-        movimientos.push(nuevoMov); 
+        window.movimientos = window.movimientos || [];
+        window.movimientos.push(nuevoMov); 
+        try { localStorage.setItem("pos_movimientos_v1", JSON.stringify(window.movimientos)); } catch(e){}
         
-        try { localStorage.setItem("pos_movimientos_v1", JSON.stringify(movimientos)); } catch(e){}
-        if (typeof db !== 'undefined') {
+        // Inyección en el acumulador de caja
+        if (typeof window.actualizarAcumuladorSesion === 'function') {
+            window.actualizarAcumuladorSesion('ingreso', monto);
+        }
+
+        // Subida del movimiento a PocketBase
+        if (typeof pb !== 'undefined') {
+            (async () => {
+                try {
+                    await pb.collection('movimientos').create({ doc_id: String(idMov), data: nuevoMov }, { requestKey: null });
+                } catch (e) {
+                    console.warn("Error guardando movimiento de abono en PB:", e);
+                }
+            })();
+        } else if (typeof db !== 'undefined') {
             try { db.collection("movimientos").doc(String(idMov)).set(nuevoMov); } catch(e) {}
         }
     }
 
-    // Cerramos la ventana
     document.getElementById('modalAbono').style.display = 'none';
     
-    // 7. 🌟 FORZAMOS A LA PANTALLA A DIBUJAR LA TABLA ACTUALIZADA 🌟
     if (typeof renderClientes === 'function') renderClientes();
     if (typeof filtrarClientes === 'function') filtrarClientes(); 
     if (typeof renderCorte === 'function') renderCorte();
     
-    alert(`✅ Abono de $${monto} registrado.\nNuevo saldo de ${c.nom}: $${c.saldo}`);
+    alert(`✅ Abono de $${monto.toFixed(2)} registrado.\nNuevo saldo de ${c.nom}: $${c.saldo.toFixed(2)}`);
 };
 function abrirModalAuthCli(tel) { cliAEliminar = tel; document.getElementById('auth_cli_nom').innerText = clientes[tel].nom; document.getElementById('auth_admin_pin_cli').value = ''; document.getElementById('modalAuthAdminCli').style.display = 'block'; setTimeout(() => document.getElementById('auth_admin_pin_cli').focus(), 100); }
 function confirmarEliminacionCli() {
@@ -4750,8 +4789,7 @@ function abrirHistorialProv(nombre) {
     document.getElementById('modalHistorialProv').style.display = 'block';
 }
 function abrirModalAbonoProv(nombre) { provAbonoActual = nombre; document.getElementById('abono_prov_nom').innerText = nombre; document.getElementById('abono_prov_deuda').innerText = (proveedores[nombre].saldo||0).toFixed(2); document.getElementById('abono_prov_monto').value = ''; document.getElementById('modalAbonoProv').style.display = 'block'; setTimeout(()=>document.getElementById('abono_prov_monto').focus(), 100); }
-window.confirmarAbonoProv = function() {
-    // 1. Usamos tu variable original (igual que con los clientes) o buscamos por nombre
+window.confirmarAbonoProv = async function() {
     let idProv = typeof provAbonoActual !== 'undefined' ? provAbonoActual : null;
 
     if (!idProv || !proveedores[idProv]) {
@@ -4775,21 +4813,16 @@ window.confirmarAbonoProv = function() {
 
     if (monto <= 0) return alert("❌ Ingresa un monto válido mayor a 0.");
 
-    // 2. DETECTOR DE VARIABLES (Busca cómo se llama la deuda y el nombre en tu sistema)
     let nombreReal = p.nom || p.nombre || p.proveedor || "Proveedor";
     let deudaAnterior = parseFloat(p.deuda !== undefined ? p.deuda : p.saldo) || 0;
-
-    // 3. DESCONTAMOS LA DEUDA
     let nuevaDeuda = parseFloat(Math.max(0, deudaAnterior - monto).toFixed(2));
     
-    // Lo guardamos en la variable correcta
     if (p.deuda !== undefined) p.deuda = nuevaDeuda;
     else p.saldo = nuevaDeuda;
 
     let hoy = typeof getFechaLocal === 'function' ? getFechaLocal() : new Date().toISOString().split('T')[0];
     let hora = new Date().toLocaleTimeString();
 
-    // 4. REGISTRAR EN EL HISTORIAL
     if (!p.historial) p.historial = [];
     p.historial.push({
         id_movimiento: Date.now(),
@@ -4800,20 +4833,31 @@ window.confirmarAbonoProv = function() {
         detalle: `Pago en ${metodo}`
     });
 
-    // 5. GUARDAR EN MEMORIA Y EN LA NUBE
     proveedores[idProv] = p;
     try { localStorage.setItem("pos_proveedores_v1", JSON.stringify(proveedores)); } catch(e){}
     
-    if (typeof db !== 'undefined') {
+    // ☁️ Actualizar proveedor en PocketBase
+    if (typeof pb !== 'undefined') {
+        (async () => {
+            try {
+                let provNube = await pb.collection('proveedores').getFirstListItem(`doc_id="${idProv}"`);
+                if (provNube && provNube.id) {
+                    await pb.collection('proveedores').update(provNube.id, { data: p });
+                }
+            } catch(e) {
+                console.warn("Error actualizando proveedor en PB:", e);
+            }
+        })();
+    } else if (typeof db !== 'undefined') {
         try { db.collection("proveedores").doc(String(idProv)).set(p); } catch(e) {}
     }
 
-    // 6. REGISTRAR LA SALIDA DE DINERO EN CAJA (Gasto)
-    if (metodo === "Efectivo") {
+    // 🌟 REGISTRAR LA SALIDA DE DINERO EN CAJA (Si se pagó en Efectivo de caja)
+    if (metodo && metodo.toLowerCase().includes("efectivo")) {
         let idMov = Date.now();
         let miNombre = typeof usuarioActual !== 'undefined' ? usuarioActual : 'Cajero';
         let idSesionTurno = (window.sesionCajaActual ? window.sesionCajaActual.id : null);
-        let sucMov = typeof sucursalActual !== 'undefined' ? sucursalActual : 'Matriz';
+        let sucMov = String(typeof sucursalActual !== 'undefined' ? sucursalActual : 'Matriz').replace(/📍/g, '').trim();
 
         let nuevoMov = { 
             id: idMov, 
@@ -4827,22 +4871,34 @@ window.confirmarAbonoProv = function() {
             motivo: `Pago a proveedor: ${nombreReal}` 
         };
         
-        if (typeof movimientos === 'undefined') window.movimientos = [];
-        movimientos.push(nuevoMov); 
-        
-        try { localStorage.setItem("pos_movimientos_v1", JSON.stringify(movimientos)); } catch(e){}
-        if (typeof db !== 'undefined') {
+        window.movimientos = window.movimientos || [];
+        window.movimientos.push(nuevoMov); 
+        try { localStorage.setItem("pos_movimientos_v1", JSON.stringify(window.movimientos)); } catch(e){}
+
+        // 🚀 1. INYECCIÓN ACUMULADOR (Resta del cajón físico)
+        if (typeof window.actualizarAcumuladorSesion === 'function') {
+            window.actualizarAcumuladorSesion('retiro', monto);
+        }
+
+        // ☁️ 2. Subida del movimiento a PocketBase
+        if (typeof pb !== 'undefined') {
+            (async () => {
+                try {
+                    await pb.collection('movimientos').create({ doc_id: String(idMov), data: nuevoMov });
+                } catch(e) { console.warn("Error guardando movimiento de pago prov en PB:", e); }
+            })();
+        } else if (typeof db !== 'undefined') {
             try { db.collection("movimientos").doc(String(idMov)).set(nuevoMov); } catch(e) {}
         }
     }
 
-    // 7. CERRAR Y ACTUALIZAR PANTALLA
-    document.getElementById('modalAbonoProv').style.display = 'none';
+    let modal = document.getElementById('modalAbonoProv');
+    if (modal) modal.style.display = 'none';
     
     if (typeof renderProveedores === 'function') renderProveedores();
     if (typeof renderCorte === 'function') renderCorte();
     
-    alert(`✅ Pago de $${monto} aplicado correctamente.\nNueva deuda de ${nombreReal}: $${nuevaDeuda}`);
+    alert(`✅ Pago de $${monto.toFixed(2)} aplicado correctamente.\nNueva deuda de ${nombreReal}: $${nuevaDeuda.toFixed(2)}`);
 };
 function abrirModalAuthProv(nombre) { window.provActualEliminar = nombre; document.getElementById('auth_prov_nom').innerText = nombre; document.getElementById('auth_admin_pin').value = ''; document.getElementById('modalAuthAdminProv').style.display = 'block'; setTimeout(() => document.getElementById('auth_admin_pin').focus(), 100); }
 function confirmarEliminacionProv() {
@@ -10135,12 +10191,12 @@ if (document.readyState === 'complete' || document.readyState === 'interactive')
     });
 }
 
-window.actualizarAcumuladorSesion = async function(tipo, monto_exacto_efectivo) {
+window.actualizarAcumuladorSesion = async function(tipo, monto_operacion) {
     if (!window.sesionCajaActual || !window.sesionCajaActual.id) return;
-    let cant = parseFloat(monto_exacto_efectivo) || 0;
+    let cant = parseFloat(monto_operacion) || 0;
     if (cant <= 0) return;
 
-    // 1. Base local (Garantiza que nunca se pierda dinero si parpadea el WiFi)
+    // 1. Base local (Garantiza persistencia ante fallos de conexión)
     let s = window.sesionCajaActual;
     
     let vEfe = parseFloat(s.total_ventas_efectivo) || 0;
@@ -10149,41 +10205,59 @@ window.actualizarAcumuladorSesion = async function(tipo, monto_exacto_efectivo) 
     let comp = parseFloat(s.total_compras_efectivo) || 0;
     let fondo = parseFloat(s.monto_inicial) || 0;
 
+    // 💳 Nuevos acumuladores digitales
+    let vTar = parseFloat(s.total_tarjetas) || 0;
+    let vTrans = parseFloat(s.total_transferencias) || 0;
+    let vCred = parseFloat(s.total_creditos) || 0;
+
     let t = String(tipo).toLowerCase().trim();
 
-    // 2. Operación Matemática Estricta
+    // 2. Operación matemática estricta
     if (t.includes('venta_efectivo')) vEfe += cant;
-    else if (t.includes('anulacion_venta')) vEfe = Math.max(0, vEfe - cant);
+    else if (t.includes('anulacion_venta_efectivo') || t.includes('anulacion_efectivo')) vEfe = Math.max(0, vEfe - cant);
     else if (t.includes('ingreso') || t.includes('entrada')) ing += cant;
     else if (t.includes('retiro') || t.includes('gasto')) gas += cant;
     else if (t.includes('compra_efectivo')) comp += cant;
 
+    // Métodos digitales y sus anulaciones
+    else if (t.includes('anulacion_tarjeta')) vTar = Math.max(0, vTar - cant);
+    else if (t.includes('tarjeta')) vTar += cant;
+    else if (t.includes('anulacion_transferencia')) vTrans = Math.max(0, vTrans - cant);
+    else if (t.includes('transferencia')) vTrans += cant;
+    else if (t.includes('anulacion_credito') || t.includes('anulacion_crédito')) vCred = Math.max(0, vCred - cant);
+    else if (t.includes('credito') || t.includes('crédito')) vCred += cant;
+
     let esperado = parseFloat((fondo + vEfe + ing - gas - comp).toFixed(2));
 
-    // 3. Auto-sanación Local Inmediata
+    // 3. Guardado en memoria y localStorage
     s.total_ventas_efectivo = vEfe;
     s.total_ingresos = ing;
     s.total_gastos = gas;
     s.total_compras_efectivo = comp;
     s.efectivo_esperado = esperado;
+
+    s.total_tarjetas = parseFloat(vTar.toFixed(2));
+    s.total_transferencias = parseFloat(vTrans.toFixed(2));
+    s.total_creditos = parseFloat(vCred.toFixed(2));
     
     window.sesionCajaActual = s;
     try { localStorage.setItem("pos_sesion_activa", JSON.stringify(s)); } catch(e){}
 
-    // 4. Subida a PocketBase en segundo plano ⚡
+    // 4. Sincronización en PocketBase
     if (typeof pb !== 'undefined') {
         try {
-            // Al enviar el total consolidado, si hubo un fallo de red antes, 
-            // esta nueva operación corrige el desfase automáticamente.
             await pb.collection('cajas_sesiones').update(s.id, {
                 total_ventas_efectivo: vEfe,
                 total_ingresos: ing,
                 total_gastos: gas,
                 total_compras_efectivo: comp,
-                efectivo_esperado: esperado
-            });
+                efectivo_esperado: esperado,
+                total_tarjetas: s.total_tarjetas,
+                total_transferencias: s.total_transferencias,
+                total_creditos: s.total_creditos
+            }, { requestKey: null });
         } catch (e) {
-            console.warn("Nube lenta. El acumulador se guardó localmente y sanará en la próxima operación.");
+            console.warn("Acumulador guardado localmente; sincronizará en la próxima operación.", e);
         }
     }
 };
@@ -10221,10 +10295,9 @@ window.cerrarTurnoActual = async function() {
     let sId = window.sesionCajaActual.id;
     let s = window.sesionCajaActual;
 
-    // 1. Pide la confirmación estricta de EFECTIVO a la nube
     if (typeof pb !== 'undefined' && sId) {
         try { 
-            s = await pb.collection('cajas_sesiones').getOne(sId); 
+            s = await pb.collection('cajas_sesiones').getOne(sId, { requestKey: null }); 
             window.sesionCajaActual = s;
         } catch(e) {}
     }
@@ -10239,7 +10312,7 @@ window.cerrarTurnoActual = async function() {
     window.efectivoEsperadoTemporal = efEsperado; 
 
     // =======================================================================
-    // 🔍 2. EXTRACCIÓN VISUAL PARA AUDITORÍA (Tarjetas, Transferencias, Crédito)
+    // 🔍 2. EXTRACCIÓN VISUAL PARA AUDITORÍA (BLINDADA PARA MÓVILES)
     // =======================================================================
     let totalTar = 0, totalTrans = 0, totalCred = 0;
     let listaTar = [], listaTrans = [], listaCred = [];
@@ -10249,13 +10322,46 @@ window.cerrarTurnoActual = async function() {
     let fechaHoy = typeof getFechaLocal === 'function' ? getFechaLocal() : new Date().toISOString().split('T')[0];
     let tiempoApertura = new Date(s.fecha_apertura || s.created || Date.now()).getTime();
 
-    // Filtro para saber qué tickets pertenecen a este turno exacto
+    // 🚀 EXTRACCIÓN SEGURA DE NUBE (getList en vez de getFullList para evitar Error 400)
+    let ventasParaAuditoria = [];
+    if (typeof pb !== 'undefined') {
+        try {
+            let resNube = await pb.collection('ventas').getList(1, 150, { 
+                sort: '-created', 
+                requestKey: null 
+            });
+            
+            let items = (resNube && Array.isArray(resNube.items)) ? resNube.items : [];
+            ventasParaAuditoria = items.map(r => {
+                let info = r.data ? r.data : r;
+                if (typeof info === 'string') {
+                    try { info = JSON.parse(info); } catch(e){}
+                }
+                return info;
+            }).filter(Boolean);
+        } catch (e) {
+            console.warn("Fallo lectura de nube. Usando memoria local.", e);
+            ventasParaAuditoria = typeof ventas !== 'undefined' ? ventas : [];
+        }
+    } else {
+        ventasParaAuditoria = typeof ventas !== 'undefined' ? ventas : [];
+    }
+
+    // Contadores para el diagnóstico
+    let ventasAnalizadas = 0;
+    let ventasDeOtroCajero = 0;
+
     const perteneceAlTurno = (item) => {
-        // 🌟 NUEVO FILTRO ESTRICTO DE CAJERO 🌟
+        ventasAnalizadas++;
         let cajeroVenta = String(item.cajero || item.usuario || "Admin").toLowerCase().trim();
         let cajeroTurnoActual = String(s.cajero || "Admin").toLowerCase().trim();
-        if (cajeroVenta !== cajeroTurnoActual) return false; // ¡Rechaza la venta del otro!
         
+        // Si el cajero es diferente, lo anotamos pero lo RECHAZAMOS
+        if (cajeroVenta !== cajeroTurnoActual) {
+            ventasDeOtroCajero++;
+            return false; 
+        }
+
         if (item.id_sesion_caja) return item.id_sesion_caja === idSesion; 
         let esDeHoy = (item.fecha === fechaHoy && (item.sucursal || "Matriz") === sucTurno);
         if (!esDeHoy) return false;
@@ -10270,11 +10376,10 @@ window.cerrarTurnoActual = async function() {
         return true;
     };
 
-    if (typeof ventas !== 'undefined' && Array.isArray(ventas)) {
-        ventas.forEach(v => {
+    if (Array.isArray(ventasParaAuditoria)) {
+        ventasParaAuditoria.forEach(v => {
             if (!perteneceAlTurno(v) || v.anulada || v.cancelada) return;
             
-            // Evaluamos si fue pago mixto (dividido) o método único
             if (v.pagos && Array.isArray(v.pagos) && v.pagos.length > 0) {
                 v.pagos.forEach(p => {
                     let m = String(p.metodo || "").toLowerCase();
@@ -10293,11 +10398,15 @@ window.cerrarTurnoActual = async function() {
         });
     }
 
+    // 🕵️‍♂️ AVISO DE DIAGNÓSTICO (Solo si descargó tickets pero no mostró nada)
+    if (ventasParaAuditoria.length > 0 && totalTar === 0 && totalTrans === 0 && totalCred === 0) {
+        console.log(`Diagnóstico: Se descargaron ${ventasParaAuditoria.length} ventas de la nube. ${ventasDeOtroCajero} fueron ocultadas por pertenecer a otro cajero.`);
+    }
+
     // =======================================================================
     // 📝 3. CONSTRUCCIÓN DEL TICKET DE ARQUEO
     // =======================================================================
     
-    // Bloque 1: El Efectivo Intocable (Matemática Estricta)
     let detalleMatematico = `--- CORTE DE CAJA (EFECTIVO FÍSICO) ---\n\n`;
     detalleMatematico += `Fondo Inicial: $${fondo.toFixed(2)}\n`;
     detalleMatematico += `(+) Ventas en Efectivo: $${vEfe.toFixed(2)}\n`;
@@ -10307,10 +10416,8 @@ window.cerrarTurnoActual = async function() {
     detalleMatematico += `--------------------------------\n`;
     detalleMatematico += `(=) ESPERADO EN CAJÓN: $${efEsperado.toFixed(2)}\n\n`;
 
-    // Bloque 2: Auditoría Digital (Tarjetas, Transferencias y Crédito)
     detalleMatematico += `--- AUDITORÍA DE PAGOS DIGITALES Y CRÉDITO ---\n`;
     
-    // Desglose de Tarjetas
     if (totalTar > 0) {
         detalleMatematico += `\n💳 TARJETAS (Total: $${totalTar.toFixed(2)} | ${listaTar.length} cobros)\n`;
         listaTar.forEach(t => detalleMatematico += `   • $${t.monto.toFixed(2)} - Hora: ${t.hora} (Folio: ${t.folio})\n`);
@@ -10318,7 +10425,6 @@ window.cerrarTurnoActual = async function() {
         detalleMatematico += `\n💳 TARJETAS: Sin movimientos\n`;
     }
 
-    // Desglose de Transferencias
     if (totalTrans > 0) {
         detalleMatematico += `\n📲 TRANSFERENCIAS (Total: $${totalTrans.toFixed(2)} | ${listaTrans.length} cobros)\n`;
         listaTrans.forEach(t => detalleMatematico += `   • $${t.monto.toFixed(2)} - Hora: ${t.hora} (Folio: ${t.folio})\n`);
@@ -10326,7 +10432,6 @@ window.cerrarTurnoActual = async function() {
         detalleMatematico += `\n📲 TRANSFERENCIAS: Sin movimientos\n`;
     }
 
-    // Desglose de Créditos Fiados
     if (totalCred > 0) {
         detalleMatematico += `\n📝 CRÉDITOS OTORGADOS (Total: $${totalCred.toFixed(2)} | ${listaCred.length} fiados)\n`;
         listaCred.forEach(t => detalleMatematico += `   • $${t.monto.toFixed(2)} - Hora: ${t.hora} (Cliente: ${t.cliente})\n`);
@@ -10342,14 +10447,9 @@ window.cerrarTurnoActual = async function() {
         document.querySelectorAll('.arq-input').forEach(input => input.value = '');
         document.getElementById('arqueo_total_contado').innerText = "0.00";
         document.getElementById('modalArqueo').style.display = 'flex';
-        // 💾 Guardamos esto en la memoria para que el botón de "Cerrar Turno" lo pueda atrapar
-    window.auditoriaTurnoTemporal = {
-        tarjetas: totalTar,
-        transferencias: totalTrans,
-        creditos: totalCred,
-        reporte_texto: detalleMatematico
-    };
     }
+
+    window.auditoriaTurnoTemporal = { tarjetas: totalTar, transferencias: totalTrans, creditos: totalCred, reporte_texto: detalleMatematico };
 };
 window.refrescarAuditoriaCaja = async function() {
     let btn = document.getElementById('btn_refresh_arqueo');
@@ -10719,17 +10819,20 @@ window.aceptarTransferencia = async function() {
     let idSesionTurno = (window.sesionCajaActual ? window.sesionCajaActual.id : null);
     let hoy = typeof getFechaLocal === 'function' ? getFechaLocal() : new Date().toISOString().split('T')[0];
     let hora = new Date().toLocaleTimeString();
-    let sucMov = typeof sucursalActual !== 'undefined' ? sucursalActual : 'Matriz';
+    let sucMov = String(typeof sucursalActual !== 'undefined' ? sucursalActual : 'Matriz').replace(/📍/g, '').trim();
     let miNombre = typeof usuarioActual !== 'undefined' ? usuarioActual : 'Admin';
-    
-    // El ID interno de PocketBase (ej. vq2w8oe64fk0bjo)
     let idRegistroPB = t.id_pb || t.id; 
 
+    let idMov = Date.now();
     let nuevoMov = {
-        id: Date.now(), 
+        id: idMov, 
         id_sesion_caja: idSesionTurno, 
-        fecha: hoy, hora: hora, cajero: miNombre, 
-        sucursal: sucMov, tipo: "Ingreso", monto: monto,
+        fecha: hoy, 
+        hora: hora, 
+        cajero: miNombre, 
+        sucursal: sucMov, 
+        tipo: "Ingreso", 
+        monto: monto,
         motivo: `📥 TRASPASO RECIBIDO: de ${t.emisor}`
     };
 
@@ -10737,26 +10840,34 @@ window.aceptarTransferencia = async function() {
     window.movimientos.push(nuevoMov);
     try { localStorage.setItem("pos_movimientos_v1", JSON.stringify(window.movimientos)); } catch (e) {}
 
-    try {
-        // 1. Guardamos el movimiento de ingreso localmente en la nube
-        if (typeof db !== 'undefined' && db.collection) {
-            db.collection("movimientos").doc(String(nuevoMov.id)).set(nuevoMov).catch(e=>{});
-        }
+    // Inyección en el acumulador de caja (Entradas Extras)
+    if (typeof window.actualizarAcumuladorSesion === 'function') {
+        window.actualizarAcumuladorSesion('ingreso', monto);
+    }
 
-        // 2. 🌟 EL TRUCO PARA POCKETBASE: Leemos la columna "data" y la sobreescribimos
+    // Subida del movimiento a PocketBase
+    if (typeof pb !== 'undefined') {
+        (async () => {
+            try {
+                await pb.collection('movimientos').create({ doc_id: String(idMov), data: nuevoMov }, { requestKey: null });
+            } catch (e) {
+                console.warn("Error guardando movimiento de traspaso en PB:", e);
+            }
+        })();
+    } else if (typeof db !== 'undefined' && db.collection) {
+        db.collection("movimientos").doc(String(idMov)).set(nuevoMov).catch(e => {});
+    }
+
+    try {
+        // Actualizar estado de la transferencia en PocketBase
         let urlPB = `https://sexy-starling.pikapod.net/api/collections/transferencias/records/${idRegistroPB}`;
         let resGet = await fetch(urlPB, { cache: 'no-store' });
         
         if (resGet.ok) {
             let registroDb = await resGet.json();
-            
-            // Extraemos el bloque JSON (donde está escondido el estado)
             let datosJson = registroDb.data || {}; 
-            
-            // Lo cambiamos a aceptada
             datosJson.estado = "aceptada"; 
             
-            // Mandamos el JSON completo de vuelta a la columna 'data'
             await fetch(urlPB, {
                 method: "PATCH",
                 headers: { "Content-Type": "application/json" },
@@ -10764,18 +10875,16 @@ window.aceptarTransferencia = async function() {
             });
         }
 
-        // 3. Silenciamos el radar local de inmediato
         if (window.transferenciasVistas) {
             window.transferenciasVistas.add(idRegistroPB + "_aceptada");
             window.transferenciasVistas.add(idRegistroPB + "_pendiente"); 
         }
-
-    } catch(e) {
+    } catch (e) {
         console.error("Error al comunicarse con PocketBase:", e);
     }
 
-    // 4. Cerramos ventana y avisamos
-    document.getElementById('modalNotificacionTransferencia').style.display = 'none';
+    let modal = document.getElementById('modalNotificacionTransferencia');
+    if (modal) modal.style.display = 'none';
     window.transferenciaPendienteActual = null;
     
     if (typeof renderCorte === 'function') renderCorte();
