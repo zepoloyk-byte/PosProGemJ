@@ -320,7 +320,11 @@
 
 <button id="add" class="btn-final" style="background:var(--p); grid-column: span 3; margin-top:10px;" onclick="manualAddToList()">Añadir a Lista (Enter)</button>
             </div>
-            
+            <div style="display: flex; justify-content: flex-end; align-items: center; margin-bottom: 15px; padding: 10px; background: #f8f9fa; border-radius: 5px; border: 1px solid #ddd;">
+    <span style="margin-right: 10px; font-weight: bold; color: #333;">📉 Descuento general a proveedor (%):</span>
+    <input type="number" id="desc_masivo" style="width: 80px; padding: 5px; margin-right: 10px; text-align: center; border: 1px solid #ccc; border-radius: 4px;" placeholder="Ej. 10">
+    <button type="button" onclick="aplicarDescuentoMasivo()" style="background: #198754; color: white; border: none; padding: 6px 15px; border-radius: 4px; cursor: pointer; font-weight: bold; box-shadow: 0 2px 4px rgba(0,0,0,0.1);">Aplicar a todos</button>
+</div>
             <table class="tabla-pos">
                 <thead style="background:#f8f9fa;"><tr><th style="text-align:left; color:#666;">Producto</th><th style="text-align:left; color:#666;">Cantidad</th><th style="text-align:left; color:#666;">Costo Unit.</th><th style="text-align:left; color:#666;">Desc. %</th><th style="text-align:left; color:var(--p);">Precio Vta.</th><th style="text-align:left; color:#666;">Subtotal</th><th></th></tr></thead>
                 <tbody id="c_lista_tab"></tbody>
@@ -1631,7 +1635,7 @@
     
    
 </script>
-
+<script src="https://unpkg.com/dexie/dist/dexie.js"></script>
 <script src="app.js?v=46"></script>
 <!-- ================= MODAL DE ARQUEO DE CAJA ================= -->
 <div id="modalArqueo" class="modal" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.6); z-index: 9999; align-items: center; justify-content: center;">

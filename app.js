@@ -1,3 +1,11 @@
+// 💾 INICIALIZAR EL DISCO DURO LOCAL (IndexedDB)
+window.dbLocal = new Dexie("POS_Database");
+window.dbLocal.version(1).stores({
+    cortes: 'id, fecha, cajero, sucursal',
+    ventas: 'id, fecha, cajero, sucursal',
+    turnos: 'id_sesion, fecha_cierre, cajero, sucursal',
+    kardex: 'id, fecha, codigo, tipo, sucursal' // 👈 EL MONSTRUO FINAL AÑADIDO
+});
 // ====================================================================
 // === 1. CONEXIÓN A POCKETBASE EN LA NUBE ===
 // ====================================================================
@@ -608,38 +616,83 @@ db.collection("promociones").onSnapshot((querySnapshot) => {
 // ====================================================================
 
 // 1. EL RADAR (Sincronización segura)
+// 🕒 Conversor exacto de fechas y horas para el Kardex
+function obtenerMsKardex(reg) {
+    if (!reg) return 0;
+    if (reg.timestamp && !isNaN(reg.timestamp)) return Number(reg.timestamp);
+
+    let f = String(reg.fecha || '').trim();
+    let h = String(reg.hora || '').trim();
+    if (!f) return parseInt(reg.id, 10) || 0;
+
+    // Normalizar DD/MM/AAAA a AAAA-MM-DD
+    if (f.includes('/')) {
+        let partes = f.split('/');
+        if (partes.length === 3) {
+            if (partes[2].length === 4) f = `${partes[2]}-${partes[1].padStart(2, '0')}-${partes[0].padStart(2, '0')}`;
+            else if (partes[0].length === 4) f = `${partes[0]}-${partes[1].padStart(2, '0')}-${partes[2].padStart(2, '0')}`;
+        }
+    }
+
+    // Normalizar formato de hora (detecta a.m. / p.m. o formato 24h)
+    let esPM = /p\.?\s*m\.?/i.test(h);
+    let esAM = /a\.?\s*m\.?/i.test(h);
+    let match = h.match(/(\d{1,2}):(\d{1,2})(?::(\d{1,2}))?/);
+    let horaFinal = "00:00:00";
+
+    if (match) {
+        let hh = parseInt(match[1], 10);
+        let mm = match[2] || "00";
+        let ss = match[3] || "00";
+        if (esPM && hh < 12) hh += 12;
+        if (esAM && hh === 12) hh = 0;
+        horaFinal = `${String(hh).padStart(2, '0')}:${mm}:${ss}`;
+    }
+
+    let t = Date.parse(`${f}T${horaFinal}`);
+    return !isNaN(t) ? t : (parseInt(reg.id, 10) || 0);
+}
+
+// 1. EL RADAR (Sincronización segura)
 if (window.radarKardexActivo) {
     console.warn("⚠️ El radar de Kardex ya estaba activo. Evitando clonación.");
 } else {
     window.radarKardexActivo = true; 
-    
-    // Cargamos lo que haya en memoria rápido para no esperar al internet
-    window.historialKardex = JSON.parse(localStorage.getItem("pos_kardex_v1") || "[]");
+    window.historialKardex = [];
 
     if (typeof db !== 'undefined') {
-        db.collection("kardex").onSnapshot((querySnapshot) => {
+        db.collection("kardex").onSnapshot(async (querySnapshot) => {
             let tempKardex = [];
+            
             querySnapshot.forEach((doc) => { 
                 let data = typeof doc.data === 'function' ? doc.data() : doc;
+                data.id = data.id || doc.id || (Date.now() + "_" + Math.random());
                 tempKardex.push(data); 
             });
             
-            // Ordenamos para que lo más nuevo salga primero
-            tempKardex.sort((a, b) => b.timestamp - a.timestamp);
-            window.historialKardex = tempKardex;
+            // 🌟 Ordenamiento exacto por fecha y hora real (más reciente primero)
+            tempKardex.sort((a, b) => obtenerMsKardex(b) - obtenerMsKardex(a));
             
-            // Guardamos un respaldo en el disco duro (Máximo 1000 registros para no saturar)
-            try { localStorage.setItem("pos_kardex_v1", JSON.stringify(window.historialKardex.slice(0, 1000))); } catch(e){}
+            // 🛑 Conservamos los 200 más recientes (los de hoy y días cercanos)
+            let kardexReciente = tempKardex.slice(0, 200);
+            window.historialKardex = kardexReciente;
             
-            console.log("📊 Historial de Kardex sincronizado. Registros:", window.historialKardex.length);
+            // Guardado ligero en IndexedDB
+            if (window.dbLocal && dbLocal.kardex) {
+                dbLocal.kardex.bulkPut(kardexReciente).catch(err => console.warn("⚠️ Error guardando Kardex local:", err));
+            }
             
-            if (typeof window.renderKardex === 'function') {
-    window.renderKardex(); 
-}
+            console.log("📊 Historial de Kardex listo. Registros activos:", window.historialKardex.length);
+            
+            if (typeof window.filtrarKardex === 'function') {
+                window.filtrarKardex(); 
+            }
+        }, (error) => {
+            console.warn("⚠️ Error en radar Kardex:", error);
+            window.radarKardexActivo = false;
         });
     }
 }
-
 // ====================================================================
 // === FUNCIONES PRINCIPALES Y UTILIDADES ===
 // ====================================================================
@@ -1455,9 +1508,14 @@ function renderTablaInventario() {
             let pMaestro = esEspejo ? inv[x.grupo] : x;
             let codMaestro = esEspejo ? x.grupo : k;
 
-            // Obligamos a que calcule el stock y faltantes usando al Maestro
+           // Obligamos a que calcule el stock y faltantes usando al Maestro
             let st = getVirtualStock(pMaestro); 
             let fal = (pMaestro.sold_without_stock && pMaestro.sold_without_stock[sucursalActual]) || 0; 
+            
+            // ✂️ REDONDEO PERFECTO A 3 DECIMALES (Elimina ceros fantasma)
+            st = Number(parseFloat(st).toFixed(3));
+            fal = Number(parseFloat(fal).toFixed(3));
+
             let precioUnidad = parseFloat(pMaestro.pv) || 0;
             
             // 🎨 DISEÑO DIFERENCIADO PARA EL NOMBRE
@@ -2455,8 +2513,6 @@ window.confirmarVenta = async function(cambioFinal = 0) {
                 stockAntes = obtenerStockRealSucursal(pOriginal, suc);
             }
 
-            // 🚀 SOLUCIÓN AL DOBLE DESCUENTO: 
-            // Eliminamos `descontarStock` y empacamos lo que se debe restar de forma segura
             let itemsParaDescontar = [];
             if (pOriginal.tipo === 'kit' && pOriginal.comp) {
                 pOriginal.comp.forEach(c => {
@@ -2679,7 +2735,7 @@ window.confirmarVenta = async function(cambioFinal = 0) {
         let nuevaVenta = { 
             id: idVentaNueva, 
             doc_id: String(idVentaNueva), 
-            id_sesion_caja: idSesionTurno, // 🌟 Vínculo directo con la sesión activa
+            id_sesion_caja: idSesionTurno,
             fecha: hoy, 
             hora: horaVenta, 
             cajero: usr, 
@@ -2692,14 +2748,25 @@ window.confirmarVenta = async function(cambioFinal = 0) {
             cambio: cambioReal,    
             items: carV.map(x => x.nom || '').join(','), 
             detalles: detallesParaGuardar, 
-            anulada: false 
+            anulada: false,
+            sync_pendiente: true // 👈 Agregado aquí 
         };
 
-        if (typeof ventas === 'undefined') window.ventas = [];
+        // 🛡️ BLINDAJE ABSOLUTO: Si la lista desapareció, la recrea antes de fallar
+        window.ventas = window.ventas || (typeof ventas !== 'undefined' && Array.isArray(ventas) ? ventas : []);
         window.ventas.push(nuevaVenta);
-        try { localStorage.setItem("pos_ventas_v6", JSON.stringify(window.ventas.slice(-200))); } catch(e) {}
+        
+        // ❌ ADIÓS LOCALSTORAGE (Liberamos la memoria de Chrome)
+        // try { localStorage.setItem("pos_ventas_v6", JSON.stringify(window.ventas.slice(-200))); } catch(e) {}
 
-        // 🚀 GUARDADO DE LA VENTA EN NUBE (Con diagnóstico exacto de error)
+        // ✅ HOLA INDEXEDDB (Guardado local seguro en disco duro)
+        if (window.dbLocal) {
+            dbLocal.ventas.put(nuevaVenta)
+                .then(() => console.log("💾 Venta guardada localmente en IndexedDB."))
+                .catch(err => console.error("Error al guardar venta en disco duro:", err));
+        }
+
+        // 🚀 GUARDADO DE LA VENTA EN NUBE (El Presente Intacto)
         if (typeof pb !== 'undefined') {
             try {
                 let ventaNube = { 
@@ -2708,14 +2775,26 @@ window.confirmarVenta = async function(cambioFinal = 0) {
                 };
                 let respPB = await pb.collection("ventas").create(ventaNube, { requestKey: null });
                 console.log("✅ Venta subida con éxito a PocketBase:", respPB.id);
+
+                // 🟢 AQUÍ: Como subió a la nube, le quitamos la bandera de pendiente
+                nuevaVenta.sync_pendiente = false;
+                if (window.dbLocal && dbLocal.ventas) {
+                    await dbLocal.ventas.put(nuevaVenta);
+                }
+
             } catch (errPB) {
-                console.error("❌ ERROR AL CREAR VENTA EN POCKETBASE:", errPB);
+                console.warn("⚠️ No se pudo subir a PocketBase (¿sin internet?). Queda guardada para el Sincronizador Fantasma.");
                 if (errPB.data) {
-                    console.error("Detalle del error del servidor:", JSON.stringify(errPB.data));
+                    console.error("Detalle del servidor:", JSON.stringify(errPB.data));
                 }
             }
         } else if (typeof db !== 'undefined') { 
-            db.collection("ventas").doc(String(idVentaNueva)).set(nuevaVenta).catch(e => console.warn("Venta a FB offline.")); 
+            db.collection("ventas").doc(String(idVentaNueva)).set(nuevaVenta)
+                .then(async () => {
+                    nuevaVenta.sync_pendiente = false;
+                    if (window.dbLocal && dbLocal.ventas) await dbLocal.ventas.put(nuevaVenta);
+                })
+                .catch(e => console.warn("Venta a FB offline.")); 
         }
         
         carV = []; nombreVentaActual = ""; 
@@ -3344,6 +3423,38 @@ function handleCompraScan(e) {
                     </div>
                 `;
                 alertPromo.style.display = 'block';
+
+                // =========================================================================
+                // ✨ ACTUALIZADOR EN VIVO (AGREGADO SEGURO - SIN RALENTIZAR EL SISTEMA)
+                // =========================================================================
+                if (promoActiva.tipo === 'desc') {
+                    // Atrapamos el <span> original que tu propio código inyectó arriba (sin cambiarle IDs)
+                    let spanDinamico = alertPromo.querySelector('span'); 
+                    
+                    let recalcularPromo = function() {
+                        // Esperamos 50 milisegundos para que tu calculadora haga lo suyo primero
+                        setTimeout(() => { 
+                            let cajaPV = document.getElementById('e_pv');
+                            if (cajaPV && spanDinamico) {
+                                let precioBaseVivo = parseFloat(cajaPV.value) || 0;
+                                let pPromoVivo = precioBaseVivo * (1 - (parseFloat(promoActiva.desc) / 100));
+                                spanDinamico.innerHTML = `🎁 <b>¡TIENE PROMOCIÓN!</b> Descuento del <b>${promoActiva.desc}%</b>. Precio al público con promo: <b style="font-size:16px; color:#8b6508;">$${pPromoVivo.toFixed(2)}</b>`;
+                            }
+                        }, 50);
+                    };
+
+                    // Le ponemos escuchadores directos a las 4 casillas clave (solo trabajan cuando tecleas)
+                    ['e_pv', 'e_cos', 'e_gan', 'e_iva'].forEach(id => {
+                        let caja = document.getElementById(id);
+                        if (caja) {
+                            // Borramos eventos viejos para que no se acumulen y saturen la memoria
+                            if (caja.oninput_promo) caja.removeEventListener('input', caja.oninput_promo);
+                            caja.oninput_promo = recalcularPromo;
+                            caja.addEventListener('input', recalcularPromo);
+                        }
+                    });
+                }
+                // =========================================================================
             }
 
             // Continuamos llenando las cajas normalmente...
@@ -5769,7 +5880,7 @@ async function abrirVisorTickets() {
 let ultimaFechaVisor = "";
 
 async function filtrarVisorTickets() {
-    console.log("🔎 ===== INICIO FILTRO VISOR =====");
+    console.log("🔎 ===== INICIO FILTRO VISOR (AHORA CON INDEXEDDB) =====");
 
     let searchInput = document.getElementById('visor_search');
     let dateInput = document.getElementById('visor_date');
@@ -5779,7 +5890,7 @@ async function filtrarVisorTickets() {
     let terms = txt ? txt.split(/\s+/) : [];
 
     // =====================================================
-    // DESCARGAR DÍA DESDE LA NUBE
+    // 1. DESCARGAR DÍA DESDE LA NUBE (El Presente)
     // =====================================================
     if (selectedDate !== '' && typeof pb !== 'undefined') {
         if (selectedDate !== ultimaFechaVisor) {
@@ -5793,19 +5904,19 @@ async function filtrarVisorTickets() {
                     requestKey: null
                 });
 
+                if (typeof ventas === 'undefined') window.ventas = []; // 🛡️ Blindaje extra
+                
                 records.forEach(r => {
-                    // 🛡️ Mapeo blindado para evitar tickets corruptos
                     let ticketNube = {
                         ...(r.data || r),
                         id: r.doc_id || r.id || (r.data && r.data.id)
                     };
 
-                    // 🛡️ Si el ticket no tiene ID, lo descartamos (evita el "undefined")
                     if (!ticketNube || !ticketNube.id) return;
 
-                    let existe = ventas.some(v => String(v.id) === String(ticketNube.id));
+                    let existe = window.ventas.some(v => String(v.id) === String(ticketNube.id));
                     if (!existe) {
-                        ventas.push(ticketNube);
+                        window.ventas.push(ticketNube);
                     }
                 });
             } catch (e) {
@@ -5815,18 +5926,42 @@ async function filtrarVisorTickets() {
     }
 
     // =====================================================
-    // UNIFICAR TODAS LAS FUENTES Y ELIMINAR DUPLICADOS
+    // 2. EXTRAER VENTAS DEL DISCO DURO (El Pasado Local)
+    // =====================================================
+    let ventasLocales = [];
+    if (window.dbLocal) {
+        try {
+            ventasLocales = await dbLocal.ventas.toArray();
+        } catch(e) {
+            console.warn("⚠️ No se pudo leer el disco duro local (IndexedDB):", e);
+        }
+    }
+
+    // =====================================================
+    // 3. UNIFICAR TODAS LAS FUENTES Y ELIMINAR DUPLICADOS
     // =====================================================
     let todasLasVentas = [];
     let idsVistos = new Set(); // 🛡️ Doble candado anti-duplicados
 
-    ventas.forEach(v => {
+    // A) Memoria temporal de la sesión (Chrome)
+    if (typeof ventas !== 'undefined' && Array.isArray(ventas)) {
+        ventas.forEach(v => {
+            if (v && v.id && !idsVistos.has(String(v.id))) {
+                idsVistos.add(String(v.id));
+                todasLasVentas.push(v);
+            }
+        });
+    }
+
+    // B) Disco duro local (IndexedDB)
+    ventasLocales.forEach(v => {
         if (v && v.id && !idsVistos.has(String(v.id))) {
             idsVistos.add(String(v.id));
             todasLasVentas.push(v);
         }
     });
 
+    // C) Histórico temporal
     if (window.ventasHistoricasTemporales && Array.isArray(window.ventasHistoricasTemporales)) {
         window.ventasHistoricasTemporales.forEach(t => {
             if (t && t.id && !idsVistos.has(String(t.id))) {
@@ -5837,7 +5972,7 @@ async function filtrarVisorTickets() {
     }
 
     // =====================================================
-    // FILTRO DE SUCURSAL Y FECHA
+    // 4. FILTRO DE SUCURSAL Y FECHA
     // =====================================================
     const limpiarSucursal = valor => String(valor || "").replace(/📍/g, "").trim().toLowerCase();
     const sucursalFiltro = limpiarSucursal(typeof sucursalActual !== "undefined" ? sucursalActual : "");
@@ -5855,12 +5990,11 @@ async function filtrarVisorTickets() {
     }
 
     // =====================================================
-    // FILTRO DE BÚSQUEDA (CON CAJERO Y CRÉDITOS RESTAURADOS)
+    // 5. FILTRO DE BÚSQUEDA (Texto, cliente, productos)
     // =====================================================
     if (terms.length > 0) {
         resultado = resultado.filter(v => {
             
-            // Rescate del nombre del cliente
             let clientStr = v.cliente || v.nom || 'Público';
             if (clientStr === 'Público' || clientStr === 'Público General') {
                 if (v.cliente_tel && typeof clientes !== 'undefined' && clientes[v.cliente_tel]) {
@@ -5880,7 +6014,6 @@ async function filtrarVisorTickets() {
                 productosStr = v.items;
             }
 
-            // 🌟 AQUI ESTA LA CORRECCIÓN: Le devolvimos la hora y el cajero al buscador
             let textoBuscable = `
                 ${v.id || ''}
                 ${v.fecha || ''}
@@ -5896,7 +6029,7 @@ async function filtrarVisorTickets() {
     }
 
     // =====================================================
-    // ASIGNAR UNA SOLA VEZ E INYECTAR NOMBRE PARA EL TICKET
+    // 6. ASIGNAR UNA SOLA VEZ E INYECTAR NOMBRE PARA EL TICKET
     // =====================================================
     visorIndices = resultado.map((v, idx) => {
         let nombreRecuperado = v.cliente || v.nom;
@@ -5921,7 +6054,7 @@ async function filtrarVisorTickets() {
     });
 
     // =====================================================
-    // RENDER
+    // 7. RENDER FINAL
     // =====================================================
     if (visorIndices.length === 0) {
         let counter = document.getElementById('visor_counter'); if(counter) counter.innerText = "0 / 0";
@@ -5930,7 +6063,7 @@ async function filtrarVisorTickets() {
         let vTotal = document.getElementById('visor_total'); if(vTotal) vTotal.innerText = "0.00";
         let btnAnular = document.getElementById('btn_anular_visor'); if(btnAnular) btnAnular.disabled = true;
     } else {
-        currentVisorPos = visorIndices.length - 1;
+        currentVisorPos = visorIndices.length - 1; // Muestra el ticket más reciente
         if(typeof renderVisorActivo === 'function') renderVisorActivo();
     }
 }
@@ -6027,7 +6160,7 @@ window.anularVentaVisor = async function() {
     let vReal = ventas.find(v => String(v.id) === String(vVisor.id)) || vVisor;
     if (vReal.anulada) { alert("⚠️ Esta venta ya está anulada."); return; }
 
-    if (!confirm("¿Anular esta venta?\n\nSe devolverá el stock al sistema y se ajustarán las gráficas.")) { return; }
+    if (!confirm("¿Anular esta venta?\n\nSe devolverá el stock, se ajustará el dinero en caja y se descontará la deuda del cliente (si aplica).")) { return; }
 
     console.log("🔴 ANULANDO VENTA:", vReal);
 
@@ -6099,45 +6232,65 @@ window.anularVentaVisor = async function() {
     try { localStorage.setItem("pos_precision_v6", JSON.stringify(inv)); } catch (e) {}
 
     // =====================================================
-    // 3. AJUSTE DE CRÉDITO Y RESTO DE LA ANULACIÓN
+    // 3. CAZADOR EXACTO DE CRÉDITO Y AJUSTE DE SALDO
     // =====================================================
-    let met = String(vReal.metodo || "").toLowerCase();
-    let esCredito = vReal.es_credito || met.includes("cr");
-    let idCliente = vReal.cliente_tel || vReal.cliente || vReal.cli || vReal.nom_cliente || "";
+    let montoCreditoExacto = 0;
+    let idCliente = String(vReal.cliente_tel || vReal.cliente || vReal.cli || vReal.nom_cliente || vReal.nom || "").trim();
 
-    if (esCredito && idCliente && typeof clientes !== "undefined") {
-        let claveCliente = clientes[idCliente] ? idCliente : Object.keys(clientes).find(k => k === idCliente || clientes[k].nom === idCliente || clientes[k].tel === idCliente);
+    if (vReal.pagos && vReal.pagos.length > 0) {
+        vReal.pagos.forEach(p => {
+            let m = String(p.metodo || "").toLowerCase();
+            if (m.includes("crédito") || m.includes("credito")) {
+                montoCreditoExacto += (parseFloat(p.montoAplicado) || 0);
+            }
+        });
+    } else {
+        let met = String(vReal.metodo || "").toLowerCase();
+        if (met.includes("crédito") || met.includes("credito")) {
+            montoCreditoExacto = parseFloat(vReal.total) || 0;
+        }
+    }
+
+    if (montoCreditoExacto > 0 && idCliente && typeof clientes !== "undefined") {
+        let claveCliente = clientes[idCliente] ? idCliente : Object.keys(clientes).find(k => k === idCliente || String(clientes[k].nom).trim() === idCliente || String(clientes[k].tel).trim() === idCliente);
+        
         if (claveCliente && clientes[claveCliente]) {
-            let dineroARestar = parseFloat(vReal.monto_credito) || parseFloat(vReal.total) || 0;
-            let saldoActual = parseFloat(clientes[claveCliente].saldo) || 0;
-            clientes[claveCliente].saldo = parseFloat(Math.max(0, saldoActual - dineroARestar).toFixed(2));
+            let c = clientes[claveCliente];
+            let saldoActual = parseFloat(c.saldo) || 0;
+            c.saldo = parseFloat(Math.max(0, saldoActual - montoCreditoExacto).toFixed(2));
 
-            if (!Array.isArray(clientes[claveCliente].historial)) clientes[claveCliente].historial = [];
-            clientes[claveCliente].historial.push({
+            let nuevoHistorial = {
                 id_venta: vReal.id,
                 fecha: typeof getFechaLocal === "function" ? getFechaLocal() : new Date().toISOString().split("T")[0],
                 hora: new Date().toLocaleTimeString(),
-                tipo: "Anulación",
-                monto: -dineroARestar,
-                detalle: `Anulación Ticket #${vReal.id}`
-            });
+                tipo: "Abono (Anulación de Compra)",
+                monto: montoCreditoExacto,
+                detalle: `Cancelación Ticket #${vReal.id}`
+            };
+
+            if (!Array.isArray(c.historial)) c.historial = [];
+            c.historial.push(nuevoHistorial);
 
             try { localStorage.setItem("pos_clientes_v1", JSON.stringify(clientes)); } catch (e) {}
             
-            // 🌟 BLINDAJE PB / FB CLIENTES EN SEGUNDO PLANO ⚡
+            // 🌟 BLINDAJE PB: Subimos tanto el saldo como el historial
             if (typeof pb !== "undefined") {
                 (async () => {
                     try {
                         let clNube = await pb.collection("clientes").getFirstListItem(`doc_id="${claveCliente}"`);
-                        if (clNube.data) {
-                            clNube.data.saldo = (parseFloat(clNube.data.saldo) || 0) - dineroARestar;
+                        if (clNube && clNube.data) {
+                            clNube.data.saldo = c.saldo;
+                            if (!Array.isArray(clNube.data.historial)) clNube.data.historial = [];
+                            clNube.data.historial.push(nuevoHistorial);
                             await pb.collection("clientes").update(clNube.id, clNube);
                         }
                     } catch(e) { console.warn("Error restando deuda cliente PB", e); }
                 })();
             } else if (typeof db !== "undefined") {
-                db.collection("clientes").doc(String(claveCliente)).set(clientes[claveCliente]).catch(e => {});
+                db.collection("clientes").doc(String(claveCliente)).set(c).catch(e => {});
             }
+        } else {
+            console.warn("⚠️ No se encontró la cuenta exacta del cliente para descontar la deuda.");
         }
     }
 
@@ -6149,7 +6302,6 @@ window.anularVentaVisor = async function() {
     let indiceVenta = ventas.findIndex(v => String(v.id) === String(vReal.id));
     if (indiceVenta !== -1) ventas[indiceVenta].anulada = true;
 
-    // 🚀 ACTUALIZAMOS LA VENTA EN LA NUBE EN SEGUNDO PLANO ⚡
     if (typeof pb !== "undefined") {
         (async () => {
             try {
@@ -6172,20 +6324,54 @@ window.anularVentaVisor = async function() {
     }
 
     try { localStorage.setItem("pos_ventas_v6", JSON.stringify(ventas)); } catch (e) {}
-    // --- INYECCIÓN ACUMULADOR (Anulación) ---
+    
+    // --- INYECCIÓN ACUMULADOR DE CAJA (Devoluciones Físicas y Penalización 5% Tarjeta) ---
     let efectivoADescontar = 0;
-    if (vReal.pagos && vReal.pagos.length > 0) {
-        vReal.pagos.forEach(p => {
-            if(p.metodo && p.metodo.toLowerCase().includes('efectivo')) efectivoADescontar += (parseFloat(p.montoAplicado) || 0);
-        });
-    } else if (vReal.metodo && vReal.metodo.toLowerCase().includes('efectivo')) {
-        efectivoADescontar = vReal.total;
-    }
-    if (efectivoADescontar > 0 && typeof window.actualizarAcumuladorSesion === 'function') {
-        window.actualizarAcumuladorSesion('anulacion_venta', efectivoADescontar);
+    let creditoADescontar = 0;
+    let incluyoTarjeta = false;
+
+    if (typeof window.actualizarAcumuladorSesion === 'function') {
+        if (vReal.pagos && vReal.pagos.length > 0) {
+            vReal.pagos.forEach(p => {
+                let m = String(p.metodo || "").toLowerCase();
+                let amt = parseFloat(p.montoAplicado) || 0;
+                
+                if (m.includes('crédito') || m.includes('credito')) {
+                    creditoADescontar += amt;
+                } else if (m.includes('tarjeta')) {
+                    incluyoTarjeta = true;
+                    efectivoADescontar += (amt * 0.95); // Resta el 5% de comisión
+                } else {
+                    efectivoADescontar += amt; // Efectivo y Transferencia pasan íntegros
+                }
+            });
+        } else {
+            let m = String(vReal.metodo || "").toLowerCase();
+            let tot = parseFloat(vReal.total) || 0;
+            
+            if (m.includes('crédito') || m.includes('credito')) {
+                creditoADescontar += tot;
+            } else if (m.includes('tarjeta')) {
+                incluyoTarjeta = true;
+                efectivoADescontar += (tot * 0.95); // Resta el 5% de comisión
+            } else {
+                efectivoADescontar += tot; // Efectivo y Transferencia pasan íntegros
+            }
+        }
+
+        if (efectivoADescontar > 0) window.actualizarAcumuladorSesion('anulacion_venta_efectivo', efectivoADescontar);
+        if (creditoADescontar > 0) window.actualizarAcumuladorSesion('anulacion_credito', creditoADescontar);
     }
     // ----------------------------------------
-    alert("✅ Venta anulada correctamente.\n\n📦 El stock fue devuelto al inventario.");
+    
+    let mensajeFinal = "✅ Venta anulada correctamente.\n\n📦 El stock fue devuelto y los saldos fueron ajustados.";
+    if (efectivoADescontar > 0) {
+        mensajeFinal += `\n\n💵 ENTREGAR EN EFECTIVO AL CLIENTE: $${efectivoADescontar.toFixed(2)}`;
+        if (incluyoTarjeta) {
+            mensajeFinal += `\n(Se aplicó retención del 5% por comisión bancaria de tarjeta).`;
+        }
+    }
+    alert(mensajeFinal);
 
     if (typeof renderVisorActivo === "function") renderVisorActivo();
     if (typeof renderCorte === "function") renderCorte();
@@ -6990,11 +7176,12 @@ window.registrarEnKardex = function(productoCod, productoNom, tipoMov, cantidad,
 // =========================================================================
 // 📊 RENDERIZADO PASIVO DEL KARDEX (NO ALTERA PESTAÑAS)
 // =========================================================================
-window.renderKardex = function() {
-    try {
-        // ❌ ELIMINAMOS cualquier instrucción de "display = 'block'" o "display = 'none'" aquí.
-        // Esa responsabilidad ahora es 100% exclusiva de changeTab().
+// 1. INICIALIZAR LA MEMORIA TEMPORAL DEL KARDEX
+// Inicia completamente limpio al abrir la página para no saturar Chrome
+window.historialKardex = []; 
 
+window.renderKardex = async function() {
+    try {
         // 1. Poblar selector de sucursales (solo si está vacío)
         let selectSuc = document.getElementById('kardex_sucursal');
         let sucursalesSeguras = (typeof listaSucursales !== 'undefined' && Array.isArray(listaSucursales)) 
@@ -7006,7 +7193,25 @@ window.renderKardex = function() {
                 sucursalesSeguras.map(s => `<option value="${s}">📍 ${s}</option>`).join('');
         }
 
-        // 2. Dibujar y filtrar los datos (silenciosamente en segundo plano)
+        // 2. Solo lee de IndexedDB si la memoria está vacía (evita el lag de releer miles de filas)
+        if (!window.historialKardex || window.historialKardex.length === 0) {
+            let tbody = document.getElementById('kardex_tabla_body');
+            if (tbody) {
+                tbody.innerHTML = '<tr><td colspan="10" style="text-align:center; padding:20px; color:#0d6efd;">⏳ Leyendo historial desde el disco...</td></tr>';
+            }
+
+            if (window.dbLocal && dbLocal.kardex) {
+                let kardexLocal = await dbLocal.kardex.toArray();
+                kardexLocal.sort((a, b) => {
+                    let tB = b.timestamp || parseInt(b.id, 10) || 0;
+                    let tA = a.timestamp || parseInt(a.id, 10) || 0;
+                    return tB - tA;
+                });
+                window.historialKardex = kardexLocal;
+            }
+        }
+
+        // 3. Filtrar y pintar en pantalla
         if (typeof window.filtrarKardex === 'function') {
             window.filtrarKardex();
         }
@@ -7015,19 +7220,6 @@ window.renderKardex = function() {
         console.error("❌ Error en renderKardex:", error);
     }
 };
-// 1. INICIALIZAR LA MEMORIA DEL KARDEX AL CARGAR LA PÁGINA
-try {
-    let kardexGuardado = localStorage.getItem("pos_kardex_v1");
-    if (kardexGuardado) {
-        window.historialKardex = JSON.parse(kardexGuardado);
-    } else {
-        window.historialKardex = [];
-    }
-} catch(e) { 
-    window.historialKardex = []; 
-}
-
-
 // =========================================================================
 // 🕒 MOTOR DE NORMALIZACIÓN Y PARSEO CRONOLÓGICO DE KARDEX
 // =========================================================================
@@ -7122,7 +7314,13 @@ window.filtrarKardex = function() {
         });
 
         // 🌟 ORDENAMIENTO CRONOLÓGICO: Más reciente primero (Descendente)
-        filtrados.sort((a, b) => parsearFechaHoraKardex(b) - parsearFechaHoraKardex(a));
+      // 🌟 ORDENAMIENTO CRONOLÓGICO SEGURO: Si no existe el helper, usa el ID o timestamp
+        filtrados.sort((a, b) => {
+            if (typeof parsearFechaHoraKardex === 'function') {
+                return parsearFechaHoraKardex(b) - parsearFechaHoraKardex(a);
+            }
+            return (Number(b.id) || b.timestamp || 0) - (Number(a.id) || a.timestamp || 0);
+        });
 
         let html = '';
         
@@ -8084,7 +8282,7 @@ window.guardarCorteCaja = function() {
     let idCorte = Date.now();
     let objetoCorte = {
         id: idCorte, 
-        doc_id: String(idCorte), // Obligatorio para PocketBase
+        doc_id: String(idCorte), 
         fecha: getFechaLocal(), 
         hora: new Date().toLocaleTimeString(), 
         cajero: currentCorteData.cajeroCorte,
@@ -8101,9 +8299,18 @@ window.guardarCorteCaja = function() {
     
     if (typeof historialCortesZ === 'undefined') window.historialCortesZ = [];
     historialCortesZ.push(objetoCorte);
-    localStorage.setItem("pos_cortes_z_v1", JSON.stringify(historialCortesZ));
+    
+    // ❌ ADIÓS LOCALSTORAGE (Ya no saturamos la memoria de Chrome)
+    // localStorage.setItem("pos_cortes_z_v1", JSON.stringify(historialCortesZ));
 
-    // ☁️ ¡LA MAGIA! Guardamos los Totales Independientes en PocketBase
+    // ✅ HOLA INDEXEDDB (Se guarda en el disco duro infinito)
+    if (window.dbLocal) {
+        dbLocal.cortes.put(objetoCorte)
+            .then(() => console.log("💾 Corte guardado localmente en disco duro (IndexedDB)."))
+            .catch(err => console.error("Error al guardar en disco duro:", err));
+    }
+
+    // ☁️ EL PRESENTE EN LA NUBE (Intacto)
     if (typeof db !== 'undefined') {
         db.collection("cortes_z").doc(String(idCorte)).set(objetoCorte)
         .then(() => console.log("☁️ Totales del Corte guardados exitosamente en la nube."))
@@ -10517,21 +10724,36 @@ window.confirmarCierreArqueo = async function() {
     let msj = `Resumen Final del Turno:\n\nEsperado en Sistema: $${esperado.toFixed(2)}\nFísico en Cajón: $${contado.toFixed(2)}\nDiferencia: $${diferencia.toFixed(2)}\n\n¿Estás seguro de finalizar y guardar este turno?`;
     if (!confirm(msj)) return;
 
-    let ahora = new Date().toISOString();
+    let fechaObj = new Date();
+    let ahoraISO = fechaObj.toISOString();
+    let fechaLocal = (typeof getFechaLocal === 'function') ? getFechaLocal() : fechaObj.toISOString().split('T')[0];
+    let horaLocal = fechaObj.toLocaleTimeString();
     
     // Extraemos los datos digitales que preparamos en la pantalla anterior
     let auditoria = window.auditoriaTurnoTemporal || { tarjetas: 0, transferencias: 0, creditos: 0, reporte_texto: "" };
+
+    // 👇 CREAMOS EL OBJETO PARA GUARDAR EN EL DISCO DURO LOCAL 👇
+    let turnoCerrado = {
+        id_sesion: window.sesionCajaActual.id || Date.now(),
+        fecha_cierre: fechaLocal,
+        hora_cierre: horaLocal,
+        cajero: window.sesionCajaActual.cajero || (typeof usuarioActual !== 'undefined' ? usuarioActual : 'Cajero'),
+        sucursal: window.sesionCajaActual.sucursal || (typeof sucursalActual !== 'undefined' ? sucursalActual : 'Matriz'),
+        efectivo_esperado: esperado,
+        efectivo_contado: contado,
+        diferencia_caja: diferencia,
+        detalle_operaciones: auditoria.reporte_texto
+    };
 
     // 🌟 4. ACTUALIZAMOS POCKETBASE EN TIEMPO REAL ('cajas_sesiones')
     try {
         if (window.sesionCajaActual && window.sesionCajaActual.id && typeof pb !== 'undefined') {
             await pb.collection('cajas_sesiones').update(window.sesionCajaActual.id, {
                 estado: 'cerrada',
-                fecha_cierre: ahora,
+                fecha_cierre: ahoraISO,
                 efectivo_esperado: esperado,
                 efectivo_contado: contado,
                 diferencia_caja: diferencia,
-                // 👇 NUEVOS CAMPOS QUE SE GUARDAN EN LA NUBE 👇
                 total_tarjetas: auditoria.tarjetas,
                 total_transferencias: auditoria.transferencias,
                 total_creditos: auditoria.creditos,
@@ -10542,6 +10764,13 @@ window.confirmarCierreArqueo = async function() {
         console.error("Error al actualizar el cierre en PocketBase:", err);
     }
 
+    // ✅ 4.5 GUARDAMOS EL TURNO EN INDEXEDDB (Para que no gaste caché y sea eterno)
+    if (window.dbLocal && dbLocal.turnos) {
+        dbLocal.turnos.put(turnoCerrado)
+            .then(() => console.log("💾 Turno guardado localmente en IndexedDB."))
+            .catch(err => console.error("Error al guardar turno en disco duro:", err));
+    }
+
     // 5. CERRAR OFICIALMENTE LA SESIÓN EN MEMORIA Y DISCO LOCAL
     window.sesionCajaActual = null;
     window.efectivoEsperadoTemporal = 0;
@@ -10550,14 +10779,14 @@ window.confirmarCierreArqueo = async function() {
     localStorage.removeItem("pos_sesion_activa");
     localStorage.removeItem("pos_sesion_caja");
 
-    // 🧹 ESCOBA DIGITAL: Limpiamos la basura del turno cerrado
+    // 🧹 ESCOBA DIGITAL: Limpiamos la basura del turno cerrado de la memoria RAM
     window.movimientos = [];
     if (typeof ventas !== 'undefined') window.ventas = [];
     if (typeof compras !== 'undefined') window.compras = [];
 
     try {
         localStorage.removeItem("pos_movimientos_v1");
-        localStorage.removeItem("pos_ventas_v1");
+        localStorage.removeItem("pos_ventas_v1"); // Por si quedó algún rastro viejo
         localStorage.removeItem("pos_compras_v1");
     } catch(e) {
         console.warn("No se pudo limpiar la memoria local.");
@@ -10569,8 +10798,11 @@ window.confirmarCierreArqueo = async function() {
     
     if (typeof window.actualizarIndicadorTurnoUI === 'function') window.actualizarIndicadorTurnoUI();
     if (typeof renderCorte === 'function') renderCorte();
+    
+    // Disparamos la actualización visual para ver el turno en la tabla de inmediato
+    if (typeof window.renderHistorialTurnos === 'function') window.renderHistorialTurnos();
 
-    alert("✅ Turno cerrado exitosamente. El reporte completo se ha guardado en la nube.");
+    alert("✅ Turno cerrado exitosamente. El reporte completo se ha guardado en la Nube y en tu Historial Local.");
 };
 // 🌟 VERIFICADOR AUTOMÁTICO DE TURNO AL ENTRAR AL SISTEMA
 window.verificarOAbrirTurnoAlLogin = async function() {
@@ -10604,16 +10836,32 @@ window.verificarOAbrirTurnoAlLogin = async function() {
 // 📊 MÓDULO DE HISTORIAL Y ANÁLISIS DE TURNOS CERRADOS
 // ====================================================================
 
-window.renderHistorialTurnos = function() {
+window.renderHistorialTurnos = async function() {
     let tbody = document.getElementById('r_lista_turnos_cerrados');
     if (!tbody) return;
     
-    // Cargar historial de la memoria si está vacío
-    if (typeof historialTurnos === 'undefined') {
-        try {
-            window.historialTurnos = JSON.parse(localStorage.getItem('pos_turnos_v1')) || [];
-        } catch(e) { window.historialTurnos = []; }
+    // Mensaje de carga mientras lee el disco duro
+    tbody.innerHTML = '<tr><td colspan="7" style="text-align:center; padding:15px; color:#0d6efd;">⏳ Cargando historial desde el disco duro...</td></tr>';
+    
+    // 1. Rescatamos los turnos viejos del LocalStorage
+    let turnosViejos = [];
+    try {
+        turnosViejos = JSON.parse(localStorage.getItem('pos_turnos_v1')) || [];
+    } catch(e) {}
+    
+    // 2. Extraemos los turnos nuevos del disco duro (IndexedDB)
+    let turnosNuevos = [];
+    if (window.dbLocal && dbLocal.turnos) {
+        try { turnosNuevos = await dbLocal.turnos.toArray(); } catch(e) { console.warn("Error leyendo turnos DB", e); }
     }
+    
+    // 3. Juntamos todo sin duplicados
+    let mapaTurnos = {};
+    turnosViejos.forEach(t => mapaTurnos[t.id_sesion] = t);
+    turnosNuevos.forEach(t => mapaTurnos[t.id_sesion] = t);
+    
+    // Ordenamos por ID de sesión (del más viejo al más nuevo)
+    window.historialTurnos = Object.values(mapaTurnos).sort((a, b) => Number(a.id_sesion) - Number(b.id_sesion));
     
     tbody.innerHTML = '';
     
@@ -10648,7 +10896,6 @@ window.renderHistorialTurnos = function() {
         tbody.appendChild(tr);
     });
 };
-
 window.verDetalleTurnoHistorial = function(index) {
     let t = window.historialTurnos[index];
     if (!t) return;
@@ -11062,5 +11309,105 @@ document.addEventListener("visibilitychange", function() {
     } else {
         // Cuando la pantalla se apaga, guardamos la hora exacta
         tiempoUltimaVezActivo = Date.now();
+    }
+});
+function aplicarDescuentoMasivo() {
+    let porcentaje = document.getElementById('desc_masivo').value;
+    
+    if (porcentaje === "" || parseFloat(porcentaje) < 0) {
+        return alert("❌ Ingresa un porcentaje válido (Ej. 10).");
+    }
+
+    // 🎯 SELECTOR INTELIGENTE: Busca todos los inputs dentro de la 4ta columna de la lista de compras
+    let inputsDescuento = document.querySelectorAll('#c_lista_tab tr td:nth-child(4) input');
+    
+    if (inputsDescuento.length === 0) {
+        return alert("⚠️ No hay productos en la lista de compras todavía.");
+    }
+
+    inputsDescuento.forEach(input => {
+        // Asignamos el nuevo porcentaje
+        input.value = porcentaje;
+        
+        // 🔄 Disparamos los eventos 'input' y 'change' para simular que lo escribiste a mano
+        // Esto obligará a tu sistema a recalcular el Costo Real, Subtotal y el Total General automáticamente
+        input.dispatchEvent(new Event('input', { bubbles: true }));
+        input.dispatchEvent(new Event('change', { bubbles: true }));
+        input.dispatchEvent(new Event('keyup', { bubbles: true }));
+    });
+    
+    // Limpiamos la casilla después de aplicar para el siguiente uso
+    document.getElementById('desc_masivo').value = "";
+}// =====================================================
+// 👻 EL SINCRONIZADOR FANTASMA (OFFLINE-FIRST)
+// =====================================================
+window.sincronizadorFantasma = async function() {
+    // 🛡️ 1. Candado anti-colisiones (evita dos procesos al mismo tiempo)
+    if (window.sincronizandoEnProceso) return;
+    
+    // 🛡️ 2. Si el navegador no detecta internet o PocketBase no está listo, salimos
+    if (!navigator.onLine || typeof pb === 'undefined') return;
+    if (!window.dbLocal || !dbLocal.ventas) return;
+
+    window.sincronizandoEnProceso = true;
+
+    try {
+        // Buscamos únicamente las ventas que quedaron pendientes
+        let pendientes = await dbLocal.ventas
+            .filter(v => v.sync_pendiente === true)
+            .toArray();
+
+        if (pendientes.length === 0) {
+            window.sincronizandoEnProceso = false;
+            return;
+        }
+
+        console.log(`👻 Sincronizador Fantasma: detectadas ${pendientes.length} venta(s) pendientes de subir...`);
+
+        for (let venta of pendientes) {
+            try {
+                let ventaNube = {
+                    doc_id: String(venta.id),
+                    data: venta
+                };
+
+                // Subimos a PocketBase
+                await pb.collection("ventas").create(ventaNube, { requestKey: null });
+
+                // Marcamos como sincronizada en el disco duro local
+                venta.sync_pendiente = false;
+                await dbLocal.ventas.put(venta);
+
+                console.log(`☁️ Venta #${venta.id} sincronizada con la nube exitosamente.`);
+            } catch (err) {
+                // Si ya existía en la nube (error 400), la marcamos como sincronizada para no atascar la cola
+                if (err.status === 400 || (err.data && err.data.doc_id)) {
+                    venta.sync_pendiente = false;
+                    await dbLocal.ventas.put(venta);
+                } else {
+                    console.warn(`⏳ Falla de conexión al subir venta #${venta.id}. Se reintentará luego.`);
+                    break; // Cortamos el bucle si no hay respuesta del servidor
+                }
+            }
+        }
+    } catch (e) {
+        console.error("❌ Error en el Sincronizador Fantasma:", e);
+    } finally {
+        window.sincronizandoEnProceso = false;
+    }
+};
+
+// ⏰ Disparador automático cada 60 segundos
+setInterval(() => {
+    if (typeof window.sincronizadorFantasma === 'function') {
+        window.sincronizadorFantasma();
+    }
+}, 60000);
+
+// 🌐 Disparador reactivo: en cuanto regresa el internet, sube todo inmediatamente
+window.addEventListener('online', () => {
+    console.log("🌐 Conexión restablecida. Activando Sincronizador Fantasma...");
+    if (typeof window.sincronizadorFantasma === 'function') {
+        window.sincronizadorFantasma();
     }
 });
