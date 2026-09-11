@@ -608,29 +608,75 @@ tbody tr { height: auto !important; }
     background: #198754; color: white; border: none; padding: 20px; font-size: 20px; font-weight: bold; border-radius: 10px; cursor: pointer; margin-top: auto;
 }
 .btn-imprimir-cremeria:active { background: #146c43; }
-/* 📱 MODO CREMERÍA EN CELULARES (Porcentajes estrictos) */
 @media screen and (max-width: 768px) {
-    /* Solo aplicamos la columna cuando JS le pone display: flex */
-    #modal_cremeria[style*="display: flex"] {
+    #modal_cremeria {
         flex-direction: column !important;
+        height: auto !important;
+        min-height: 100dvh !important;
+        overflow-y: auto !important; /* Permite deslizar toda la ventana */
+        -webkit-overflow-scrolling: touch;
     }
 
     #cremeria_panel_izq {
         flex: none !important;
-        height: 55% !important; /* Mide exactamente el 55% de la pantalla */
+        height: auto !important;
+        min-height: 380px !important;
+        overflow: visible !important;
         padding: 10px !important;
+    }
+
+    #grid_cremeria {
+        grid-template-columns: repeat(2, 1fr) !important;
+        overflow: visible !important;
+        max-height: none !important;
     }
 
     #cremeria_panel_der {
         flex: none !important;
-        height: 45% !important; /* Mide exactamente el 45% de la pantalla */
-        padding: 10px !important;
+        height: auto !important;
+        min-height: 320px !important;
+        padding: 15px !important;
         border-left: none !important;
         border-top: 3px solid #0d6efd !important;
+        padding-bottom: 40px !important; /* Espacio extra para no chocar con la barra de navegación del móvil */
     }
 
-    /* Grid a 2 columnas en celular */
-    #grid_cremeria {
-        grid-template-columns: repeat(2, 1fr) !important;
+    #carrito_cremeria {
+        overflow: visible !important;
+        max-height: none !important;
     }
+}
+/* 📷 CENTRADO DEL ESCÁNER Y CÁMARA */
+#contenedor_escaner, 
+[id*="scanner"], 
+[id*="reader"] {
+    display: flex !important;
+    flex-direction: column !important;
+    align-items: center !important;
+    justify-content: center !important;
+    width: 100% !important;
+    margin: 0 auto !important;
+    text-align: center !important;
+    overflow: hidden !important;
+}
+
+/* Forzar que el video no se desplace a la izquierda */
+#contenedor_escaner video, 
+[id*="scanner"] video, 
+[id*="reader"] video {
+    width: 100% !important;
+    max-width: 320px !important;
+    height: auto !important;
+    max-height: 220px !important;
+    object-fit: cover !important;
+    border-radius: 10px !important;
+    margin: 0 auto !important;
+    display: block !important;
+}
+
+/* Si usa un recuadro o visor de guía */
+#contenedor_escaner canvas,
+[id*="reader"] canvas {
+    left: 50% !important;
+    transform: translateX(-50%) !important;
 }
