@@ -609,41 +609,124 @@ tbody tr { height: auto !important; }
 }
 .btn-imprimir-cremeria:active { background: #146c43; }
 @media screen and (max-width: 768px) {
-    #modal_cremeria {
+    /* 1. Blindaje del Login */
+    #modal_cremeria[style*="display: none"] {
+        display: none !important;
+    }
+
+    /* 2. Modal maestro: scroll vertical completo en todo el celular */
+    #modal_cremeria:not([style*="display: none"]) {
+        display: flex !important;
         flex-direction: column !important;
-        height: auto !important;
-        min-height: 100dvh !important;
-        overflow-y: auto !important; /* Permite deslizar toda la ventana */
-        -webkit-overflow-scrolling: touch;
+        position: fixed !important;
+        top: 0 !important;
+        left: 0 !important;
+        width: 100% !important;
+        height: 100% !important;
+        overflow-y: auto !important; /* Desplazamiento táctil global */
+        -webkit-overflow-scrolling: touch !important;
+        background: #f8f9fa !important;
+        z-index: 99999 !important;
     }
 
+    /* 3. Panel superior: Productos */
     #cremeria_panel_izq {
-        flex: none !important;
+        flex: 0 0 auto !important;
+        width: 100% !important;
         height: auto !important;
-        min-height: 380px !important;
+        min-height: 400px !important; /* Altura mínima garantizada */
+        padding: 12px 10px !important;
         overflow: visible !important;
-        padding: 10px !important;
+        box-sizing: border-box !important;
     }
 
+    /* Cuadrícula de botones */
     #grid_cremeria {
+        display: grid !important;
         grid-template-columns: repeat(2, 1fr) !important;
-        overflow: visible !important;
+        grid-auto-rows: minmax(75px, auto) !important;
+        gap: 10px !important;
+        height: auto !important;
         max-height: none !important;
+        overflow: visible !important;
+        padding: 4px 0 !important;
     }
 
-    #cremeria_panel_der {
-        flex: none !important;
+    /* Botones de productos: tamaño mínimo de 75px */
+    #grid_cremeria button,
+    #grid_cremeria > div {
+        min-height: 75px !important;
         height: auto !important;
-        min-height: 320px !important;
+        display: flex !important;
+        flex-direction: column !important;
+        justify-content: center !important;
+        align-items: center !important;
+        text-align: center !important;
+        padding: 8px !important;
+        border: 2px solid #0d6efd !important;
+        border-radius: 10px !important;
+        background: #ffffff !important;
+        box-sizing: border-box !important;
+        white-space: normal !important;
+        line-height: 1.25 !important;
+    }
+
+    #grid_cremeria button span,
+    #grid_cremeria button div {
+        font-size: 13px !important;
+        font-weight: 600 !important;
+        color: #212529 !important;
+    }
+
+    #grid_cremeria button b,
+    #grid_cremeria button strong {
+        font-size: 15px !important;
+        font-weight: bold !important;
+        color: #198754 !important;
+        margin-top: 4px !important;
+    }
+
+    /* 4. Panel inferior: Ticket de Entrega */
+    #cremeria_panel_der {
+        flex: 0 0 auto !important;
+        width: 100% !important;
+        height: auto !important;
+        min-height: 350px !important;
         padding: 15px !important;
+        /* Espacio libre al final para que la barra de gestos del celular no tape los botones */
+        padding-bottom: 85px !important; 
         border-left: none !important;
         border-top: 3px solid #0d6efd !important;
-        padding-bottom: 40px !important; /* Espacio extra para no chocar con la barra de navegación del móvil */
+        box-sizing: border-box !important;
+        overflow: visible !important;
     }
 
+    /* Lista del carrito */
     #carrito_cremeria {
-        overflow: visible !important;
+        height: auto !important;
+        min-height: 120px !important;
         max-height: none !important;
+        overflow: visible !important;
+        margin-bottom: 12px !important;
+    }
+
+    /* Total y Botonera inferior */
+    #cremeria_panel_der > div:last-child {
+        display: block !important;
+        margin-top: 15px !important;
+    }
+
+    #total_cremeria {
+        font-size: 24px !important;
+        font-weight: bold !important;
+        margin-bottom: 10px !important;
+        text-align: right !important;
+    }
+
+    #cremeria_panel_der button {
+        padding: 14px 8px !important;
+        font-size: 15px !important;
+        font-weight: bold !important;
     }
 }
 /* 📷 CENTRADO DEL ESCÁNER Y CÁMARA */
