@@ -1,10 +1,11 @@
 // 💾 INICIALIZAR EL DISCO DURO LOCAL (IndexedDB)
 window.dbLocal = new Dexie("POS_Database");
-window.dbLocal.version(1).stores({
+window.dbLocal.version(2).stores({
     cortes: 'id, fecha, cajero, sucursal',
     ventas: 'id, fecha, cajero, sucursal',
     turnos: 'id_sesion, fecha_cierre, cajero, sucursal',
-    kardex: 'id, fecha, codigo, tipo, sucursal' // 👈 EL MONSTRUO FINAL AÑADIDO
+    kardex: 'id, fecha, codigo, tipo, sucursal',
+    productos: 'id, codigo, nombre, departamento' // 👈 NUEVA TABLA PARA EL CATÁLOGO
 });
 // ====================================================================
 // === 1. CONEXIÓN A POCKETBASE EN LA NUBE ===
@@ -191,6 +192,44 @@ const db = {
         };
     }
 };
+// 🌐 SINCRONIZADOR EN TIEMPO REAL MULTI-DISPOSITIVO
+if (typeof pb !== 'undefined') {
+    // Le decimos a PocketBase que nos avise de CUALQUIER cambio en el Kardex
+    pb.collection('kardex').subscribe('*', async function (e) {
+        
+        // Si entra un nuevo movimiento (de esta caja o de otra sucursal)
+        if (e.action === 'create' || e.action === 'update') {
+            let nuevoMov = e.record;
+            
+            // 1. Lo metemos silenciosamente al disco duro local (IndexedDB)
+            if (window.dbLocal && dbLocal.kardex) {
+                await dbLocal.kardex.put(nuevoMov).catch(()=>{});
+            }
+            
+            // 2. Lo inyectamos a nuestra memoria RAM actual
+            if (window.historialKardex) {
+                let existe = window.historialKardex.findIndex(k => k.id === nuevoMov.id);
+                if (existe >= 0) {
+                    window.historialKardex[existe] = nuevoMov;
+                } else {
+                    window.historialKardex.push(nuevoMov);
+                }
+            }
+            
+            // 🔥 3. AQUÍ ESTÁ LA MAGIA: Recalculamos el caché de dinero al instante
+            if (typeof window.actualizarCacheVentas === 'function') {
+                window.actualizarCacheVentas();
+                console.log(`🔄 Venta de otro dispositivo detectada. Caché actualizado: Prod ${nuevoMov.codigo}`);
+                
+                // (Opcional) Si el usuario está viendo la pestaña de inventario en ese exacto momento, redibujamos la tabla
+                if (typeof tabActual !== 'undefined' && tabActual === 'i-tab' && typeof renderTablaInventario === 'function') {
+                    // Volvemos a ordenar y pintar para que la ganancia suba en tiempo real
+                    if (typeof filtrarInventario === 'function') filtrarInventario(true);
+                }
+            }
+        }
+    }).catch(err => console.warn("⚠️ No se pudo conectar el socket en tiempo real:", err));
+}
                             
 // ==========================================
 // 📦 DESCONTAR STOCK CORREGIDO (CON TIMESTAMP)
@@ -379,31 +418,260 @@ try {
     if(!Array.isArray(ventas)) ventas = []; ventas.forEach(v => { if(!v.id) v.id = Date.now() + Math.floor(Math.random()*1000); });
 } catch (e) { console.error("Error al leer datos:", e); }
 
+// ==========================================
+// ⬛ CAJA NEGRA: HISTORIAL DE VENTAS
+// ==========================================
+window.historialVentaActual = [];
+
+window.registrarEventoVenta = function(accion, detalle) {
+    // Capturamos la hora exacta con segundos para cruzar con las cámaras
+    let horaExacta = new Date().toLocaleTimeString('es-MX', { hour12: true, hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    
+    window.historialVentaActual.push({
+        hora: horaExacta,
+        accion: accion,      // Ej. "ESCANEO", "VACIADO", "PAUSA"
+        detalle: detalle     // Ej. "Agregó Coca Cola 600ml", "Vació un carrito de $500"
+    });
+    
+    // Opcional: Lo imprimimos en la consola secreta para desarrolladores
+    console.log(`[${horaExacta}] 🕵️ ${accion}: ${detalle}`);
+};
+
+// Función para limpiar la caja negra cuando se cobra o se vacía la venta
+window.limpiarCajaNegra = function() {
+    window.historialVentaActual = [];
+};
+// 🔐 CANDADO DE PERMISOS PARA ALERTAS
+window.puedeVerAlertaStock = function() {
+    let config = window.configAlertasStock || { activa: false };
+    // Aseguramos que lo lea bien, ya sea texto o booleano
+    return config.activa === true || String(config.activa) === "true"; 
+};
+// ⚙️ CONFIGURACIÓN DE ALERTAS INTELIGENTES (Feature Flag)
+window.configAlertasStock = JSON.parse(localStorage.getItem('pos_config_alertas')) || { 
+    activa: false, 
+    permiso: 'Admin' // Puede ser 'Admin' o 'Todos'
+};
+// 🧠 CACHÉ DE MÉTRICAS MULTIDISPOSITIVO (Promedio Acumulado)
+window.metricasVentasCache = {};
+
+// ====================================================================
+// 🧠 CACHÉ MULTIDISPOSITIVO: MOTOR INTELIGENTE DE RENTABILIDAD Y ALERTAS
+// VERSIÓN FINAL Y BLINDADA
+// ====================================================================
+window.actualizarCacheVentas = function() {
+    if (!window.historialKardex) return;
+    
+    let tempCache = {};
+    let hoy = new Date();
+    hoy.setHours(0,0,0,0); 
+    
+    // Obtenemos la sucursal actual, protegida contra emojis y espacios
+    let miSucursalBruta = typeof sucursalActual !== 'undefined' ? sucursalActual : (localStorage.getItem('sucursal_pos') || '');
+    let miSucLimpia = String(miSucursalBruta).replace(/[📍]/g, '').trim().toLowerCase();
+
+    // Recorremos el disco duro local (IndexedDB)
+    window.historialKardex.forEach(mov => {
+        let sucMovLimpia = String(mov.sucursal || '').replace(/[📍]/g, '').trim().toLowerCase();
+        
+        // 🛑 FILTRO DE SUCURSAL: Si la venta es de otra tienda, la ignoramos.
+        if (miSucLimpia && sucMovLimpia && sucMovLimpia !== miSucLimpia && miSucLimpia !== "todas") {
+            return; 
+        }
+
+        let tipoMov = String(mov.tipo || 'VENTA').toUpperCase().trim();
+        
+        // Sumamos Ventas y todo tipo de salidas hacia otras sucursales
+        if (tipoMov === "VENTA" || tipoMov === "ENVÍO (SALIDA)" || tipoMov === "ENVIO (SALIDA)" || tipoMov === "TRANSFERENCIA (SALIDA)") {
+            // Buscamos el código en sus diferentes presentaciones
+            let codBruto = mov.codigo || mov.cod || mov.id_producto || '';
+            let cod = String(codBruto).trim();
+            
+            if (!cod || cod === 'undefined') return;
+
+            // 🎯 LECTURA EXACTA DE CANTIDAD (Convertimos el negativo a positivo con Math.abs)
+            let cant = Math.abs(parseFloat(mov.cantidad || mov.can || mov.cant || 0));
+            
+            // 🛡️ TRADUCTOR INFALIBLE DE FECHAS
+            let fechaObj = new Date(mov.fecha || mov.created);
+            if (isNaN(fechaObj.getTime()) || fechaObj.getFullYear() < 2020) { 
+                fechaObj = new Date(); 
+            }
+            fechaObj.setHours(0,0,0,0);
+            
+            // Si el producto no existe en el cerebro temporal, lo creamos
+            if (!tempCache[cod]) {
+                tempCache[cod] = { totalVendidas: 0, primeraVenta: fechaObj };
+            }
+            
+            // Sumamos la venta al acumulado histórico
+            tempCache[cod].totalVendidas += cant;
+            
+            // Ajustamos la fecha más antigua si es necesario
+            if (fechaObj < tempCache[cod].primeraVenta) {
+                tempCache[cod].primeraVenta = fechaObj;
+            }
+        }
+    });
+    
+    // 🧮 MATEMÁTICAS PURAS: Cálculo del promedio de ventas
+    for (let cod in tempCache) {
+        let datos = tempCache[cod];
+        let diffTiempo = Math.abs(hoy - datos.primeraVenta);
+        let diasTranscurridos = Math.ceil(diffTiempo / (1000 * 60 * 60 * 24));
+        
+        // Limitamos el rango de días para evitar promedios microscópicos o infinitos
+        if (diasTranscurridos === 0 || diasTranscurridos > 365) diasTranscurridos = 1; 
+        
+        datos.promedioDiario = datos.totalVendidas / diasTranscurridos;
+    }
+    
+    // Inyectamos la inteligencia a la memoria global RAM
+    window.metricasVentasCache = tempCache;
+    
+    // Quitamos los Rayos X para no saturar tu consola y dejamos solo el estatus
+    console.log(`⚡ CEREBRO LISTO (Sucursal: ${miSucLimpia}). Rentabilidad y alertas calculadas para ${Object.keys(tempCache).length} productos.`);
+};
+// Si usas PocketBase y quieres que las cajas se comuniquen al instante
+if (typeof pb !== 'undefined') {
+    pb.collection('kardex').subscribe('*', function (e) {
+        if (e.action === 'create' || e.action === 'update') {
+            // Unimos el nuevo movimiento al historial RAM
+            window.historialKardex.push(e.record);
+            
+            // ⚡ Recalculamos el promedio con la venta que acaba de hacer la otra computadora
+            if (typeof window.actualizarCacheVentas === 'function') {
+                window.actualizarCacheVentas();
+                
+                // Si tienes la pantalla del inventario abierta, se refresca sola
+                if (typeof tabActual !== 'undefined' && tabActual === 'i-tab') {
+                    filtrarInventario(true);
+                }
+            }
+        }
+    }).catch(err => console.log("Error socket", err));
+}
+// Modifica tu función cargarKardexLocal para que llame al caché cuando termine:
+window.cargarKardexLocal = async function() {
+    if (window.dbLocal && dbLocal.kardex) {
+        try {
+            window.historialKardex = await dbLocal.kardex.toArray();
+            window.actualizarCacheVentas(); // 👈 Creamos el caché inmediatamente
+        } catch(e) { console.warn("Error leyendo Kardex", e); }
+    }
+};
+
+// ====================================================================
+// 🧠 CEREBRO DE PRONÓSTICO DE INVENTARIO
+// ====================================================================
+
+// 1. Subir Kardex a la memoria RAM para que la fórmula pueda leerlo rápido
+window.cargarKardexLocal = async function() {
+    if (window.dbLocal && dbLocal.kardex) {
+        try {
+            window.historialKardex = await dbLocal.kardex.toArray();
+            console.log(`🧠 Inteligencia lista: ${window.historialKardex.length} movimientos de Kardex listos.`);
+            
+            // 🔥 LO NUEVO: Construimos el caché de promedios al instante
+            if (typeof window.actualizarCacheVentas === 'function') {
+                window.actualizarCacheVentas();
+            }
+            
+        } catch(e) { console.warn("Error leyendo Kardex local", e); }
+    }
+};
+window.cargarKardexLocal();
+
+// 2. La fórmula matemática mejorada (Ahora detecta stock en 0 o negativos)
+window.evaluarRiesgoAgotamiento = function(productoId, stockActual) {
+    // ⚡ Leemos directo del caché en 1 milisegundo
+    let totalVendido = window.ventasSemanalesCache[String(productoId)] || 0;
+    
+    if (totalVendido === 0) return 999; 
+    let stockNum = parseFloat(stockActual) || 0;
+    if (stockNum <= 0) return 0; 
+
+    let ventasPorDia = totalVendido / 7;
+    return (stockNum / ventasPorDia); 
+};
+function guardarConfigAlertas() {
+    let checkActiva = document.getElementById('check_alerta_stock');
+    let selectPermiso = document.getElementById('select_permiso_alerta');
+    
+    if (checkActiva && selectPermiso) {
+        window.configAlertasStock.activa = checkActiva.checked;
+        window.configAlertasStock.permiso = selectPermiso.value;
+        localStorage.setItem('pos_config_alertas', JSON.stringify(window.configAlertasStock));
+        
+        // Mostrar mensaje de éxito
+        console.log("✅ Configuración de alertas guardada:", window.configAlertasStock);
+        alert("Configuración de alertas guardada exitosamente.");
+        
+        // Si tienes una función para refrescar el inventario, llámala aquí. Ej: if(typeof renderI === 'function') renderI();
+    }
+}
 // ====================================================================
 // === LISTENERS EN TIEMPO REAL (NUBE ☁️) ===
 // ====================================================================
 
 // 📡 RADAR DE INVENTARIO EN TIEMPO REAL (CON FILTRO DE PRIORIDAD LOCAL)
-db.collection("inventario").onSnapshot((querySnapshot) => {
-    querySnapshot.forEach((doc) => { 
-        let idLimpio = String(doc.id).trim();
-        let datosNube = normalizarProducto(doc.data());
-        let datosLocales = inv[idLimpio] ? normalizarProducto(inv[idLimpio]) : null;
+// ====================================================================
+// 📦 CARGADOR RELÁMPAGO Y RADAR DE INVENTARIO (OFFLINE-FIRST)
+// ====================================================================
+window.inv = window.inv || {};
 
-        // Protección de cambios locales recientes
-        if (datosLocales && datosLocales.updatedAt > datosNube.updatedAt) {
-            datosLocales.stock = datosNube.stock;
-            datosLocales.sold_without_stock = datosNube.sold_without_stock;
-            inv[idLimpio] = datosLocales;
-            return;
+// 2. RADAR DE INVENTARIO (Sincronización en tiempo real y guardado en disco duro)
+if (!window.radarInventarioActivo && typeof db !== 'undefined') {
+    window.radarInventarioActivo = true;
+
+    db.collection("inventario").onSnapshot((querySnapshot) => {
+        let actualizadosArray = []; 
+        
+        querySnapshot.forEach((doc) => { 
+            let idBruto = doc.id || (doc.data && typeof doc.data === 'function' ? doc.data().id : null) || '';
+            let idLimpio = String(idBruto).trim();
+            
+            // 🛡️ ESCUDO ANTI-FANTASMAS: Si no hay ID válido, le negamos la entrada
+            if (!idLimpio || idLimpio === 'undefined' || idLimpio === 'null' || idLimpio === '') return;
+
+            let datosNube = typeof normalizarProducto === 'function' ? normalizarProducto(doc.data()) : doc.data();
+            datosNube.id = idLimpio; // Obligamos a que tenga ID para IndexedDB
+
+            let datosLocales = inv[idLimpio] ? (typeof normalizarProducto === 'function' ? normalizarProducto(inv[idLimpio]) : inv[idLimpio]) : null;
+
+            // Protección de cambios locales recientes
+            if (datosLocales && datosLocales.updatedAt > datosNube.updatedAt) {
+                datosLocales.stock = datosNube.stock;
+                datosLocales.sold_without_stock = datosNube.sold_without_stock;
+                inv[idLimpio] = datosLocales;
+                actualizadosArray.push(datosLocales);
+            } else {
+                inv[idLimpio] = datosNube; 
+                actualizadosArray.push(datosNube);
+            }
+        });
+        
+        // 💾 HOLA INDEXEDDB: Guardado masivo con doble filtro de seguridad
+        if (window.dbLocal && dbLocal.productos) {
+            // Última revisión: Aseguramos que la base de datos no se atragante con basura
+            let arrayFiltrado = actualizadosArray.filter(p => p && p.id && String(p.id).trim() !== '' && p.id !== 'undefined');
+            
+            if (arrayFiltrado.length > 0) {
+                dbLocal.productos.bulkPut(arrayFiltrado).catch(e => console.warn("⚠️ Error silencioso guardando inv en disco:", e));
+            }
         }
+        
+        console.log(`☁️🔄💾 Inventario sincronizado al disco duro: ${actualizadosArray.length} productos salvados.`);
 
-        inv[idLimpio] = datosNube; 
+        // Refrescar pantalla si estamos viéndola
+        if (typeof tabActual !== 'undefined' && tabActual === 'i-tab' && typeof renderI === 'function') {
+            renderI(); 
+        }
+    }, (error) => {
+        console.warn("⚠️ Sin internet. Radar de inventario en pausa, usando copia local.", error);
+        window.radarInventarioActivo = false;
     });
-    
-    localStorage.setItem("pos_precision_v6", JSON.stringify(inv));
-    if (typeof tabActual !== 'undefined' && tabActual === 'i-tab' && typeof renderI === 'function') renderI(); 
-});
+}
 
 // Usuarios
 db.collection("usuarios").onSnapshot((querySnapshot) => {
@@ -450,22 +718,24 @@ db.collection("movimientos").onSnapshot((querySnapshot) => {
     if (tabActual === 'r-tab') renderCorte();
 });
 
-// 🚀 RADAR ULTRARRÁPIDO DE VENTAS (Cero demoras al abrir) - BLINDADO
+// 🚀 RADAR ULTRARRÁPIDO DE VENTAS (Conectado al Disco Duro)
 async function iniciarRadarVentasVeloz() {
+    // 🔒 CANDADO ANTI-CLONES: Bloquea si ya hay una descarga de ventas corriendo
+    if (window.descargaVentasEnProceso) return;
+    window.descargaVentasEnProceso = true;
+
     try {
         if (typeof pb === 'undefined') return;
-        let fechaHoy = typeof getFechaLocal === 'function' ? getFechaLocal() : new Date().toISOString().split('T')[0];
-        console.log("☁️ Descargando ventas del día:", fechaHoy);
+        console.log("☁️ Descargando historial reciente de ventas para el disco duro...");
 
-        // Atrapamos cualquier error de red (como cuando el celular despierta) sin romper la consola
-        let res = await pb.collection('ventas').getList(1, 100, {
-            sort: '-created',
+        // Traemos las últimas 300 ventas (suficientes para varios días) sin saturar la RAM
+        let res = await pb.collection('ventas').getList(1, 300, {
+            sort: '-created', // 👈 ¡Perfecto, esto ya está limpio!
             requestKey: null
         }).catch(() => null);
 
         if (!res) return;
 
-        // Extraemos los items de forma segura para evitar el error "reading 'length'"
         let items = Array.isArray(res) ? res : (res.items || []);
         if (!Array.isArray(items) || items.length === 0) return;
 
@@ -475,24 +745,35 @@ async function iniciarRadarVentasVeloz() {
                 try { data = JSON.parse(data); } catch(e) {}
             }
             return data;
-        }).filter(v => v && v.fecha && v.fecha >= fechaHoy);
+        }).filter(v => v && v.id); // Guardamos todo lo que tenga ID, sin importar la fecha
 
-        if (listaDescargada && listaDescargada.length > 0) {
-            window.ventas = window.ventas || [];
-            let mapa = new Map();
-            window.ventas.forEach(v => { if (v && v.id) mapa.set(String(v.id), v); });
-            listaDescargada.forEach(v => { if (v && v.id) mapa.set(String(v.id), v); });
-            window.ventas = Array.from(mapa.values());
+        if (listaDescargada.length > 0) {
+            // 1. Lo ponemos en RAM para uso inmediato en el corte de hoy
+            window.ventas = listaDescargada;
             
-            // Usamos pos_ventas_v6 que es tu versión actual
-            try { localStorage.setItem("pos_ventas_v6", JSON.stringify(window.ventas)); } catch(e) {}
+            // 2. 💾 LO GUARDAMOS EN EL DISCO DURO (IndexedDB) EN VEZ DE LOCALSTORAGE
+            if (window.dbLocal && dbLocal.ventas) {
+                await dbLocal.ventas.bulkPut(listaDescargada).catch(e => console.warn("⚠️ Error guardando ventas en disco:", e));
+            }
+            
             if (typeof renderCorte === 'function') renderCorte();
         }
     } catch (err) {
-        console.warn("Radar ventas en pausa temporal:", err);
+        console.warn("⚠️ Radar ventas en pausa temporal:", err);
+    } finally {
+        // 🔓 QUITAMOS EL CANDADO al terminar, por si el usuario necesita recargar horas después
+        window.descargaVentasEnProceso = false;
     }
 }
 iniciarRadarVentasVeloz();
+// 🛑 Función para apagarlo cuando el usuario cierre sesión (para tu botón de salir/logout)
+window.detenerRadarTransferencias = function() {
+    if (window.intervaloRadar) {
+        clearInterval(window.intervaloRadar);
+        window.intervaloRadar = null;
+        console.log("🛑 Radar de Transferencias apagado.");
+    }
+};
 
 // Compras (Radar Inmune a pérdida de IDs en PikaPod)
 db.collection("compras").onSnapshot((querySnapshot) => {
@@ -1456,26 +1737,40 @@ function renderI() {
         filtrarInventario(true); 
     } catch(err) { console.error("Error en renderI:", err); }
 }
+// 🔄 CEREBRO DE ORDENAMIENTO DE TABLA
+window.ordenInvCol = 'ganancia'; // Inicia ordenando por ganancia
+window.ordenInvAsc = false;      // Inicia de Mayor a Menor
+window.metricasInv = {};         // Memoria rápida para la columna virtual
 
+function cambiarOrdenInv(columna) {
+    if (window.ordenInvCol === columna) {
+        window.ordenInvAsc = !window.ordenInvAsc; // Invierte el orden si das doble clic
+    } else {
+        window.ordenInvCol = columna;
+        window.ordenInvAsc = false; // Por defecto de Mayor a Menor
+    }
+    if (typeof filtrarInventario === 'function') filtrarInventario(true);
+}
 function filtrarInventario(mantenerFoco = false, evento = null) {
     if (evento && (evento.key === 'ArrowDown' || evento.key === 'ArrowUp' || evento.key === 'Enter')) return; 
 
     clearTimeout(timerFiltroInv);
     timerFiltroInv = setTimeout(() => {
         try {
-            let txtInput = document.getElementById('buscar_inv');
-            let txt = txtInput ? txtInput.value.toLowerCase() : '';
+            let txt = document.getElementById('buscar_inv') ? document.getElementById('buscar_inv').value.toLowerCase() : '';
             let terms = txt.split(/%|\s+/).filter(t => t.trim() !== "");
-            let depSelect = document.getElementById('filtro_dep');
-            let depFiltro = depSelect ? depSelect.value.toLowerCase() : '';
-            let tipoSelect = document.getElementById('filtro_tipo');
-            let tipoFiltro = tipoSelect ? tipoSelect.value.toLowerCase() : '';
+            let depFiltro = document.getElementById('filtro_dep') ? document.getElementById('filtro_dep').value.toLowerCase() : '';
+            let tipoFiltro = document.getElementById('filtro_tipo') ? document.getElementById('filtro_tipo').value.toLowerCase() : '';
+            let alertaFiltro = document.getElementById('filtro_alerta') ? document.getElementById('filtro_alerta').value : '';
+
+            // Paracaídas de seguridad por si el caché aún no carga
+            if (!window.metricasVentasCache) window.metricasVentasCache = {};
+            window.metricasInv = {}; 
             
             let llaves = Object.keys(inv);
-            currentInvKeys = []; 
+            let coincidencias = []; 
             
             for (let i = 0; i < llaves.length; i++) {
-                if (currentInvKeys.length >= 100) break; 
                 let k = llaves[i]; let x = inv[k];
                 if (!x) continue; 
                 
@@ -1484,53 +1779,121 @@ function filtrarInventario(mantenerFoco = false, evento = null) {
                 let matchDep = depFiltro === "" || (x.dep || 'General').toLowerCase() === depFiltro;
                 let matchTipo = tipoFiltro === "" || (x.tipo || 'pieza').toLowerCase() === tipoFiltro;
                 
-                if (matchTxt && matchDep && matchTipo) currentInvKeys.push(k);
+                let matchAlerta = true;
+                let pMaestro = (x.grupo && inv[x.grupo]) ? inv[x.grupo] : x;
+                let codMaestro = (x.grupo && inv[x.grupo]) ? x.grupo : k;
+                let st = typeof getVirtualStock === 'function' ? getVirtualStock(pMaestro) : (pMaestro.stock || 0);
+                
+                // 🚀 LECTURA SEGURA DEL CACHÉ
+                let cacheDatos = window.metricasVentasCache[codMaestro] || { totalVendidas: 0, promedioDiario: 0 };
+                let promDiario = cacheDatos.promedioDiario || 0;
+                let ventasAcumuladas = cacheDatos.totalVendidas || 0;
+                
+                let diasRestantes = 999;
+                if (promDiario > 0) {
+                    diasRestantes = st / promDiario;
+                } else if (st <= 0) {
+                    diasRestantes = 0; 
+                }
+
+
+                if (alertaFiltro === 'critico') {
+                    // Entra a la lista si se vende algo y le quedan 8 días o menos
+                    matchAlerta = (promDiario > 0 && diasRestantes <= 8);
+                }
+                
+                if (matchTxt && matchDep && matchTipo && matchAlerta) {
+                    let pv = parseFloat(pMaestro.pv) || 0;
+                    let pc = parseFloat(pMaestro.pc) || 0; 
+                    
+                    let ganancia = (pv - pc) * ventasAcumuladas;
+
+                    // 🎯 GUARDAMOS TODO LISTO PARA LA TABLA
+                    window.metricasInv[k] = { 
+                        ganancia: ganancia,
+                        diasRestantes: diasRestantes,
+                        promDiario: promDiario // Lo guardamos para la alerta
+                    }; 
+
+                    coincidencias.push({
+                        id: k,
+                        codigo: k,
+                        nombre: (x.nom || ''),
+                        depto: (x.dep || ''),
+                        tipo: (x.tipo || ''),
+                        stock: parseFloat(st),
+                        precio: pv,
+                        ganancia: ganancia
+                    });
+                }
             }
             
+            // 🔄 ORDENAMIENTO SEGURO
+            coincidencias.sort((a, b) => {
+                let col = window.ordenInvCol || 'ganancia'; // Ganancia por defecto
+                let valA = a[col] !== undefined ? a[col] : 0;
+                let valB = b[col] !== undefined ? b[col] : 0;
+                
+                if (typeof valA === 'string') valA = valA.toLowerCase();
+                if (typeof valB === 'string') valB = valB.toLowerCase();
+                
+                if (valA < valB) return window.ordenInvAsc ? -1 : 1;
+                if (valA > valB) return window.ordenInvAsc ? 1 : -1;
+                return 0;
+            });
+            
+            currentInvKeys = coincidencias.slice(0, 100).map(c => c.id);
             if (!mantenerFoco && !evento) focusInvIndex = currentInvKeys.length > 0 ? 0 : -1;
+            
             renderTablaInventario();
-        } catch(err) { console.error(err); }
+            
+        } catch(err) { console.error("Error en filtro:", err); }
     }, 200);
 }
 
 function renderTablaInventario() {
     try {
         let html = '';
+        // Si no hay datos pre-calculados, creamos un salvavidas vacío
+        if (!window.metricasInv) window.metricasInv = {};
+
         for (let i = 0; i < currentInvKeys.length; i++) {
             let k = currentInvKeys[i]; let x = inv[k];
             if (!x) continue;
             
             let isFocused = (i === focusInvIndex);
-            let bgRow = isFocused ? 'background:#e0f0ff; border-left: 4px solid var(--p);' : '';
-            
-            // 🌟 DETECTOR DE ESPEJOS
             let esEspejo = x.grupo && inv[x.grupo];
             let pMaestro = esEspejo ? inv[x.grupo] : x;
             let codMaestro = esEspejo ? x.grupo : k;
 
-           // Obligamos a que calcule el stock y faltantes usando al Maestro
-            let st = getVirtualStock(pMaestro); 
-            let fal = (pMaestro.sold_without_stock && pMaestro.sold_without_stock[sucursalActual]) || 0; 
+            let st = Number(parseFloat(typeof getVirtualStock === 'function' ? getVirtualStock(pMaestro) : pMaestro.stock).toFixed(3));
             
-            // ✂️ REDONDEO PERFECTO A 3 DECIMALES (Elimina ceros fantasma)
-            st = Number(parseFloat(st).toFixed(3));
-            fal = Number(parseFloat(fal).toFixed(3));
+            // 🚀 LECTURA SEGURA DE LAS VARIABLES CALCULADAS
+            let metricas = window.metricasInv[k] || { diasRestantes: 999, ganancia: 0, promDiario: 0 };
+            let diasRestantes = metricas.diasRestantes;
+            let gananciaGenerada = metricas.ganancia;
+            let promDiario = metricas.promDiario;
+
+            // Evaluamos si debe encenderse la alerta
+            let mostrarAlerta = typeof puedeVerAlertaStock === 'function' ? (puedeVerAlertaStock() && diasRestantes <= 8 && promDiario > 0) : false;
+            
+            let bgRow = '';
+            if (isFocused && mostrarAlerta) bgRow = 'background:#ffe8a1; border-left: 4px solid var(--p);';
+            else if (isFocused) bgRow = 'background:#e0f0ff; border-left: 4px solid var(--p);';
+            else if (mostrarAlerta) bgRow = 'background:#fff3cd;';
 
             let precioUnidad = parseFloat(pMaestro.pv) || 0;
             
-            // 🎨 DISEÑO DIFERENCIADO PARA EL NOMBRE
             let celdaNombre = esEspejo 
-                ? `${x.nom} <span class="badge-kit" style="background:#17a2b8; font-size:0.75em; margin-left:5px; padding:2px 6px;" title="Hereda inventario de: ${pMaestro.nom}">🔗 ESPEJO</span>` 
+                ? `${x.nom} <span class="badge-kit" style="background:#17a2b8; font-size:0.75em; margin-left:5px; padding:2px 6px;">🔗 ESPEJO</span>` 
                 : x.nom;
             
-            // 🎨 DISEÑO ATENUADO PARA STOCK Y PRECIO
-            let celdaStock = esEspejo
-                ? `<td style="color:#aaa; font-style:italic;" title="Stock compartido con el código ${codMaestro}"><b>${st}</b> 🔗</td>`
-                : `<td><b>${st}</b></td>`;
-                
-            let celdaPrecio = esEspejo
-                ? `<td style="color:#aaa; font-style:italic;" title="Precio heredado">$${precioUnidad.toFixed(2)}</td>`
-                : `<td>$${precioUnidad.toFixed(2)}</td>`;
+            if (mostrarAlerta) {
+                celdaNombre += `<br><small style="color:#856404; font-weight:bold;">⚠️ Se agotará en aprox. ${Math.round(diasRestantes)} días</small>`;
+            }
+            
+            let celdaStock = esEspejo ? `<td style="color:#aaa; font-style:italic;"><b>${st}</b> 🔗</td>` : `<td><b>${st}</b></td>`;
+            let celdaPrecio = esEspejo ? `<td style="color:#aaa; font-style:italic;">$${precioUnidad.toFixed(2)}</td>` : `<td>$${precioUnidad.toFixed(2)}</td>`;
 
             html += `<tr style="${bgRow}">
                 <td>${isFocused ? '👉 ' : ''}${k}</td>
@@ -1538,18 +1901,24 @@ function renderTablaInventario() {
                 <td><span class="badge-kit" style="background:#6c757d">${x.dep||'General'}</span></td>
                 <td>${(x.tipo||'pieza').toUpperCase()}</td>
                 ${celdaStock}
-                <td style="color:red">${fal}</td>
                 ${celdaPrecio}
+                <td style="color:#28a745; font-weight:bold;">$${gananciaGenerada.toFixed(2)}</td>
                 <td>
-                    <button class="no-print" style="background:var(--info); color:white; border:none; padding:5px 10px; border-radius:5px; margin-right:5px; cursor:pointer;" title="Ajustar Stock" onclick="abrirAjusteStock('${k}')">📦</button>
-                    <button class="no-print" style="background:var(--p); color:white; border:none; padding:5px 10px; border-radius:5px; cursor:pointer;" title="Editar Datos" onclick="abrirEditar('${k}')">✏️</button>
+                    <button class="no-print" style="background:var(--info); color:white; border:none; padding:5px 10px; border-radius:5px; margin-right:5px; cursor:pointer;" onclick="abrirAjusteStock('${k}')">📦</button>
+                    <button class="no-print" style="background:var(--p); color:white; border:none; padding:5px 10px; border-radius:5px; cursor:pointer;" onclick="abrirEditar('${k}')">✏️</button>
                 </td>
             </tr>`;
         }
+        
         let tbody = document.getElementById('i_lista');
-        if (tbody) tbody.innerHTML = html || '<tr><td colspan="8" style="text-align:center">No se encontraron productos</td></tr>';
-    } catch(err) { console.error(err); }
+        if (tbody) {
+            // Ponemos colspan 8 para cubrir todas las columnas sin descuadrarse
+            tbody.innerHTML = html || '<tr><td colspan="8" style="text-align:center; padding: 20px;">No se encontraron productos</td></tr>';
+        }
+    } catch(err) { console.error("Error en render:", err); }
 }
+
+
 
 function getVirtualStock(p) { 
     if(p.tipo === 'kit') {
@@ -1898,6 +2267,56 @@ function handleVenta(e) {
         try {
             let codOriginal = document.getElementById('v_cod').value.trim(); 
             if(!codOriginal) return;
+            // 🎟️ DETECTOR DE TICKETS DE CREMERÍA (VERSIÓN NUBE POCKETBASE)
+            if(codOriginal.startsWith('T-')) {
+                console.log("📡 Buscando ticket en PocketBase...");
+                
+                // Hacemos la consulta directa a tu base de datos
+                pb.collection('tickets_cremeria').getFirstListItem(`doc_id="${codOriginal}"`)
+                .then(async (record) => {
+                    let ticket = record.data || record;
+                    
+                    // 🔒 VALIDACIÓN DE SUCURSAL
+                    let miSucursal = (typeof sucursalActual !== 'undefined') ? sucursalActual : 'General';
+                    if (ticket.sucursal && ticket.sucursal !== miSucursal && ticket.sucursal !== 'Todas') {
+                        alert(`⚠️ ALERTA: Este ticket pertenece a la sucursal "${ticket.sucursal}". No puedes cobrarlo aquí.`);
+                        document.getElementById('v_cod').value = "";
+                        return; // Abortamos la misión
+                    }
+
+                    let inventarioReal = (typeof inv !== 'undefined') ? inv : (window.inv || {});
+                    
+                    // Inyectamos los quesos/jamones a la venta
+                    ticket.articulos.forEach(item => {
+                        let pOriginal = inventarioReal[item.id];
+                        let codMaestro = (pOriginal && pOriginal.grupo && inventarioReal[pOriginal.grupo]) ? pOriginal.grupo : item.id;
+                        let tipoProd = pOriginal ? (pOriginal.tipo || 'pieza') : 'pieza';
+                        
+                        let idxVenta = carV.findIndex(x => x.cod === item.id);
+                        if (idxVenta > -1) {
+                            carV[idxVenta].can += item.can;
+                        } else {
+                            carV.push({
+                                cod: item.id, nom: item.nom, can: item.can, 
+                                tipo: tipoProd, maestro_cod: codMaestro 
+                            });
+                        }
+                    });
+                    
+                    // 🔥 Eliminamos el ticket de la nube para que no lo cobren 2 veces
+                    await pb.collection('tickets_cremeria').delete(record.id).catch(()=>{});
+                    
+                    if(typeof renderV === 'function') renderV();
+                    document.getElementById('v_cod').value = "";
+                    console.log("✅ Ticket nube descargado y cobrado.");
+                })
+                .catch((err) => {
+                    alert("⚠️ El ticket " + codOriginal + " no existe en la nube, no hay internet, o ya fue cobrado.");
+                    document.getElementById('v_cod').value = "";
+                });
+                
+                return; // 🛑 Detiene la lectura normal para evitar errores
+            }
             
             let pOriginal = inv[codOriginal];
             if(!pOriginal) { 
@@ -1927,7 +2346,7 @@ function handleVenta(e) {
                 setTimeout(() => document.getElementById('btn_cerrar_pa').focus(), 100); 
             }
             
-            // 🌟 El tipo de venta (Granel o Pieza) lo dicta el Maestro, no el dependiente
+            // ... (tu código donde determinas si es pieza o granel) ...
             if(pMaestro.tipo === 'granel') { 
                 abrirGranel(codOriginal); 
             } else { 
@@ -1935,8 +2354,8 @@ function handleVenta(e) {
                 if(i > -1) { 
                     carV[i].can++; 
                     focusVentaIndex = i; 
+                    
                 } else { 
-                    // Inyectamos la referencia del Maestro en el carrito
                     carV.push({
                         cod: codOriginal, 
                         nom: pOriginal.nom || 'Producto', 
@@ -1945,6 +2364,7 @@ function handleVenta(e) {
                         maestro_cod: (pOriginal.grupo && inv[pOriginal.grupo]) ? pOriginal.grupo : codOriginal 
                     }); 
                     focusVentaIndex = carV.length - 1; 
+                   
                 } 
                 renderV(); 
             }
@@ -2054,7 +2474,7 @@ window.renderV = function() {
                 <td><input type="number" value="${x.can}" style="width:60px" onchange="carV[${i}].can=parseFloat(this.value)||1; delete carV[${i}].esGranelMontoExacto; window.renderV(); document.getElementById('v_cod').focus();"></td>
                 <td>$<input type="number" value="${unitPrice}" style="width:80px; font-weight:bold; color:var(--p); border: 1px solid #ccc; padding: 5px; border-radius: 4px;" onchange="carV[${i}].precioManual=parseFloat(this.value)||0; delete carV[${i}].esGranelMontoExacto; window.renderV(); document.getElementById('v_cod').focus();"></td>
                 <td>$${s.toFixed(2)}</td>
-                <td><button style="background:var(--danger); color:white; border:none; padding:5px 10px; border-radius:5px; cursor:pointer;" onclick="carV.splice(${i},1); focusVentaIndex = Math.min(focusVentaIndex, carV.length - 1); window.renderV(); document.getElementById('v_cod').focus();">✕</button></td>
+                <td><button style="background:var(--danger); color:white; border:none; padding:5px 10px; border-radius:5px; cursor:pointer;" onclick="window.borrarArticuloVenta(${i})">✕</button></td>
             </tr>`;
         }).join(''); 
 
@@ -2076,6 +2496,58 @@ window.renderV = function() {
         if (divContador) divContador.innerHTML = `<i class="fa-solid fa-cart-shopping"></i> Total Artículos: ${Math.round(totalArticulos * 100) / 100}`;
 
     } catch(err) { console.error("Error renderizando lista:", err); }
+    // 📜 AUTO-SCROLL AISLADO: Crea una caja independiente para la tabla
+        setTimeout(() => {
+            let tbody = document.getElementById('v_lista');
+            if (tbody) {
+                let tabla = tbody.closest('table');
+                
+                // 1. Si la tabla no tiene nuestra caja especial, se la construimos
+                if (tabla && tabla.parentElement.id !== 'caja-scroll-tabla') {
+                    let caja = document.createElement('div');
+                    caja.id = 'caja-scroll-tabla';
+                    caja.style.maxHeight = "55vh"; 
+                    caja.style.overflowY = "auto"; 
+                    // ❌ Adiós a la línea gris fea que estaba aquí
+                    
+                    tabla.parentNode.insertBefore(caja, tabla);
+                    caja.appendChild(tabla);
+                }
+                
+                // 2. Deslizamos suavemente SOLO nuestra nueva caja
+                let miCaja = document.getElementById('caja-scroll-tabla');
+                if (miCaja) {
+                    miCaja.scrollTo({
+                        top: miCaja.scrollHeight,
+                        behavior: 'smooth'
+                    });
+                }
+            }
+        }, 50);
+};
+// 🗑️ Función para borrar un artículo del carrito y auditarlo
+window.borrarArticuloVenta = function(index) {
+    let articulo = carV[index];
+    if (!articulo) return;
+
+    // 🕵️ CAJA NEGRA: Registramos el robo/borrado exacto
+    if (typeof registrarEventoVenta === 'function') {
+        let cajero = (typeof usuarioActual !== 'undefined' && usuarioActual) ? usuarioActual : 'Cajero';
+        registrarEventoVenta("BORRADO 🗑️", `[${cajero}] eliminó del carrito: ${articulo.can}x ${articulo.nom} (Precio: $${articulo.precioManual || 'Normal'})`);
+    }
+
+    // Ejecutamos el borrado normal
+    carV.splice(index, 1);
+    
+    // Acomodamos la vista y el escáner
+    if (typeof focusVentaIndex !== 'undefined') {
+        focusVentaIndex = Math.min(focusVentaIndex, carV.length - 1);
+    }
+    window.renderV();
+    setTimeout(() => {
+        let inputEscaner = document.getElementById('v_cod');
+        if(inputEscaner) inputEscaner.focus();
+    }, 100);
 };
 
 
@@ -2920,6 +3392,18 @@ function preguntarPausar() {
         let idNuevo = String(Date.now());
         let idPausada = window.idVentaPausadaActual ? window.idVentaPausadaActual : idNuevo; 
         
+        // 🕵️ 1. DETECCIÓN DE RE-PAUSAS Y CONTADOR
+        let ventaExistente = pausadas.find(p => String(p.id) === String(idPausada));
+        let conteoPausas = ventaExistente ? (Number(ventaExistente.veces_pausada || 1) + 1) : 1;
+        let cajeroActual = (typeof usuarioActual !== 'undefined' && usuarioActual) ? usuarioActual : 'Desconocido';
+        let totalActual = document.getElementById('v_total') ? document.getElementById('v_total').innerText : '0.00';
+        let horaPausa = new Date().toLocaleTimeString('es-MX', { hour12: true, hour: '2-digit', minute: '2-digit', second: '2-digit' });
+
+        // 🕵️ 2. REGISTRAR EVENTO EN LA CAJA NEGRA
+        if (typeof registrarEventoVenta === 'function') {
+            registrarEventoVenta("PAUSA", `Pausa #${conteoPausas} por [${cajeroActual}]. Total: $${totalActual}. Nombre: "${n}"`);
+        }
+
         // Conservamos todas las propiedades originales y aseguramos 'can', 'cant' y 'cantidad'
         let itemsLimpios = carV.map(item => {
             let q = item.can || item.cant || item.cantidad || 1;
@@ -2931,19 +3415,25 @@ function preguntarPausar() {
             };
         });
 
+        // 🕵️ 3. ESTRUCTURA CON HISTORIAL AUDITABLE
         let nuevaPausada = { 
             id: String(idPausada), 
             nom: n, 
-            total: document.getElementById('v_total').innerText, 
+            total: totalActual, 
             items: itemsLimpios, 
-            sucursal: typeof sucursalActual !== 'undefined' ? sucursalActual : "Matriz" 
+            sucursal: typeof sucursalActual !== 'undefined' ? sucursalActual : "Matriz",
+            // Campos de auditoría para cámaras y seguridad:
+            veces_pausada: conteoPausas,
+            ultima_pausa_hora: horaPausa,
+            cajero_pauso: cajeroActual,
+            caja_negra: [...(window.historialVentaActual || [])]
         }; 
         
         pausadas = pausadas.filter(p => String(p.id) !== String(idPausada)); 
         pausadas.push(nuevaPausada); 
         localStorage.setItem("pos_pausadas_v6", JSON.stringify(pausadas)); 
         
-        // CÓDIGO ORIGINAL DE NUBE
+        // CÓDIGO DE NUBE POCKETBASE
         try { 
             if (typeof db !== 'undefined') {
                 if (typeof db.collection("pausadas").create === 'function') {
@@ -2958,6 +3448,13 @@ function preguntarPausar() {
             }
         } catch(e) { console.error("Error al subir a la nube:", e); }
         
+        // 🕵️ 4. LIMPIEZA DE MEMORIA PARA EL SIGUIENTE CLIENTE
+        if (typeof limpiarCajaNegra === 'function') {
+            limpiarCajaNegra();
+        } else {
+            window.historialVentaActual = [];
+        }
+
         carV = []; 
         forceWholesale = false; 
         window.idVentaPausadaActual = null;
@@ -2975,7 +3472,6 @@ function preguntarPausar() {
         if(inputEscaner) { inputEscaner.value = ''; inputEscaner.focus(); } 
     }, 150);
 }
-
 // =========================================================
 // RETOMAR VENTA (BORRADO FANTASMA)
 // =========================================================
@@ -2988,6 +3484,16 @@ function retomarVenta(idBuscar) {
     carV = Array.isArray(ventaRecuperada.items) ? ventaRecuperada.items : [];
     nombreVentaActual = ventaRecuperada.nom || "Venta";
     window.idVentaPausadaActual = String(ventaRecuperada.id);
+
+    // 🕵️ 1. RESTAURAR LA CAJA NEGRA Y REGISTRAR LA ACCIÓN
+    // Recuperamos el historial que traía esta venta desde que se pausó
+    window.historialVentaActual = ventaRecuperada.caja_negra ? [...ventaRecuperada.caja_negra] : [];
+    
+    // Anotamos en la bitácora que la venta volvió a la vida
+    if (typeof registrarEventoVenta === 'function') {
+        let cajero = (typeof usuarioActual !== 'undefined' && usuarioActual) ? usuarioActual : 'Desconocido';
+        registrarEventoVenta("REANUDAR", `Venta "${nombreVentaActual}" despausada por [${cajero}]`);
+    }
 
     pausadas.splice(i, 1);
     localStorage.setItem("pos_pausadas_v6", JSON.stringify(pausadas));
@@ -4205,88 +4711,100 @@ window.procesarGuardadoEInventario = async function(totalCompra, metodoNombre, m
 // ==========================================
 
 window.guardarAjusteStock = async function() {
-    let nuevoStock = parseFloat(document.getElementById('ajuste_nuevo_stock').value);
-    let pin = document.getElementById('ajuste_admin_pin').value;
-    
-    if (isNaN(nuevoStock) || nuevoStock < 0) return alert("⚠️ Cantidad inválida.");
-    
-    if (usuariosData["Admin"] && usuariosData["Admin"].pin === pin) {
-        let pO = inv[codAjusteStock] || {};
-        let codMaestro = (pO.grupo && inv[pO.grupo]) ? pO.grupo : codAjusteStock;
-        let pMaestro = inv[codMaestro] || pO;
+    // 🛑 CANDADO ANTI-DOBLE CLIC (Evita que se envíe 2 veces si hacen clic rápido)
+    if (window.guardandoAjusteEnProceso) return; 
+    window.guardandoAjusteEnProceso = true;
 
-        let stockAntesReal = 0;
-        if (pMaestro.stock && typeof pMaestro.stock === 'object') {
-            stockAntesReal = parseFloat(pMaestro.stock[sucursalActual]) || 0;
-        } else {
-            stockAntesReal = parseFloat(pMaestro.stock) || parseFloat(pMaestro.existencia) || parseFloat(pMaestro.can) || 0;
-        }
-
-        let stockDespuesReal = parseFloat(nuevoStock.toFixed(3));
-        let diferencia = parseFloat((stockDespuesReal - stockAntesReal).toFixed(3));
-
-        if (typeof pMaestro.stock !== 'object' || pMaestro.stock === null) {
-            pMaestro.stock = {};
+    try {
+        let nuevoStock = parseFloat(document.getElementById('ajuste_nuevo_stock').value);
+        let pin = document.getElementById('ajuste_admin_pin').value;
+        
+        if (isNaN(nuevoStock) || nuevoStock < 0) {
+            alert("⚠️ Cantidad inválida.");
+            return; // Importante salir de aquí si hay error
         }
         
-        // 1. Ajuste en la memoria local (Esto se guarda sí o sí)
-        pMaestro.stock[sucursalActual] = stockDespuesReal;
-        try { localStorage.setItem("pos_precision_v6", JSON.stringify(inv)); } catch (e) { }
+        if (usuariosData["Admin"] && usuariosData["Admin"].pin === pin) {
+            let pO = inv[codAjusteStock] || {};
+            let codMaestro = (pO.grupo && inv[pO.grupo]) ? pO.grupo : codAjusteStock;
+            let pMaestro = inv[codMaestro] || pO;
 
-        let guardadoExitoso = false;
-
-        // 🌟 ESCUDO ANTI-DUPLICADOS (Buscador inteligente)
-        if (typeof pb !== 'undefined') {
-            try {
-                let idBuscar = String(codMaestro); 
-                // En lugar de buscar por ID estricto, buscamos dentro de la columna 'cod' o 'codigo'
-                let pNube = await pb.collection('inventario').getFirstListItem(`id="${idBuscar}" || cod="${idBuscar}" || codigo="${idBuscar}"`);
-                
-                if (!pNube.stock) pNube.stock = {};
-                if (!pNube.inv_sucursales) pNube.inv_sucursales = {};
-                
-                pNube.stock[sucursalActual] = stockDespuesReal;
-                pNube.inv_sucursales[sucursalActual] = stockDespuesReal;
-                if (!pNube.stock && !pNube.inv_sucursales && pNube.can !== undefined) pNube.can = stockDespuesReal;
-                
-                // Actualizamos usando el ID interno real que PocketBase le haya asignado (Evita duplicados)
-                await pb.collection('inventario').update(pNube.id, pNube);
-                guardadoExitoso = true;
-            } catch (errPb) {
-                console.warn("PocketBase no localizó el código. Pasando a sistema secundario...");
+            let stockAntesReal = 0;
+            if (pMaestro.stock && typeof pMaestro.stock === 'object') {
+                stockAntesReal = parseFloat(pMaestro.stock[sucursalActual]) || 0;
+            } else {
+                stockAntesReal = parseFloat(pMaestro.stock) || parseFloat(pMaestro.existencia) || parseFloat(pMaestro.can) || 0;
             }
-        }
 
-        // INTENTO 2: Sistema original db (Solo usamos .set para evitar el error de .get)
-        if (!guardadoExitoso && typeof db !== 'undefined') {
-            try {
-                await db.collection("inventario").doc(String(codMaestro)).set(pMaestro);
-                guardadoExitoso = true;
-            } catch (errFb) {
-                console.error("Error en base de datos secundaria:", errFb);
-            }
-        }
+            let stockDespuesReal = parseFloat(nuevoStock.toFixed(3));
+            let diferencia = parseFloat((stockDespuesReal - stockAntesReal).toFixed(3));
 
-        // FIN DEL PROCESO
-        if (guardadoExitoso) {
-            if (typeof registrarEnKardex === 'function') {
-                registrarEnKardex(codAjusteStock, pO.nom, "AJUSTE", diferencia, pO.pv || 0, pO.cos || 0, stockAntesReal, stockDespuesReal);
+            if (typeof pMaestro.stock !== 'object' || pMaestro.stock === null) {
+                pMaestro.stock = {};
             }
-            document.getElementById('modalAjusteStock').style.display = 'none';
-            alert("✅ Stock ajustado y guardado correctamente.");
+            
+            // 1. Ajuste en la memoria local (Esto se guarda sí o sí)
+            pMaestro.stock[sucursalActual] = stockDespuesReal;
+            try { localStorage.setItem("pos_precision_v6", JSON.stringify(inv)); } catch (e) { }
+
+            let guardadoExitoso = false;
+
+            // 🌟 ESCUDO ANTI-DUPLICADOS (Buscador inteligente)
+            if (typeof pb !== 'undefined') {
+                try {
+                    let idBuscar = String(codMaestro); 
+                    // En lugar de buscar por ID estricto, buscamos dentro de la columna 'cod' o 'codigo'
+                    let pNube = await pb.collection('inventario').getFirstListItem(`id="${idBuscar}" || cod="${idBuscar}" || codigo="${idBuscar}"`);
+                    
+                    if (!pNube.stock) pNube.stock = {};
+                    if (!pNube.inv_sucursales) pNube.inv_sucursales = {};
+                    
+                    pNube.stock[sucursalActual] = stockDespuesReal;
+                    pNube.inv_sucursales[sucursalActual] = stockDespuesReal;
+                    if (!pNube.stock && !pNube.inv_sucursales && pNube.can !== undefined) pNube.can = stockDespuesReal;
+                    
+                    // Actualizamos usando el ID interno real que PocketBase le haya asignado (Evita duplicados)
+                    await pb.collection('inventario').update(pNube.id, pNube);
+                    guardadoExitoso = true;
+                } catch (errPb) {
+                    console.warn("PocketBase no localizó el código. Pasando a sistema secundario...");
+                }
+            }
+
+            // INTENTO 2: Sistema original db (Solo usamos .set para evitar el error de .get)
+            if (!guardadoExitoso && typeof db !== 'undefined') {
+                try {
+                    await db.collection("inventario").doc(String(codMaestro)).set(pMaestro);
+                    guardadoExitoso = true;
+                } catch (errFb) {
+                    console.error("Error en base de datos secundaria:", errFb);
+                }
+            }
+
+            // FIN DEL PROCESO
+            if (guardadoExitoso) {
+                if (typeof registrarEnKardex === 'function') {
+                    registrarEnKardex(codAjusteStock, pO.nom, "AJUSTE", diferencia, pO.pv || 0, pO.cos || 0, stockAntesReal, stockDespuesReal);
+                }
+                document.getElementById('modalAjusteStock').style.display = 'none';
+                alert("✅ Stock ajustado y guardado correctamente.");
+            } else {
+                // Si ambos fallan por falta de internet, no bloqueamos al usuario, confirmamos que se guardó local
+                document.getElementById('modalAjusteStock').style.display = 'none';
+                alert("⚠️ Stock guardado localmente (La nube no respondió o estás offline).");
+            }
+            
+            if (typeof renderTablaInventario === 'function') renderTablaInventario();
+            if (typeof renderI === 'function') renderI(); 
+
         } else {
-            // Si ambos fallan por falta de internet, no bloqueamos al usuario, confirmamos que se guardó local
-            document.getElementById('modalAjusteStock').style.display = 'none';
-            alert("⚠️ Stock guardado localmente (La nube no respondió o estás offline).");
+            alert("❌ PIN Incorrecto.");
+            document.getElementById('ajuste_admin_pin').value = '';
+            document.getElementById('ajuste_admin_pin').focus();
         }
-        
-        if (typeof renderTablaInventario === 'function') renderTablaInventario();
-        if (typeof renderI === 'function') renderI(); 
-
-    } else {
-        alert("❌ PIN Incorrecto.");
-        document.getElementById('ajuste_admin_pin').value = '';
-        document.getElementById('ajuste_admin_pin').focus();
+    } finally {
+        // 🔓 ABRIMOS EL CANDADO SIEMPRE AL FINAL (incluso si hubo un error)
+        window.guardandoAjusteEnProceso = false;
     }
 };
 
@@ -5877,10 +6395,11 @@ async function abrirVisorTickets() {
     document.getElementById('modalVisor').style.display = 'block'; 
     if (searchInput) setTimeout(() => searchInput.focus(), 100);
 }
+
 let ultimaFechaVisor = "";
 
 async function filtrarVisorTickets() {
-    console.log("🔎 ===== INICIO FILTRO VISOR (AHORA CON INDEXEDDB) =====");
+    console.log("🔎 ===== INICIO FILTRO VISOR (REPARACIÓN DE FORMATOS) =====");
 
     let searchInput = document.getElementById('visor_search');
     let dateInput = document.getElementById('visor_date');
@@ -5889,8 +6408,15 @@ async function filtrarVisorTickets() {
     let selectedDate = dateInput ? dateInput.value : '';
     let terms = txt ? txt.split(/\s+/) : [];
 
+    // 🛡️ PARCHE 1: Preparar la fecha en ambos formatos (YYYY-MM-DD y DD/MM/YYYY)
+    let altDate = selectedDate;
+    if (selectedDate.includes('-')) {
+        let partes = selectedDate.split('-');
+        altDate = `${partes[2]}/${partes[1]}/${partes[0]}`; 
+    }
+
     // =====================================================
-    // 1. DESCARGAR DÍA DESDE LA NUBE (El Presente)
+    // 1. DESCARGAR DÍA DESDE LA NUBE (Con guardado en Disco)
     // =====================================================
     if (selectedDate !== '' && typeof pb !== 'undefined') {
         if (selectedDate !== ultimaFechaVisor) {
@@ -5899,51 +6425,53 @@ async function filtrarVisorTickets() {
             if (counterEl) counterEl.innerText = "⚡...";
 
             try {
+                // 🌟 Buscamos CUALQUIERA de los dos formatos de fecha en la base de datos
                 let records = await pb.collection('ventas').getFullList({
-                    filter: `data.fecha ~ "${selectedDate}"`,
+                    filter: `data~'${selectedDate}' || data~'${altDate}'`, 
                     requestKey: null
                 });
 
-                if (typeof ventas === 'undefined') window.ventas = []; // 🛡️ Blindaje extra
+                let nuevosParaDisco = [];
                 
                 records.forEach(r => {
+                    // 🛡️ PARCHE 2: Convertir de Texto a Objeto si es necesario
+                    let rawData = r.data || r;
+                    if (typeof rawData === 'string') {
+                        try { rawData = JSON.parse(rawData); } catch(e) {}
+                    }
+
                     let ticketNube = {
-                        ...(r.data || r),
-                        id: r.doc_id || r.id || (r.data && r.data.id)
+                        ...rawData,
+                        id: r.doc_id || r.id || (rawData && rawData.id)
                     };
-
-                    if (!ticketNube || !ticketNube.id) return;
-
-                    let existe = window.ventas.some(v => String(v.id) === String(ticketNube.id));
-                    if (!existe) {
-                        window.ventas.push(ticketNube);
+                    
+                    if (ticketNube && ticketNube.id) {
+                        nuevosParaDisco.push(ticketNube);
                     }
                 });
+
+                // 💾 Guardamos el día histórico directo en el disco duro (IndexedDB)
+                if (window.dbLocal && dbLocal.ventas && nuevosParaDisco.length > 0) {
+                    await dbLocal.ventas.bulkPut(nuevosParaDisco).catch(()=>{});
+                }
             } catch (e) {
-                console.error("❌ Error descargando día:", e);
+                console.warn("⚠️ No se pudo descargar el día en la nube:", e);
             }
         }
     }
 
     // =====================================================
-    // 2. EXTRAER VENTAS DEL DISCO DURO (El Pasado Local)
-    // =====================================================
-    let ventasLocales = [];
-    if (window.dbLocal) {
-        try {
-            ventasLocales = await dbLocal.ventas.toArray();
-        } catch(e) {
-            console.warn("⚠️ No se pudo leer el disco duro local (IndexedDB):", e);
-        }
-    }
-
-    // =====================================================
-    // 3. UNIFICAR TODAS LAS FUENTES Y ELIMINAR DUPLICADOS
+    // 2. EXTRAER VENTAS DEL DISCO DURO Y RAM
     // =====================================================
     let todasLasVentas = [];
-    let idsVistos = new Set(); // 🛡️ Doble candado anti-duplicados
+    if (window.dbLocal && dbLocal.ventas) {
+        try {
+            todasLasVentas = await dbLocal.ventas.toArray();
+        } catch(e) {}
+    }
 
-    // A) Memoria temporal de la sesión (Chrome)
+    let idsVistos = new Set(todasLasVentas.map(v => String(v.id)));
+    
     if (typeof ventas !== 'undefined' && Array.isArray(ventas)) {
         ventas.forEach(v => {
             if (v && v.id && !idsVistos.has(String(v.id))) {
@@ -5953,26 +6481,8 @@ async function filtrarVisorTickets() {
         });
     }
 
-    // B) Disco duro local (IndexedDB)
-    ventasLocales.forEach(v => {
-        if (v && v.id && !idsVistos.has(String(v.id))) {
-            idsVistos.add(String(v.id));
-            todasLasVentas.push(v);
-        }
-    });
-
-    // C) Histórico temporal
-    if (window.ventasHistoricasTemporales && Array.isArray(window.ventasHistoricasTemporales)) {
-        window.ventasHistoricasTemporales.forEach(t => {
-            if (t && t.id && !idsVistos.has(String(t.id))) {
-                idsVistos.add(String(t.id));
-                todasLasVentas.push(t);
-            }
-        });
-    }
-
     // =====================================================
-    // 4. FILTRO DE SUCURSAL Y FECHA
+    // 3. FILTRO DE SUCURSAL Y FECHA
     // =====================================================
     const limpiarSucursal = valor => String(valor || "").replace(/📍/g, "").trim().toLowerCase();
     const sucursalFiltro = limpiarSucursal(typeof sucursalActual !== "undefined" ? sucursalActual : "");
@@ -5985,77 +6495,40 @@ async function filtrarVisorTickets() {
     if (selectedDate !== '') {
         resultado = resultado.filter(v => {
             if (!v.fecha) return false;
-            return (String(v.fecha).trim() === selectedDate);
+            let f = String(v.fecha).trim();
+            // 🌟 Aceptamos que el ticket coincida con cualquiera de los dos formatos
+            return (f === selectedDate || f === altDate);
         });
     }
 
     // =====================================================
-    // 5. FILTRO DE BÚSQUEDA (Texto, cliente, productos)
+    // 4. FILTRO DE BÚSQUEDA Y RENDERIZADO
     // =====================================================
     if (terms.length > 0) {
         resultado = resultado.filter(v => {
-            
             let clientStr = v.cliente || v.nom || 'Público';
             if (clientStr === 'Público' || clientStr === 'Público General') {
                 if (v.cliente_tel && typeof clientes !== 'undefined' && clientes[v.cliente_tel]) {
                     clientStr = clientes[v.cliente_tel].nom;
-                } else if (v.pagos && Array.isArray(v.pagos)) {
-                    let pCred = v.pagos.find(p => p.metodo && p.metodo.toLowerCase().includes('crédit'));
-                    if (pCred && pCred.cliente_tel && typeof clientes !== 'undefined' && clientes[pCred.cliente_tel]) {
-                        clientStr = clientes[pCred.cliente_tel].nom;
-                    }
                 }
             }
-
             let productosStr = "";
             if (v.detalles && Array.isArray(v.detalles)) {
-                productosStr = v.detalles.map(d => `${d.cod || ''} ${d.nom || ''} ${d.cod_maestro || ''}`).join(" ");
+                productosStr = v.detalles.map(d => `${d.cod || ''} ${d.nom || ''}`).join(" ");
             } else if (v.items) {
                 productosStr = v.items;
             }
 
-            let textoBuscable = `
-                ${v.id || ''}
-                ${v.fecha || ''}
-                ${v.hora || ''}
-                ${clientStr}
-                ${v.cajero || ''}
-                ${v.metodo || ''}
-                ${productosStr}
-            `.toLowerCase();
-
+            let textoBuscable = `${v.id||''} ${v.fecha||''} ${clientStr} ${v.metodo||''} ${productosStr}`.toLowerCase();
             return terms.every(t => textoBuscable.includes(t));
         });
     }
 
-    // =====================================================
-    // 6. ASIGNAR UNA SOLA VEZ E INYECTAR NOMBRE PARA EL TICKET
-    // =====================================================
     visorIndices = resultado.map((v, idx) => {
-        let nombreRecuperado = v.cliente || v.nom;
-        
-        if (!nombreRecuperado || nombreRecuperado === "Público General") {
-            if (v.cliente_tel && typeof clientes !== 'undefined' && clientes[v.cliente_tel]) {
-                nombreRecuperado = clientes[v.cliente_tel].nom;
-            } else if (v.pagos && Array.isArray(v.pagos)) {
-                let pCredito = v.pagos.find(p => p.metodo && p.metodo.toLowerCase().includes('crédit'));
-                if (pCredito && pCredito.cliente_tel && typeof clientes !== 'undefined' && clientes[pCredito.cliente_tel]) {
-                    nombreRecuperado = clientes[pCredito.cliente_tel].nom;
-                }
-            }
-        }
-
-        return {
-            ...v,
-            cliente: nombreRecuperado || "Público General",
-            nom: nombreRecuperado || "Público General",
-            indexGlobal: idx
-        };
+        let nombreRecuperado = v.cliente || v.nom || "Público General";
+        return { ...v, cliente: nombreRecuperado, nom: nombreRecuperado, indexGlobal: idx };
     });
 
-    // =====================================================
-    // 7. RENDER FINAL
-    // =====================================================
     if (visorIndices.length === 0) {
         let counter = document.getElementById('visor_counter'); if(counter) counter.innerText = "0 / 0";
         let vFecha = document.getElementById('visor_fecha'); if(vFecha) vFecha.innerText = "Vacío";
@@ -6063,7 +6536,7 @@ async function filtrarVisorTickets() {
         let vTotal = document.getElementById('visor_total'); if(vTotal) vTotal.innerText = "0.00";
         let btnAnular = document.getElementById('btn_anular_visor'); if(btnAnular) btnAnular.disabled = true;
     } else {
-        currentVisorPos = visorIndices.length - 1; // Muestra el ticket más reciente
+        currentVisorPos = visorIndices.length - 1; 
         if(typeof renderVisorActivo === 'function') renderVisorActivo();
     }
 }
@@ -7177,7 +7650,7 @@ window.registrarEnKardex = function(productoCod, productoNom, tipoMov, cantidad,
 // 📊 RENDERIZADO PASIVO DEL KARDEX (NO ALTERA PESTAÑAS)
 // =========================================================================
 // 1. INICIALIZAR LA MEMORIA TEMPORAL DEL KARDEX
-// Inicia completamente limpio al abrir la página para no saturar Chrome
+/// Inicia completamente limpio al abrir la página para no saturar Chrome
 window.historialKardex = []; 
 
 window.renderKardex = async function() {
@@ -7193,7 +7666,7 @@ window.renderKardex = async function() {
                 sucursalesSeguras.map(s => `<option value="${s}">📍 ${s}</option>`).join('');
         }
 
-        // 2. Solo lee de IndexedDB si la memoria está vacía (evita el lag de releer miles de filas)
+        // 2. Solo lee de IndexedDB si la memoria está vacía
         if (!window.historialKardex || window.historialKardex.length === 0) {
             let tbody = document.getElementById('kardex_tabla_body');
             if (tbody) {
@@ -7202,11 +7675,35 @@ window.renderKardex = async function() {
 
             if (window.dbLocal && dbLocal.kardex) {
                 let kardexLocal = await dbLocal.kardex.toArray();
+                
+                // 🌟 EL SÚPER ORDENADOR: Traduce cualquier texto a tiempo real
                 kardexLocal.sort((a, b) => {
-                    let tB = b.timestamp || parseInt(b.id, 10) || 0;
-                    let tA = a.timestamp || parseInt(a.id, 10) || 0;
+                    const extraerTiempo = (reg) => {
+                        // 1er intento: Timestamp puro (si existe)
+                        if (reg.timestamp) return reg.timestamp;
+                        
+                        // 2do intento: Convertir el texto a fecha matemática (Ej. "2026-09-09 3:33:29 p.m.")
+                        if (reg.fecha || reg.hora) {
+                            let textoFecha = String(reg.fecha || reg.hora);
+                            // Limpiamos los puntos de p.m. / a.m. para que el navegador no se confunda
+                            textoFecha = textoFecha.replace(/\./g, '').toUpperCase(); 
+                            let tiempoReal = new Date(textoFecha).getTime();
+                            if (!isNaN(tiempoReal)) return tiempoReal;
+                        }
+                        
+                        // 3er intento: Usar el "created" por defecto de PocketBase
+                        if (reg.created) return new Date(reg.created).getTime();
+                        
+                        return 0; // Si todo falla, lo manda al final
+                    };
+
+                    let tA = extraerTiempo(a);
+                    let tB = extraerTiempo(b);
+                    
+                    // Orden descendente (Los más recientes siempre hasta arriba)
                     return tB - tA;
                 });
+                
                 window.historialKardex = kardexLocal;
             }
         }
@@ -7256,16 +7753,11 @@ function parsearFechaHoraKardex(reg) {
     let dt = new Date(`${f}T${h}`);
     return isNaN(dt.getTime()) ? 0 : dt.getTime();
 }
-
 // =========================================================================
 // 📊 CONTROLADOR DE FILTRADO, ORDENAMIENTO Y RENDERIZADO DEL KARDEX
 // =========================================================================
-window.filtrarKardex = function() {
+window.filtrarKardex = async function() {
     try {
-        // 🛡️ Normalización de la fuente de datos en memoria (Soporta Array u Object)
-        let fuente = window.historialKardex || window.kardex || (typeof kardex !== 'undefined' ? kardex : []);
-        let registros = Array.isArray(fuente) ? fuente : Object.values(fuente);
-
         // Captura reactiva de valores desde el DOM
         let txtInput = document.getElementById('kardex_buscar');
         let txt = txtInput ? txtInput.value.toLowerCase().trim() : "";
@@ -7281,6 +7773,26 @@ window.filtrarKardex = function() {
 
         let fFinInput = document.getElementById('kardex_fecha_fin');
         let fFin = fFinInput ? fFinInput.value : "";
+
+        // Verificamos si el usuario está realizando alguna búsqueda activa
+        let hayFiltros = (txt !== "" || fIni !== "" || fFin !== "" || sucFiltro !== "" || tipoFiltro !== "");
+
+        // 🛡️ MAGIA DE RECUPERACIÓN (ANTI-RADAR)
+        let fuente = window.historialKardex || window.kardex || (typeof kardex !== 'undefined' ? kardex : []);
+        let registros = Array.isArray(fuente) ? fuente : Object.values(fuente);
+
+        // Si el usuario aplicó un filtro, pero el Radar nos recortó la memoria RAM a solo 200 registros, 
+        // sacamos TODO el arsenal del disco duro profundo de forma instantánea.
+        if (hayFiltros && registros.length < 1000 && window.dbLocal && dbLocal.kardex) {
+            let tbody = document.getElementById('kardex_tabla_body');
+            if (tbody && tbody.innerHTML.indexOf('Buscando') === -1) {
+                tbody.innerHTML = '<tr><td colspan="10" style="text-align:center; padding:20px; color:#0d6efd;">⏳ Extrayendo historial profundo del archivo...</td></tr>';
+            }
+            // Sacamos los casi 160,000 registros
+            registros = await dbLocal.kardex.toArray();
+            // Lo devolvemos a la memoria RAM para que no repita el proceso en la siguiente tecla
+            window.historialKardex = registros; 
+        }
 
         // Pipeline de filtrado
         let filtrados = registros.filter(reg => {
@@ -7313,8 +7825,7 @@ window.filtrarKardex = function() {
             return matchTxt && matchSuc && matchTipo && matchFIni && matchFFin;
         });
 
-        // 🌟 ORDENAMIENTO CRONOLÓGICO: Más reciente primero (Descendente)
-      // 🌟 ORDENAMIENTO CRONOLÓGICO SEGURO: Si no existe el helper, usa el ID o timestamp
+        // 🌟 ORDENAMIENTO CRONOLÓGICO SEGURO
         filtrados.sort((a, b) => {
             if (typeof parsearFechaHoraKardex === 'function') {
                 return parsearFechaHoraKardex(b) - parsearFechaHoraKardex(a);
@@ -7329,12 +7840,13 @@ window.filtrarKardex = function() {
             let tipoLimpio = String(reg.tipo || '').toUpperCase();
             let colorTipo = '#000';
             
+            // Asignación de colores dinámicos (Agregué los envíos en morado)
             if (tipoLimpio.includes('VENTA')) colorTipo = 'var(--s)';
             else if (tipoLimpio.includes('COMPRA')) colorTipo = '#17a2b8';
             else if (tipoLimpio.includes('EDICIÓN')) colorTipo = 'var(--p)';
             else if (tipoLimpio.includes('AJUSTE')) colorTipo = '#fd7e14';
             else if (tipoLimpio.includes('ANULACIÓN')) colorTipo = 'var(--danger)';
-            else if (tipoLimpio.includes('TRANSFERENCIA')) colorTipo = '#6f42c1';
+            else if (tipoLimpio.includes('TRANSFERENCIA') || tipoLimpio.includes('ENVÍO') || tipoLimpio.includes('ENVIO')) colorTipo = '#6f42c1';
 
             let cant = parseFloat(reg.cantidad) || 0;
             let colorCant = cant > 0 ? 'var(--s)' : (cant < 0 ? 'var(--danger)' : '#666');
@@ -10955,10 +11467,17 @@ window.transferenciaDevueltaActual = null;
 window.transferenciasVistas = window.transferenciasVistas || new Set();
 
 window.iniciarRadarTransferencias = function() {
+
+    // 🔒 Candado booleano inmediato
+    if (window.radarTransferenciasBloqueado) return;
+    window.radarTransferenciasBloqueado = true;
+
     if (window.intervaloRadar) clearInterval(window.intervaloRadar);
     console.log("🚀 Motor de Radar de Transferencias encendido (Versión JSON)...");
 
     window.intervaloRadar = setInterval(async () => {
+        // ...resto del código...
+    
         if (typeof usuarioActual === 'undefined' || !usuarioActual) return; 
         let miNombreLimpio = String(usuarioActual).trim().toLowerCase();
 
@@ -11339,7 +11858,7 @@ function aplicarDescuentoMasivo() {
     // Limpiamos la casilla después de aplicar para el siguiente uso
     document.getElementById('desc_masivo').value = "";
 }// =====================================================
-// 👻 EL SINCRONIZADOR FANTASMA (OFFLINE-FIRST)
+// 👻 EL SINCRONIZADOR FANTASMA (OFFLINE-FIRST) - OPTIMIZADO 🚀
 // =====================================================
 window.sincronizadorFantasma = async function() {
     // 🛡️ 1. Candado anti-colisiones (evita dos procesos al mismo tiempo)
@@ -11352,7 +11871,7 @@ window.sincronizadorFantasma = async function() {
     window.sincronizandoEnProceso = true;
 
     try {
-        // Buscamos únicamente las ventas que quedaron pendientes
+        // Buscamos las ventas que quedaron pendientes
         let pendientes = await dbLocal.ventas
             .filter(v => v.sync_pendiente === true)
             .toArray();
@@ -11362,9 +11881,16 @@ window.sincronizadorFantasma = async function() {
             return;
         }
 
-        console.log(`👻 Sincronizador Fantasma: detectadas ${pendientes.length} venta(s) pendientes de subir...`);
+        // 📦 MEJORA 1: Procesar en lotes (Máximo 50 por pasada)
+        // Esto evita que una sincronización masiva sature la RAM
+        let loteAProcesar = pendientes.slice(0, 50);
 
-        for (let venta of pendientes) {
+        console.log(`👻 Sincronizador Fantasma: detectadas ${pendientes.length} venta(s) pendientes. Subiendo lote de ${loteAProcesar.length}...`);
+
+        // ⏱️ Función para pausar (Freno de mano)
+        const esperar = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+
+        for (let venta of loteAProcesar) {
             try {
                 let ventaNube = {
                     doc_id: String(venta.id),
@@ -11379,8 +11905,13 @@ window.sincronizadorFantasma = async function() {
                 await dbLocal.ventas.put(venta);
 
                 console.log(`☁️ Venta #${venta.id} sincronizada con la nube exitosamente.`);
+                
+                // 🛑 MEJORA 2: El Freno de Mano
+                // Pausamos 150ms antes de enviar la siguiente para no trabar Chrome
+                await esperar(150);
+
             } catch (err) {
-                // Si ya existía en la nube (error 400), la marcamos como sincronizada para no atascar la cola
+                // Si ya existía en la nube (error 400), la marcamos como sincronizada
                 if (err.status === 400 || (err.data && err.data.doc_id)) {
                     venta.sync_pendiente = false;
                     await dbLocal.ventas.put(venta);
@@ -11411,3 +11942,599 @@ window.addEventListener('online', () => {
         window.sincronizadorFantasma();
     }
 });
+// 🛡️ VALIDADOR: ¿El usuario actual tiene derecho a ver las alertas?
+function puedeVerAlertaStock() {
+    // 1. Si la función está apagada en ajustes, nadie la ve.
+    if (!window.configAlertasStock.activa) return false;
+
+    // 2. Revisamos quién tiene la sesión abierta (ajusta la variable según cómo manejes tu cajero actual)
+    let rolUsuarioActual = "Admin"; // <-- Cambia esto por tu variable real, ej: window.cajeroLogueado.rol o similar
+    if (typeof usuarioActual !== 'undefined' && usuarioActual.rol) {
+        rolUsuarioActual = usuarioActual.rol;
+    } else if (typeof cajeroActivo !== 'undefined' && cajeroActivo !== 'Admin') {
+        rolUsuarioActual = "Cajero";
+    }
+
+    // 3. Verificamos los permisos
+    if (window.configAlertasStock.permiso === 'Todos') {
+        return true; // Todos pueden verlo
+    } else {
+        // Solo el Admin puede verlo
+        return rolUsuarioActual === 'Admin';
+    }
+}
+// =========================================================================
+// 🧀 LÓGICA DEL MODO CREMERÍA (FASE 1)
+// =========================================================================
+let carritoCremeria = [];
+
+window.categoriaModoCremeria = 'CREMERIA'; // Pestaña por defecto
+
+window.abrirModoCremeria = function() {
+    document.getElementById('modal_cremeria').style.display = 'flex';
+    carritoCremeria = []; // Limpiamos el ticket virtual
+    window.categoriaModoCremeria = 'CREMERIA'; // Siempre abre en Cremería
+    dibujarCarritoCremeria();
+    dibujarBotonesCremeria();
+};
+
+// Función para cuando tocan una pestaña diferente
+window.cambiarTabCremeria = function(categoria) {
+    window.categoriaModoCremeria = categoria;
+    dibujarBotonesCremeria(); // Refrescamos los botones
+};
+
+// Variable para guardar el motor de la cámara
+window.escanerFisico = null;
+
+// 1. Encender la cámara
+window.escanearEnCremeria = function() {
+    document.getElementById('visor_camara_cremeria').style.display = 'flex';
+    
+    // Si no se ha creado el motor, lo inicializamos
+    if (!window.escanerFisico) {
+        window.escanerFisico = new Html5Qrcode("lector_qr");
+    }
+    
+    // Configuramos para usar la cámara trasera ("environment")
+    window.escanerFisico.start(
+        { facingMode: "environment" }, 
+        {
+            fps: 10, // Cuántas fotos por segundo toma para analizar
+            qrbox: { width: 250, height: 150 } // El cuadrito donde debe ir el código
+        },
+        (codigoDecodificado) => {
+            // ¡ÉXITO! Encontró un código
+            cerrarCamaraCremeria();
+            procesarCodigoEscaneado(codigoDecodificado);
+        },
+        (error) => {
+            // Fallo normal (cuando la cámara está viendo pero aún no enfoca el código)
+            // No hacemos nada, que siga intentando
+        }
+    ).catch(err => {
+        alert("⚠️ No se pudo acceder a la cámara. Revisa los permisos de tu navegador.");
+        cerrarCamaraCremeria();
+    });
+};
+
+// 2. Apagar la cámara
+window.cerrarCamaraCremeria = function() {
+    document.getElementById('visor_camara_cremeria').style.display = 'none';
+    if (window.escanerFisico) {
+        // Detenemos el video para no gastar batería
+        window.escanerFisico.stop().catch(e => console.log("Cámara ya estaba detenida."));
+    }
+};
+
+// 3. Buscar el producto que leyó la cámara
+window.procesarCodigoEscaneado = function(codigo) {
+    let codLimpio = String(codigo).trim();
+    // Buscamos el producto en todo el inventario
+    let prodEncontrado = Object.values(window.inv || {}).find(p => 
+        String(p.codigo) === codLimpio || String(p.cod) === codLimpio || String(p.id) === codLimpio
+    );
+    
+    if(prodEncontrado) {
+        // Lo mandamos a la función que ya tenías para preguntar cantidad
+        agregarProdCremeria(prodEncontrado.id); 
+    } else {
+        alert("❌ Código no encontrado en el inventario: " + codLimpio);
+    }
+};
+
+window.dibujarBotonesCremeria = function() {
+    let tabsCont = document.getElementById('tabs_cremeria');
+    let tabs = [
+        { id: 'CREMERIA', nombre: '🧀 Cremería', palabraClave: 'CREMERIA' }, 
+        { id: 'PANADERIA', nombre: '🥐 Panadería', palabraClave: 'PANADERIA' },
+        { id: 'CROQUETA', nombre: '🐕 Croquetas', palabraClave: 'CROQUETA' }
+    ];
+
+    if(tabsCont) {
+        let htmlTabs = tabs.map(t => {
+            let esActivo = (window.categoriaModoCremeria === t.id);
+            let bg = esActivo ? '#0d6efd' : '#e9ecef';
+            let col = esActivo ? 'white' : '#555';
+            return `<button onclick="cambiarTabCremeria('${t.id}')" style="flex:1; padding:15px 5px; border:none; border-radius:8px; font-weight:bold; font-size:16px; cursor:pointer; background:${bg}; color:${col}; transition:0.2s; box-shadow: ${esActivo ? '0 4px 6px rgba(13,110,253,0.3)' : 'none'};">${t.nombre}</button>`;
+        }).join('');
+        htmlTabs += `<button onclick="escanearEnCremeria()" style="flex:1; padding:15px 5px; border:none; border-radius:8px; font-weight:bold; font-size:16px; cursor:pointer; background:#198754; color:white; transition:0.2s; box-shadow: 0 4px 6px rgba(25,135,84,0.3);">📷 Escanear</button>`;
+        tabsCont.innerHTML = htmlTabs;
+    }
+
+    let grid = document.getElementById('grid_cremeria');
+    let html = '';
+    
+    let productos = [];
+    try {
+        let inventarioReal = (typeof inv !== 'undefined') ? inv : (window.inv || {});
+        let invKeys = Object.keys(inventarioReal);
+        for (let i = 0; i < invKeys.length; i++) {
+            let clave = invKeys[i];
+            let prod = inventarioReal[clave];
+            if (prod && typeof prod === 'object') {
+                prod.id = clave; 
+                productos.push(prod);
+            }
+        }
+    } catch(e) {
+        console.error("Error leyendo inventario:", e);
+    }
+
+    let pestañaActual = tabs.find(t => t.id === window.categoriaModoCremeria);
+    let palabraBuscada = (pestañaActual ? pestañaActual.palabraClave : window.categoriaModoCremeria).toUpperCase().trim();
+    const limpiarTexto = (str) => String(str).normalize("NFD").replace(/[\u0300-\u036f]/g, "").toUpperCase().trim();
+    let palabraLimpia = limpiarTexto(palabraBuscada);
+
+    let productosFiltrados = productos.filter(p => {
+        let deptoCrudo = p.dep || p.depto || p.departamento || p.categoria || p.grupo || '';
+        return limpiarTexto(deptoCrudo).includes(palabraLimpia);
+    });
+
+    if (window.metricasVentasCache) {
+        productosFiltrados.sort((a, b) => {
+            let codA = String(a.id).trim();
+            let codB = String(b.id).trim();
+            let ventasA = window.metricasVentasCache[codA] ? window.metricasVentasCache[codA].totalVendidas : 0;
+            let ventasB = window.metricasVentasCache[codB] ? window.metricasVentasCache[codB].totalVendidas : 0;
+            return ventasB - ventasA; 
+        });
+    }
+
+    let topProductos = productosFiltrados.slice(0, 40);
+
+    topProductos.forEach(p => {
+        let nomLimpio = p.nom ? (p.nom.length > 25 ? p.nom.substring(0, 25) + '...' : p.nom) : 'Sin nombre';
+        let tipoProd = p.tipo || 'pieza'; // Detectamos si es pieza o granel
+        
+        // 🚨 Reemplazamos el onclick por los 4 sensores táctiles y evitamos el click derecho nativo
+        html += `<button 
+                    oncontextmenu="event.preventDefault();" 
+                    onpointerdown="iniciarPresion(event, '${p.id}')" 
+                    onpointerup="terminarPresion(event, '${p.id}', '${tipoProd}')" 
+                    onpointerleave="cancelarPresion()" 
+                    onpointercancel="cancelarPresion()"
+                    style="background: white; border: 2px solid #0d6efd; border-radius: 12px; padding: 15px 10px; font-size: 14px; font-weight: bold; color: #333; cursor: pointer; box-shadow: 0 4px 6px rgba(0,0,0,0.1); display: flex; flex-direction: column; align-items: center; text-align: center; transition: 0.1s; user-select: none; -webkit-user-select: none; touch-action: manipulation;">
+                    ${nomLimpio}
+                    <small style="font-size: 14px; color: #198754; margin-top: 8px;">$${parseFloat(p.pv || 0).toFixed(2)}</small>
+                 </button>`;
+    });
+
+    if(html === '') {
+        html = `<h3 style="color:#888; grid-column: 1 / -1; text-align:center; padding: 40px;">No se encontraron productos en "${window.categoriaModoCremeria}".</h3>`;
+    }
+    grid.innerHTML = html;
+};
+window.cerrarModoCremeria = function() {
+    document.getElementById('modal_cremeria').style.display = 'none';
+};
+
+
+
+// Variable temporal para recordar qué estamos despachando
+window.productoActualCremeria = null; 
+
+// Variable temporal para recordar qué estamos despachando
+window.productoActualCremeria = null; 
+// 🌟 Nueva memoria para saber si estamos tecleando Kilos o Pesos
+window.modoIngresoCremeria = 'CANTIDAD'; 
+
+window.agregarProdCremeria = function(idProducto) {
+    let inventarioReal = (typeof inv !== 'undefined') ? inv : (window.inv || {});
+    let prod = inventarioReal[idProducto];
+    
+    if(!prod) return alert("⚠️ Error: No se encontró el producto.");
+
+    window.productoActualCremeria = prod;
+    window.productoActualCremeria.id = idProducto; 
+    
+    // Siempre que abrimos un producto, iniciamos en Modo Peso
+    window.modoIngresoCremeria = 'CANTIDAD';
+
+    // Restauramos el diseño del botón amarillo por si lo habían cambiado
+    let btnToggle = document.getElementById('btn_toggle_modo');
+    if(btnToggle) {
+        btnToggle.innerHTML = '💲 De a $';
+        btnToggle.style.background = '#ffc107'; 
+    }
+
+    // Preparamos el Modal
+    document.getElementById('nombre_prod_cremeria').innerText = `🛒 ${prod.nom} ($${parseFloat(prod.pv||0).toFixed(2)})`;
+    document.getElementById('input_cant_cremeria').value = '';
+    
+    generarBotonesInteligentes(idProducto);
+
+    document.getElementById('modal_cantidad_cremeria').style.display = 'flex';
+    setTimeout(() => document.getElementById('input_cant_cremeria').focus(), 100);
+};
+
+// 🌟 Función que lee el Kardex o pone los montos de Dinero
+window.generarBotonesInteligentes = function(idProducto) {
+    let contenedor = document.getElementById('botones_inteligentes_cant');
+    let inputCont = document.getElementById('input_cant_cremeria');
+    let html = '';
+
+    if (window.modoIngresoCremeria === 'CANTIDAD') {
+        inputCont.placeholder = "Otra cantidad en Kg/Pz...";
+        let cantidadesComunes = [];
+
+        // Buscamos en el Kardex
+        if (window.historialKardex && window.historialKardex.length > 0) {
+            let frecuencias = {};
+            window.historialKardex.forEach(mov => {
+                if ((mov.id === idProducto || String(mov.codigo).trim() === String(idProducto).trim()) && mov.movimiento === 'VENTA') {
+                    let cant = Math.abs(parseFloat(mov.cant || mov.cantidad || mov.can || 0));
+                    if (cant > 0) frecuencias[cant] = (frecuencias[cant] || 0) + 1;
+                }
+            });
+            let ordenadas = Object.keys(frecuencias).sort((a, b) => frecuencias[b] - frecuencias[a]);
+            cantidadesComunes = ordenadas.slice(0, 3).map(Number);
+        }
+
+        if (cantidadesComunes.length === 0) cantidadesComunes = [1, 0.5, 0.25]; 
+
+        cantidadesComunes.forEach(cant => {
+            let texto = cant;
+            if (cant === 0.5) texto = '½ kg/pz';
+            else if (cant === 0.25) texto = '¼ kg/pz';
+            else if (cant === 0.75) texto = '¾ kg/pz';
+            else if (cant === 1) texto = '1 kg/pz';
+            
+            html += `<button onclick="setCantidadCremeria(${cant})" style="background:#e9ecef; border:2px solid #0d6efd; padding:10px; border-radius:8px; font-weight:bold; color:#0d6efd; cursor:pointer; flex:1; min-width:80px; font-size:16px; transition:0.1s;">${texto}</button>`;
+        });
+    } 
+    else {
+        // 💲 MODO DINERO: Mostramos botones de billetes/monedas comunes
+        inputCont.placeholder = "Otro monto en $ pesos...";
+        let montosComunes = [10, 15, 20, 50]; // <--- Aquí puedes agregar o quitar montos
+        
+        montosComunes.forEach(monto => {
+            html += `<button onclick="setCantidadCremeria(${monto})" style="background:#e8f4f8; border:2px solid #0dcaf0; padding:10px; border-radius:8px; font-weight:bold; color:#055160; cursor:pointer; flex:1; min-width:80px; font-size:16px; transition:0.1s;">$${monto}</button>`;
+        });
+    }
+    
+    contenedor.innerHTML = html;
+};
+
+// Acción rápida al tocar un botón (sea de peso o de dinero)
+window.setCantidadCremeria = function(valor) {
+    document.getElementById('input_cant_cremeria').value = valor;
+    confirmarCantidadCremeria(); // Auto-aceptar
+};
+
+// 🔄 Alternador de Modo (El botón amarillo)
+window.calcularPorDineroCremeria = function() {
+    let btnToggle = document.getElementById('btn_toggle_modo');
+    
+    // Cambiamos el estado
+    if (window.modoIngresoCremeria === 'CANTIDAD') {
+        window.modoIngresoCremeria = 'DINERO';
+        btnToggle.innerHTML = '⚖️ Por Peso';
+        btnToggle.style.background = '#0dcaf0'; // Azul clarito para diferenciar
+    } else {
+        window.modoIngresoCremeria = 'CANTIDAD';
+        btnToggle.innerHTML = '💲 De a $';
+        btnToggle.style.background = '#ffc107'; // Regresa a amarillo
+    }
+    
+    // Refrescamos los botones y limpiamos la barra
+    generarBotonesInteligentes(window.productoActualCremeria.id);
+    document.getElementById('input_cant_cremeria').value = '';
+    document.getElementById('input_cant_cremeria').focus();
+};
+
+window.cerrarModalCantidad = function() {
+    document.getElementById('modal_cantidad_cremeria').style.display = 'none';
+    window.productoActualCremeria = null;
+};
+
+// 🧮 El Calculador Final
+window.confirmarCantidadCremeria = function() {
+    let valorRaw = document.getElementById('input_cant_cremeria').value;
+    let valorNum = parseFloat(valorRaw);
+    
+    if(isNaN(valorNum) || valorNum <= 0) return alert("⚠️ Ingresa un valor válido.");
+
+    let prod = window.productoActualCremeria;
+    let cantidadFinal = valorNum;
+
+    // Si estamos en modo dinero, dividimos los pesos entre el precio del producto
+    if (window.modoIngresoCremeria === 'DINERO') {
+        let precio = parseFloat(prod.pv || 0);
+        if (precio <= 0) return alert("❌ El producto no tiene un precio válido asignado.");
+        cantidadFinal = valorNum / precio;
+        cantidadFinal = parseFloat(cantidadFinal.toFixed(3)); // Redondeamos a 3 decimales (Ej. 0.355)
+    }
+    
+    carritoCremeria.push({
+        id: prod.id,
+        cod: prod.codigo || prod.cod || prod.id,
+        nom: prod.nom,
+        can: cantidadFinal, // Aquí se va el peso exacto ya calculado
+        pv: parseFloat(prod.pv || 0),
+        subtotal: cantidadFinal * parseFloat(prod.pv || 0)
+    });
+
+    dibujarCarritoCremeria();
+    cerrarModalCantidad();
+};
+
+
+window.dibujarCarritoCremeria = function() {
+    let lista = document.getElementById('carrito_cremeria');
+    let totalDOM = document.getElementById('total_cremeria');
+    let html = '';
+    let total = 0;
+
+    carritoCremeria.forEach((item, index) => {
+        total += item.subtotal;
+        html += `<div class="item-carrito-cremeria">
+                    <div>
+                        <span style="color:#0d6efd; margin-right:10px; cursor:pointer;" onclick="borrarItemCremeria(${index})">🗑️</span>
+                        ${item.can} x ${item.nom}
+                    </div>
+                    <div>$${item.subtotal.toFixed(2)}</div>
+                 </div>`;
+    });
+
+    if(carritoCremeria.length === 0) {
+        html = '<div style="color:#aaa; text-align:center; margin-top:50px;">El ticket está vacío</div>';
+    }
+
+    lista.innerHTML = html;
+    totalDOM.innerText = `$${total.toFixed(2)}`;
+};
+
+window.borrarItemCremeria = function(index) {
+    carritoCremeria.splice(index, 1);
+    dibujarCarritoCremeria();
+};
+
+// =========================================================
+// 🖨️ FASE 2: IMPRESIÓN DE TICKET TÉRMICO Y GUARDADO
+// =========================================================
+
+window.imprimirTicketCremeria = function() {
+    if(carritoCremeria.length === 0) return alert("El ticket de mostrador está vacío.");
+
+    // 1. Generar un Folio Único (Usamos la hora para que nunca se repita)
+    let fecha = new Date();
+    let folio = "T-" + fecha.getTime().toString().slice(-6); // Ejemplo: T-843189
+
+    // 2. Calcular el total
+    let totalTicket = carritoCremeria.reduce((sum, item) => sum + item.subtotal, 0);
+
+    // 3. Subir el Ticket Fantasma a PocketBase (La Nube)
+    let ticketFantasma = {
+        folio: folio,
+        fecha: fecha.toLocaleString(),
+        // 🔒 Le pegamos la etiqueta de la sucursal actual (o 'General' por defecto)
+        sucursal: (typeof sucursalActual !== 'undefined') ? sucursalActual : 'General',
+        articulos: [...carritoCremeria],
+        total: totalTicket
+    };
+    
+    // Usamos tu motor blindado para guardarlo en una colección nueva
+    if (typeof db !== 'undefined') {
+        db.collection('tickets_cremeria').doc(folio).set(ticketFantasma);
+        console.log("☁️ Ticket enviado a la nube: " + folio);
+    }
+    // 4. Diseñar el Recibo Térmico (Ajustado a 58mm y con Código de Barras)
+    let htmlTicket = `
+        <html>
+        <head>
+            <style>
+                /* Ajuste estricto para 58mm encerrado SOLAMENTE para este ticket */
+                body { font-family: 'Courier New', Courier, monospace; font-size: 11px; margin: 0; padding: 5px; width: 190px; color: black; }
+                h2 { font-size: 14px; text-align: center; margin: 4px 0; }
+                h3 { font-size: 12px; text-align: center; margin: 4px 0; }
+                table { width: 100%; border-collapse: collapse; margin-top: 8px; }
+                th { border-bottom: 1px solid black; padding-bottom: 2px; font-size: 10px; }
+                td { padding: 3px 0; font-size: 11px; }
+                .center { text-align: center; }
+                .right { text-align: right; }
+                .line { border-bottom: 1px dashed black; margin: 8px 0; }
+            </style>
+        </head>
+        <body>
+            <h2>DESPACHO MOSTRADOR</h2>
+            <div class="center">Folio: <b>${folio}</b></div>
+            
+            <!-- 🌟 AQUÍ ESTÁ LA MAGIA DEL CÓDIGO DE BARRAS -->
+            <div class="center" style="margin: 10px 0;">
+                <img src="https://barcode.tec-it.com/barcode.ashx?data=${folio}&code=Code128" alt="Barcode ${folio}" style="max-width: 90%; height: 50px;">
+            </div>
+
+            <div class="center">${fecha.toLocaleString()}</div>
+            
+            <div class="line"></div>
+            
+            <table>
+                <tr>
+                    <th style="text-align:left">Cant</th>
+                    <th style="text-align:left">Artículo</th>
+                    <th style="text-align:right">Subt</th>
+                </tr>
+                ${carritoCremeria.map(item => `
+                <tr>
+                    <td style="vertical-align:top;">${item.can}</td>
+                    <td>${item.nom}</td>
+                    <td class="right" style="vertical-align:top;">$${item.subtotal.toFixed(2)}</td>
+                </tr>
+                `).join('')}
+            </table>
+            
+            <div class="line"></div>
+            
+            <h2 class="right">Total: $${totalTicket.toFixed(2)}</h2>
+            
+            <div class="center" style="margin-top:15px; font-size:10px;">
+                *** TICKET DE PRE-VENTA ***<br>
+                Pase a la caja principal con este ticket para realizar su pago.
+            </div>
+            
+            <br><br><br>
+        </body>
+        </html>
+    `;
+
+    // 5. Crear la ventana invisible y lanzar la impresión
+    let iframe = document.createElement('iframe');
+    iframe.style.display = 'none';
+    document.body.appendChild(iframe);
+    
+    iframe.contentWindow.document.open();
+    iframe.contentWindow.document.write(htmlTicket);
+    iframe.contentWindow.document.close();
+
+    // Damos medio segundo para que el navegador "dibuje" el recibo y luego imprimimos
+    setTimeout(() => {
+        iframe.contentWindow.focus();
+        iframe.contentWindow.print();
+        
+        // 6. Limpiar la mesa para el siguiente cliente
+        carritoCremeria = [];
+        dibujarCarritoCremeria();
+      
+        
+        // Destruimos la ventana invisible para no saturar la memoria
+        setTimeout(() => { document.body.removeChild(iframe); }, 1000);
+    }, 500);
+};
+window.pasarACajaDirectoCremeria = function() {
+    if(carritoCremeria.length === 0) return alert("El ticket de mostrador está vacío.");
+    
+    // Aquí haremos la magia de inyección en la Fase 2
+    alert("🚀 ¡Preparado para la Fase 2! Aquí tomaremos el carritoCremeria y lo vaciaremos directamente en tu pantalla normal de ventas.");
+};
+window.pasarACajaDirectoCremeria = function() {
+    if(carritoCremeria.length === 0) return alert("El ticket de mostrador está vacío.");
+    
+    // 1. Apuntamos al inventario real
+    let inventarioReal = (typeof inv !== 'undefined') ? inv : (window.inv || {});
+
+    // 2. Inyectamos cada queso o jamón directamente a tu caja principal (carV)
+    carritoCremeria.forEach(itemCremeria => {
+        let pOriginal = inventarioReal[itemCremeria.id];
+        
+        // Calculamos quién es el Maestro (igual que en tu handleVenta)
+        let codMaestro = (pOriginal && pOriginal.grupo && inventarioReal[pOriginal.grupo]) ? pOriginal.grupo : itemCremeria.id;
+        let tipoProd = pOriginal ? (pOriginal.tipo || 'pieza') : 'pieza';
+
+        // Buscamos si el producto ya estaba escaneado en la pantalla de fondo
+        let indexVenta = carV.findIndex(x => x.cod === itemCremeria.id);
+
+        if (indexVenta > -1) {
+            // Si ya estaba, solo le sumamos los gramos o piezas
+            carV[indexVenta].can += itemCremeria.can;
+            focusVentaIndex = indexVenta;
+        } else {
+            // Si es nuevo, lo agregamos con la misma estructura que exige tu sistema
+            carV.push({
+                cod: itemCremeria.id, 
+                nom: itemCremeria.nom, 
+                can: itemCremeria.can, 
+                tipo: tipoProd,
+                maestro_cod: codMaestro 
+            });
+            focusVentaIndex = carV.length - 1;
+        }
+    });
+
+    // 3. ¡Magia! Le decimos a tu sistema principal que se actualice
+    if (typeof renderV === 'function') {
+        renderV();
+    }
+
+    // 4. Limpiamos la Cremería y cerramos la ventana flotante
+    carritoCremeria = [];
+    dibujarCarritoCremeria();
+    cerrarModoCremeria();
+    
+    // Un pequeño efecto de éxito (opcional)
+    console.log("✅ Productos inyectados a la caja con éxito.");
+};
+// ==========================================
+// 🖱️ CEREBRO DE CLICKS (CORTO Y LARGO)
+// ==========================================
+window.timerPresionCremeria = null;
+window.fuePresionLarga = false;
+
+window.iniciarPresion = function(event, idProducto) {
+    window.fuePresionLarga = false;
+    // Iniciamos el cronómetro (Medio segundo para ser click largo)
+    window.timerPresionCremeria = setTimeout(() => {
+        window.fuePresionLarga = true;
+        // 🕰️ Presión larga: Siempre abre el modal
+        window.agregarProdCremeria(idProducto);
+    }, 500); 
+};
+
+window.terminarPresion = function(event, idProducto, tipo) {
+    if (window.timerPresionCremeria) {
+        clearTimeout(window.timerPresionCremeria);
+        window.timerPresionCremeria = null;
+
+        if (!window.fuePresionLarga) {
+            // ⚡ Click rápido detectado
+            if (tipo === 'granel') {
+                // Granel: Siempre necesita peso, abrimos modal
+                window.agregarProdCremeria(idProducto);
+            } else {
+                // Pieza: Agregamos 1 unidad directo al ticket
+                window.agregarDirectoAlCarrito(idProducto, 1);
+            }
+        }
+    }
+};
+
+window.cancelarPresion = function() {
+    // Si el dedo se resbala del botón, cancelamos todo
+    if (window.timerPresionCremeria) {
+        clearTimeout(window.timerPresionCremeria);
+        window.timerPresionCremeria = null;
+    }
+};
+
+// Función para inyectar piezas al instante
+window.agregarDirectoAlCarrito = function(idProducto, cantidad) {
+    let inventarioReal = (typeof inv !== 'undefined') ? inv : (window.inv || {});
+    let prod = inventarioReal[idProducto];
+    if(!prod) return;
+
+    let index = carritoCremeria.findIndex(x => x.id === idProducto);
+    if(index > -1) {
+        carritoCremeria[index].can += cantidad; // Si ya estaba, solo sumamos 1
+        carritoCremeria[index].subtotal = carritoCremeria[index].can * parseFloat(prod.pv || 0);
+    } else {
+        carritoCremeria.push({
+            id: prod.id || idProducto,
+            cod: prod.codigo || prod.cod || idProducto,
+            nom: prod.nom,
+            can: cantidad,
+            pv: parseFloat(prod.pv || 0),
+            subtotal: cantidad * parseFloat(prod.pv || 0)
+        });
+    }
+    dibujarCarritoCremeria(); 
+};

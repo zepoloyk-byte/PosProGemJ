@@ -227,6 +227,9 @@
                     <button style="background:var(--warning); border:none; padding:8px 15px; border-radius:5px; font-weight:bold; cursor:pointer; white-space: nowrap;" onclick="preguntarPausar()"><i class="fa-solid fa-pause"></i> Pausar [F8]</button>
                     <button style="background:var(--info); color:white; border:none; padding:8px 15px; border-radius:5px; font-weight:bold; cursor:pointer; white-space: nowrap;" onclick="abrirPausadas()"><i class="fa-solid fa-list-check"></i> Ver Pausadas [F7] (<span id="count_pausadas">0</span>)</button>
                     <button style="background:#dc3545; color:white; border:none; padding:8px 15px; border-radius:5px; font-weight:bold; cursor:pointer; white-space: nowrap;" onclick="registrarGasto()"><i class="fa-solid fa-money-bill-trend-up"></i> Registrar Gasto</button>
+                    <button class="btn font-weight-bold" onclick="abrirModoCremeria()" style="background: #ffc107; color: #000; border: none; border-radius: 5px; padding: 8px 15px; margin-left: 5px; box-shadow: 0 2px 4px rgba(0,0,0,0.1);">
+    🧀 Modo Cremería
+</button>
                     <div id="alertaRevisionContenedor" style="display: none; margin: 10px 0;">
     <button id="btnIrARevision" onclick="abrirRevisionAsignada()" class="btn-animado-alerta" style="background-color: #e67e22; color: white; border: none; padding: 12px 20px; font-weight: bold; border-radius: 5px; cursor: pointer; width: 100%; box-shadow: 0 4px 15px rgba(230,126,34,0.4);">
         🚨 TIENES (1) REVISIÓN DE INVENTARIO ASIGNADA ¡DAR CLIC AQUÍ!
@@ -424,10 +427,26 @@
             <input type="text" id="buscar_inv" placeholder="🔍 Buscar por código o nombre..." onkeyup="filtrarInventario(false, event)" style="flex: 2; font-size:16px; padding:12px;">
             <select id="filtro_dep" onchange="filtrarInventario()" style="flex: 1; font-size:14px; padding:10px;"><option value="">📁 Todos los Deptos</option></select>
             <select id="filtro_tipo" onchange="filtrarInventario()" style="flex: 1; font-size:14px; padding:10px;"><option value="">📦 Todos los Tipos</option><option value="pieza">Unidad (Pieza)</option><option value="granel">Granel</option><option value="kit">Kit</option></select>
+            <!-- ⚠️ NUEVO FILTRO PARA PRODUCTOS EN PELIGRO -->
+    <select id="filtro_alerta" onchange="filtrarInventario()" style="flex: 1; font-size:14px; padding:10px; border-color:#ffc107; background-color:#fffdf5;">
+        <option value="">✅ Stock Normal</option>
+        <option value="critico">⚠️ Solo por agotarse</option>
+    </select>
         </div>
         <div style="height:calc(100vh - 220px); overflow-y:auto; border: 1px solid #ddd; border-radius:8px;">
             <table class="tabla-pos" style="margin-top:0;">
-                <thead><tr><th>Código</th><th>Producto</th><th>Depto</th><th>Tipo</th><th>Stock Disp.</th><th>Faltante</th><th>P. Venta</th><th>Acción</th></tr></thead>
+                <thead style="user-select: none;">
+    <tr>
+        <th onclick="cambiarOrdenInv('codigo')" style="cursor:pointer;" title="Clic para ordenar">Código ↕️</th>
+        <th onclick="cambiarOrdenInv('nombre')" style="cursor:pointer;" title="Clic para ordenar">Producto ↕️</th>
+        <th onclick="cambiarOrdenInv('depto')" style="cursor:pointer;" title="Clic para ordenar">Depto ↕️</th>
+        <th onclick="cambiarOrdenInv('tipo')" style="cursor:pointer;" title="Clic para ordenar">Tipo ↕️</th>
+        <th onclick="cambiarOrdenInv('stock')" style="cursor:pointer;" title="Clic para ordenar">Stock ↕️</th>
+        <th onclick="cambiarOrdenInv('precio')" style="cursor:pointer;" title="Clic para ordenar">P. Venta ↕️</th>
+        <th onclick="cambiarOrdenInv('ganancia')" style="cursor:pointer; background:#fff3cd;" title="Clic para ordenar">💰 Rentabilidad ↕️</th>
+        <th>Acción</th>
+    </tr>
+</thead>
                 <tbody id="i_lista"></tbody>
             </table>
         </div>
@@ -733,110 +752,159 @@
 </div>
 
 <div id="u-tab" class="tabcontent no-print">
-    <div style="padding:25px; max-width: 1200px; margin: 0 auto; display: grid; grid-template-columns: 1fr 1fr; gap: 20px;">
-        <div>
-            <h2 style="margin-top:0; color:var(--d)">⚙️ Usuarios y Permisos</h2>
-            <div class="dash-card" style="margin-bottom:20px; border-top:4px solid var(--d)">
-                <h3 style="margin-top:0;">➕ Crear o Editar Usuario</h3>
-                <div style="display:flex; gap:15px; margin-bottom:15px;"><div style="flex:2"><label style="font-size:11px; font-weight:bold; color:var(--p)">NOMBRE USUARIO:</label><input type="text" id="u_nombre" placeholder="Ej. Juan, Caja1"></div><div style="flex:1"><label style="font-size:11px; font-weight:bold; color:var(--p)">PIN:</label><input type="password" id="u_pin" placeholder="****"></div></div>
-                <label style="font-size:11px; font-weight:bold; color:var(--p); margin-bottom:5px; display:block;">PERMISOS - SELECCIONA LOS MÓDULOS PERMITIDOS:</label>
-                <div class="check-grid">
-                    <div>
-    <input type="checkbox" id="perm_inv_ciego" class="perm_check" value="inv_ciego">
-    <label>📦 Hacer Inv. (Ciego)</label>
-</div>
-<div>
-    <input type="checkbox" id="perm_auditoria" class="perm_check" value="auditoria">
-    <label>🕵️ Auditorías (Admin)</label>
-</div>
-                    <label><input type="checkbox" id="chk_v-tab" checked> 🛒 Ventas y Cobro</label><label><input type="checkbox" id="chk_c-tab"> 📥 Compras/Ingreso</label>
-                    <label><input type="checkbox" id="chk_prov-tab"> 🚚 Proveedores</label><label><input type="checkbox" id="chk_k-tab"> 📦 Kits</label>
-                    <label><input type="checkbox" id="chk_i-tab"> 📋 Inventario</label><label><input type="checkbox" id="chk_cli-tab"> 👥 Clientes y Créditos</label>
-                    <label><input type="checkbox" id="chk_pro-tab"> 🏷️ Promociones</label><label><input type="checkbox" id="chk_r-tab"> 📊 Dashboard y Cortes</label>
-                    <label><input type="checkbox" id="chk_rec-tab"> 📱 Recargas Multimarca</label>
-                    <label><input type="checkbox" id="chk_u-tab"> ⚙️ Configuración (Ajustes)</label>
-                    <label style="display:flex; align-items:center; gap:8px; cursor:pointer;">
-                    <input type="checkbox" id="chk_kardex-tab" style="width:16px; height:16px;">
-                    <span>📊 Kardex</span>
-                    </label>
+    <div style="padding:25px; max-width: 1200px; margin: 0 auto;">
+
+        <h2 style="margin-top:0; color:var(--d); margin-bottom: 20px;">⚙️ Configuración General y Usuarios</h2>
+
+        <!-- EL CONTENEDOR INTELIGENTE QUE CREA LAS DOS COLUMNAS -->
+        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(450px, 1fr)); gap: 20px; align-items: start;">
+
+            <!-- ========================================== -->
+            <!-- 📦 CAJA 1: TODA LA COLUMNA IZQUIERDA       -->
+            <!-- ========================================== -->
+            <div style="display: flex; flex-direction: column; gap: 20px;">
+                
+                <!-- 1. CREAR USUARIO -->
+                <div class="dash-card" style="border-top:4px solid var(--d)">
+                    <h3 style="margin-top:0;">➕ Crear o Editar Usuario</h3>
+                    <div style="display:flex; gap:15px; margin-bottom:15px;">
+                        <div style="flex:2">
+                            <label style="font-size:11px; font-weight:bold; color:var(--p)">NOMBRE USUARIO:</label>
+                            <input type="text" id="u_nombre" placeholder="Ej. Juan, Caja1">
+                        </div>
+                        <div style="flex:1">
+                            <label style="font-size:11px; font-weight:bold; color:var(--p)">PIN:</label>
+                            <input type="password" id="u_pin" placeholder="****">
+                        </div>
+                    </div>
+                    <label style="font-size:11px; font-weight:bold; color:var(--p); margin-bottom:5px; display:block;">PERMISOS - SELECCIONA LOS MÓDULOS PERMITIDOS:</label>
+                    <div class="check-grid">
+                        <div><input type="checkbox" id="perm_inv_ciego" class="perm_check" value="inv_ciego"><label>📦 Hacer Inv. (Ciego)</label></div>
+                        <div><input type="checkbox" id="perm_auditoria" class="perm_check" value="auditoria"><label>🕵️ Auditorías (Admin)</label></div>
+                        <label><input type="checkbox" id="chk_v-tab" checked> 🛒 Ventas y Cobro</label>
+                        <label><input type="checkbox" id="chk_c-tab"> 📥 Compras/Ingreso</label>
+                        <label><input type="checkbox" id="chk_prov-tab"> 🚚 Proveedores</label>
+                        <label><input type="checkbox" id="chk_k-tab"> 📦 Kits</label>
+                        <label><input type="checkbox" id="chk_i-tab"> 📋 Inventario</label>
+                        <label><input type="checkbox" id="chk_cli-tab"> 👥 Clientes y Créditos</label>
+                        <label><input type="checkbox" id="chk_pro-tab"> 🏷️ Promociones</label>
+                        <label><input type="checkbox" id="chk_r-tab"> 📊 Dashboard y Cortes</label>
+                        <label><input type="checkbox" id="chk_rec-tab"> 📱 Recargas Multimarca</label>
+                        <label><input type="checkbox" id="chk_u-tab"> ⚙️ Configuración (Ajustes)</label>
+                        <label style="display:flex; align-items:center; gap:8px; cursor:pointer;">
+                            <input type="checkbox" id="chk_kardex-tab" style="width:16px; height:16px;"><span>📊 Kardex</span>
+                        </label>
+                    </div>
+                    <label style="font-size:11px; font-weight:bold; color:var(--info); margin-top:15px; margin-bottom:5px; display:block;">🏢 SUCURSALES PERMITIDAS:</label>
+                    <div id="contenedor_checkbox_sucursales" style="display:flex; flex-wrap:wrap; gap:15px; background:#f0f8ff; padding:15px; border-radius:8px; border:1px solid #cce5ff; min-height:50px; box-sizing: border-box;"></div>
+                    <small style="color:#666; font-size:11px; display:block; margin-bottom:20px;">*El usuario solo aparecerá en el login de las sucursales marcadas.</small>
+                    <button class="btn-final" style="background:var(--p); width:100%; margin-top:10px;" onclick="guardarUsuario()">💾 GUARDAR USUARIO</button>
                 </div>
-                <label style="font-size:11px; font-weight:bold; color:var(--info); margin-top:15px; margin-bottom:5px; display:block;">🏢 SUCURSALES PERMITIDAS:</label>
-                <div id="contenedor_checkbox_sucursales" style="display:flex; flex-wrap:wrap; gap:15px; background:#f0f8ff; padding:15px; border-radius:8px; border:1px solid #cce5ff; min-height:50px; box-sizing: border-box;"></div>
-                <small style="color:#666; font-size:11px; display:block; margin-bottom:20px;">*El usuario solo aparecerá en el login de las sucursales marcadas.</small>
-                <button class="btn-final" style="background:var(--p); width:100%; margin-top:10px;" onclick="guardarUsuario()">💾 GUARDAR USUARIO</button>
-            </div>
-            <div class="dash-card"><h3 style="margin-top:0;">👥 Usuarios Registrados</h3><table class="tabla-pos" style="margin-top:0;"><thead><tr><th>Usuario</th><th>Módulos Permitidos</th><th>Acción</th></tr></thead><tbody id="u_lista"></tbody></table></div>
-        </div>
-        <div>
-            <h2 id="lbl_config_sucursal" style="margin-top:0; color:var(--d)">🧾 Configuración del Ticket</h2>
-            <div class="dash-card" style="border-top:4px solid var(--p)">
-                <label style="font-size:11px; font-weight:bold; color:var(--p)">SUCURSAL A EDITAR:</label><select id="cfg_sucursal" onchange="cargarConfigEnUI()" style="margin-bottom: 15px; font-weight:bold; border-color:var(--p)"><option value="Matriz">📍 Matriz</option><option value="Sucursal 1">📍 Sucursal 1</option><option value="Sucursal 2">📍 Sucursal 2</option></select>
-                <label style="font-size:11px; font-weight:bold; color:var(--p)">NOMBRE DE LA TIENDA / EMPRESA:</label><input type="text" id="cfg_nombre" style="margin-bottom: 15px; font-size:18px; font-weight:bold;" placeholder="Ej. Abarrotes La Principal">
-                <label style="font-size:11px; font-weight:bold; color:var(--p)">DIRECCIÓN Y TELÉFONO (DETALLES):</label><textarea id="cfg_detalles" rows="3" style="margin-bottom: 15px;" placeholder="Dirección completa, Teléfono, RFC..."></textarea>
-                <label style="font-size:11px; font-weight:bold; color:var(--p)">MENSAJE DE AGRADECIMIENTO (PIE DE PÁGINA):</label><textarea id="cfg_mensaje" rows="2" placeholder="Ej. ¡Gracias por su preferencia!"></textarea>
-                <label style="font-size:11px; font-weight:bold; color:var(--p); margin-top:10px; display:block;">TAMAÑO DE LETRA DEL TICKET (Recomendado: 12 a 16):</label>
-                <input type="number" id="cfg_font" value="14" style="margin-bottom: 15px; font-size:18px; font-weight:bold; text-align:center;">
-                <button class="btn-final" style="background:var(--p); margin-top:20px;" onclick="guardarConfigTicket()">💾 GUARDAR FORMATO</button>
-            </div>
-            
-            <div class="dash-card" style="border-top:4px solid var(--info); margin-top:20px;">
-                <h3 style="margin-top:0; color:var(--info);">🏢 Gestión de Sucursales</h3>
-                <div style="display:flex; gap:10px; margin-bottom:15px;">
-                    <input type="text" id="nueva_sucursal_nom" placeholder="Nombre de nueva sucursal..." style="flex:2">
-                    <button class="btn-final" style="background:var(--info); margin:0; flex:1; padding: 10px;" onclick="agregarSucursal()">➕ AGREGAR</button>
-                </div>
-                <div style="max-height: 200px; overflow-y: auto; border: 1px solid #eee; border-radius: 8px;">
+
+                <!-- 2. LISTA DE USUARIOS -->
+                <div class="dash-card">
+                    <h3 style="margin-top:0;">👥 Usuarios Registrados</h3>
                     <table class="tabla-pos" style="margin-top:0;">
-                        <thead style="background:#f1f1f1;"><tr><th>Nombre de Sucursal</th><th>Acciones</th></tr></thead>
-                        <tbody id="lista_gest_suc"></tbody>
+                        <thead><tr><th>Usuario</th><th>Módulos Permitidos</th><th>Acción</th></tr></thead>
+                        <tbody id="u_lista"></tbody>
                     </table>
                 </div>
-                <p style="font-size: 11px; color: #888; margin-top: 10px;"><b>Nota:</b> Al agregar o renombrar una sucursal, los menús de toda la aplicación se actualizarán automáticamente.</p>
-            </div>
 
-            <div class="dash-card" style="border-top:4px solid #009ee3; margin-top:20px; background:#f0f8ff;">
-                <h3 style="margin-top:0; color:#009ee3; display:flex; align-items:center; gap:8px;">💳 Terminal Mercado Pago (Point)</h3>
-                <label style="display:flex; align-items:center; gap:10px; cursor:pointer; font-weight:bold; margin-bottom:15px; color:#333;">
-                    <input type="checkbox" id="mp_activo" style="width:20px; height:20px; cursor:pointer;">
-                    Activar conexión automática a terminal física
-                </label>
-                <div id="mp_config_campos" style="background:white; padding:15px; border-radius:8px; border:1px solid #cce5ff;">
-                    <label style="font-size:11px; font-weight:bold; color:#009ee3;">ACCESS TOKEN (PRODUCCIÓN):</label>
-                    <input type="password" id="mp_token" placeholder="APP_USR-123456789..." style="margin-bottom: 15px; width:100%;">
-                    <label style="font-size:11px; font-weight:bold; color:#009ee3;">ID DE LA TERMINAL (DEVICE ID):</label>
-                    <input type="text" id="mp_device" placeholder="Ej. PAX_SMART_1234" style="margin-bottom: 15px; width:100%; font-weight:bold;">
-                    <button class="btn-final" style="background:#009ee3; margin-top:10px;" onclick="guardarConfigMP()">💾 GUARDAR CLAVES</button>
+                <!-- 3. GESTIÓN DE SUCURSALES -->
+                <div class="dash-card" style="border-top:4px solid var(--info);">
+                    <h3 style="margin-top:0; color:var(--info);">🏢 Gestión de Sucursales</h3>
+                    <div style="display:flex; gap:10px; margin-bottom:15px;">
+                        <input type="text" id="nueva_sucursal_nom" placeholder="Nombre de nueva sucursal..." style="flex:2">
+                        <button class="btn-final" style="background:var(--info); margin:0; flex:1; padding: 10px;" onclick="agregarSucursal()">➕ AGREGAR</button>
+                    </div>
+                    <div style="max-height: 200px; overflow-y: auto; border: 1px solid #eee; border-radius: 8px;">
+                        <table class="tabla-pos" style="margin-top:0;">
+                            <thead style="background:#f1f1f1;"><tr><th>Nombre de Sucursal</th><th>Acciones</th></tr></thead>
+                            <tbody id="lista_gest_suc"></tbody>
+                        </table>
+                    </div>
+                    <p style="font-size: 11px; color: #888; margin-top: 10px;"><b>Nota:</b> Al agregar o renombrar una sucursal, los menús se actualizarán automáticamente.</p>
                 </div>
-            </div>
+            </div> <!-- FIN CAJA 1 (IZQUIERDA) -->
 
-           <div class="dash-card" style="border-top:4px solid #20c997; margin-top:20px; background:#f4fcf9;">
-                <h3 style="margin-top:0; color:#20c997; display:flex; align-items:center; gap:8px;">🎨 Personalizar Fondos y Logos</h3>
-                <p style="font-size:12px; color:#666; margin-top:-5px;">Sube tus imágenes para la pantalla de inicio, panel de ventas y marca de agua.</p>
+
+            <!-- ========================================== -->
+            <!-- 📦 CAJA 2: TODA LA COLUMNA DERECHA         -->
+            <!-- ========================================== -->
+            <div style="display: flex; flex-direction: column; gap: 20px;">
                 
-                <!-- Cambié a 3 columnas adaptables para que quepa el nuevo botón -->
-                <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap:15px; margin-bottom:15px;">
-                    
-                    <div style="background:white; padding:15px; border-radius:8px; border:1px solid #d1e7dd;">
-                        <label style="font-size:12px; font-weight:bold; color:#20c997;">🖼️ Fondo de Inicio:</label>
-                        <input type="file" id="file_fondo_login" accept="image/png, image/jpeg, image/jpg" style="margin-top:10px; width:100%; font-size: 13px;">
-                    </div>
-                    
-                    <div style="background:white; padding:15px; border-radius:8px; border:1px solid #d1e7dd;">
-                        <label style="font-size:12px; font-weight:bold; color:#20c997;">🖼️ Fondo Ventas:</label>
-                        <input type="file" id="file_fondo_panel" accept="image/png, image/jpeg, image/jpg" style="margin-top:10px; width:100%; font-size: 13px;">
-                    </div>
-
-                    <!-- 🌟 NUEVO BOTÓN: MARCA DE AGUA -->
-                    <div style="background:white; padding:15px; border-radius:8px; border:1px solid #d1e7dd;">
-                        <label style="font-size:12px; font-weight:bold; color:#20c997;">💧 Marca de Agua:</label>
-                        <input type="file" id="file_marca_agua" accept="image/png, image/jpeg, image/jpg" style="margin-top:10px; width:100%; font-size: 13px;">
-                    </div>
-
+                <!-- 4. ALERTA DE INVENTARIO -->
+                <div class="dash-card">
+                    <h3 style="margin-top:0; color: #0d6efd;">📈 Pronóstico de Agotamiento</h3>
+                    <p style="font-size: 13px; color: #666; margin-bottom: 15px;">Analiza las ventas recientes y avisa 2 días antes de que un producto se acabe.</p>
+                    <label style="display: flex; align-items: center; gap: 8px; margin-bottom: 15px; font-weight: bold; cursor: pointer;">
+                        <input type="checkbox" id="check_alerta_stock" style="width: 18px; height: 18px;" onchange="guardarConfigAlertas()"> Activar Alerta Inteligente
+                    </label>
+                    <label style="display: block; font-size: 13px; margin-bottom: 5px; font-weight: bold;">¿Quién puede ver las alertas?</label>
+                    <select id="select_permiso_alerta" style="padding: 8px; width: 100%; border-radius: 5px; border: 1px solid #ccc;" onchange="guardarConfigAlertas()">
+                        <option value="Admin">Solo Administradores</option>
+                        <option value="Todos">Administradores y Cajeros</option>
+                    </select>
                 </div>
-                
-                <button class="btn-final" style="background:#20c997;" onclick="subirFondos()"><span id="btn_txt_fondos">💾 SUBIR Y APLICAR FOTOS</span></button>
-            </div>
 
+                <!-- 5. CONFIGURACIÓN DEL TICKET -->
+                <div class="dash-card" style="border-top:4px solid var(--p)">
+                    <h3 style="margin-top:0; color:var(--d)">🧾 Configuración del Ticket</h3>
+                    <label style="font-size:11px; font-weight:bold; color:var(--p)">SUCURSAL A EDITAR:</label>
+                    <select id="cfg_sucursal" onchange="cargarConfigEnUI()" style="margin-bottom: 15px; font-weight:bold; border-color:var(--p); width:100%;">
+                        <option value="Matriz">📍 Matriz</option><option value="Sucursal 1">📍 Sucursal 1</option><option value="Sucursal 2">📍 Sucursal 2</option>
+                    </select>
+                    <label style="font-size:11px; font-weight:bold; color:var(--p)">NOMBRE DE LA TIENDA / EMPRESA:</label>
+                    <input type="text" id="cfg_nombre" style="margin-bottom: 15px; font-size:18px; font-weight:bold; width:100%;" placeholder="Ej. Abarrotes La Principal">
+                    <label style="font-size:11px; font-weight:bold; color:var(--p)">DIRECCIÓN Y TELÉFONO:</label>
+                    <textarea id="cfg_detalles" rows="3" style="margin-bottom: 15px; width:100%;" placeholder="Dirección completa, Teléfono, RFC..."></textarea>
+                    <label style="font-size:11px; font-weight:bold; color:var(--p)">MENSAJE PIE DE PÁGINA:</label>
+                    <textarea id="cfg_mensaje" rows="2" style="width:100%; margin-bottom:15px;" placeholder="Ej. ¡Gracias por su preferencia!"></textarea>
+                    <label style="font-size:11px; font-weight:bold; color:var(--p); display:block;">TAMAÑO DE LETRA (12 a 16):</label>
+                    <input type="number" id="cfg_font" value="14" style="margin-bottom: 15px; font-size:18px; font-weight:bold; text-align:center; width:100%;">
+                    <button class="btn-final" style="background:var(--p); width:100%;" onclick="guardarConfigTicket()">💾 GUARDAR FORMATO</button>
+                </div>
+
+                <!-- 6. MERCADO PAGO -->
+                <div class="dash-card" style="border-top:4px solid #009ee3; background:#f0f8ff;">
+                    <h3 style="margin-top:0; color:#009ee3;">💳 Terminal Mercado Pago</h3>
+                    <label style="display:flex; align-items:center; gap:10px; cursor:pointer; font-weight:bold; margin-bottom:15px; color:#333;">
+                        <input type="checkbox" id="mp_activo" style="width:20px; height:20px; cursor:pointer;"> Activar conexión automática
+                    </label>
+                    <div id="mp_config_campos" style="background:white; padding:15px; border-radius:8px; border:1px solid #cce5ff;">
+                        <label style="font-size:11px; font-weight:bold; color:#009ee3;">ACCESS TOKEN:</label>
+                        <input type="password" id="mp_token" placeholder="APP_USR-1234..." style="margin-bottom: 15px; width:100%;">
+                        <label style="font-size:11px; font-weight:bold; color:#009ee3;">DEVICE ID:</label>
+                        <input type="text" id="mp_device" placeholder="Ej. PAX_SMART..." style="margin-bottom: 15px; width:100%; font-weight:bold;">
+                        <button class="btn-final" style="background:#009ee3; width:100%;" onclick="guardarConfigMP()">💾 GUARDAR CLAVES</button>
+                    </div>
+                </div>
+
+                <!-- 7. DISEÑO Y FONDOS -->
+                <div class="dash-card" style="border-top:4px solid #20c997; background:#f4fcf9;">
+                    <h3 style="margin-top:0; color:#20c997;">🎨 Personalizar Fondos y Logos</h3>
+                    <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap:15px; margin-bottom:15px;">
+                        <div style="background:white; padding:10px; border-radius:8px; border:1px solid #d1e7dd;">
+                            <label style="font-size:11px; font-weight:bold; color:#20c997;">🖼️ Fondo Inicio:</label>
+                            <input type="file" id="file_fondo_login" accept="image/png, image/jpeg, image/jpg" style="width:100%; font-size:11px; margin-top:5px;">
+                        </div>
+                        <div style="background:white; padding:10px; border-radius:8px; border:1px solid #d1e7dd;">
+                            <label style="font-size:11px; font-weight:bold; color:#20c997;">🖼️ Fondo Ventas:</label>
+                            <input type="file" id="file_fondo_panel" accept="image/png, image/jpeg, image/jpg" style="width:100%; font-size:11px; margin-top:5px;">
+                        </div>
+                        <div style="background:white; padding:10px; border-radius:8px; border:1px solid #d1e7dd;">
+                            <label style="font-size:11px; font-weight:bold; color:#20c997;">💧 Marca Agua:</label>
+                            <input type="file" id="file_marca_agua" accept="image/png, image/jpeg, image/jpg" style="width:100%; font-size:11px; margin-top:5px;">
+                        </div>
+                    </div>
+                    <button class="btn-final" style="background:#20c997; width:100%;" onclick="subirFondos()"><span id="btn_txt_fondos">💾 SUBIR FOTOS</span></button>
+                </div>
+
+            </div> <!-- FIN CAJA 2 (DERECHA) -->
+        </div> <!-- FIN CONTENEDOR GRID INTELIGENTE -->
+
+    </div>
+</div>
 
 
 <div id="modalImport" class="modal">
@@ -1871,6 +1939,85 @@
         
         <button onclick="cerrarEscanerCamara()" style="padding:10px 20px; background:#dc3545; color:white; border:none; border-radius:5px; font-weight:bold; cursor:pointer; width:100%;">Cancelar y Cerrar</button>
     </div>
+</div>
+<!-- ========================================= -->
+<!-- 🧀 PANTALLA: MODO CREMERÍA TÁCTIL -->
+<!-- ========================================= -->
+<!-- 🛒 MODAL CREMERIA (Interfaz Principal Completa) -->
+<div id="modal_cremeria" style="display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:#f8f9fa; z-index:999999; flex-direction:row; font-family:Arial, sans-serif;">
+
+    <!-- PANEL IZQUIERDO: Botones y Pestañas -->
+    <div style="flex: 3; display: flex; flex-direction: column; padding: 20px;">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
+            <h2 style="margin: 0; color: #333;">🧀 Despacho de Mostrador</h2>
+            <button onclick="cerrarModoCremeria()" style="background: #dc3545; color: white; border: none; padding: 10px 20px; font-size: 16px; font-weight: bold; border-radius: 8px; cursor: pointer;">❌ Salir</button>
+        </div>
+
+        <div id="tabs_cremeria" style="display: flex; gap: 10px; margin-bottom: 20px;"></div>
+
+        <div id="grid_cremeria" style="flex: 1; display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 15px; overflow-y: auto; align-content: start; padding-right: 10px;"></div>
+    </div>
+
+    <!-- PANEL DERECHO: Ticket Virtual y Botones de Acción -->
+    <div style="flex: 1; background: white; border-left: 3px solid #ddd; display: flex; flex-direction: column; padding: 20px; box-shadow: -5px 0 15px rgba(0,0,0,0.05);">
+        
+        <h3 style="margin-top:0; border-bottom:2px solid #0d6efd; padding-bottom:10px; color:#333;">📋 Ticket de Entrega</h3>
+        
+        <!-- Aquí aparecen los productos que despachas -->
+        <div id="carrito_cremeria" style="flex:1; overflow-y:auto; margin-bottom:20px;">
+            <div style="color:#aaa; text-align:center; margin-top:50px;">El ticket está vacío</div>
+        </div>
+        
+        <!-- Totales y Botones Finales -->
+        <div style="margin-top: auto;">
+            <h2 id="total_cremeria" style="text-align: right; margin-bottom: 15px; font-size: 30px; font-weight: bold; color: #333;">$0.00</h2>
+            
+            <div style="display:flex; gap:10px;">
+                <button onclick="imprimirTicketCremeria()" style="flex:1; background: #198754; color: white; border: none; padding: 15px 5px; font-size: 16px; font-weight: bold; border-radius: 10px; cursor: pointer; box-shadow: 0 4px 6px rgba(0,0,0,0.2);">🖨️ Imprimir</button>
+                <button onclick="pasarACajaDirectoCremeria()" style="flex:1; background: #0d6efd; color: white; border: none; padding: 15px 5px; font-size: 16px; font-weight: bold; border-radius: 10px; cursor: pointer; box-shadow: 0 4px 6px rgba(0,0,0,0.2);">➡️ A Caja</button>
+            </div>
+        </div>
+        
+    </div>
+</div>
+    <!-- 📷 VISOR DE LA CÁMARA (Oculto por defecto) -->
+    <div id="visor_camara_cremeria" style="display:none; position:absolute; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.9); z-index:1000000; flex-direction:column; align-items:center; justify-content:center;">
+        <h3 style="color:white; margin-bottom: 20px;">📷 Apunta al código de barras</h3>
+        <!-- Aquí adentro se dibujará el video -->
+        <div id="lector_qr" style="width: 300px; max-width: 90%; background: black; border: 4px solid #0d6efd; border-radius: 10px;"></div>
+        
+        <button onclick="cerrarCamaraCremeria()" style="margin-top:30px; padding:15px 30px; background:#dc3545; color:white; border:none; border-radius:8px; font-size:18px; font-weight:bold; cursor:pointer;">❌ Cancelar</button>
+    </div>
+    <!-- 🔢 MODAL INTELIGENTE DE CANTIDAD -->
+    <div id="modal_cantidad_cremeria" style="display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.7); z-index:9999999; flex-direction:column; align-items:center; justify-content:center; font-family:Arial, sans-serif;">
+        <div style="background:white; padding:25px; border-radius:15px; width:90%; max-width:450px; box-shadow:0 10px 25px rgba(0,0,0,0.3); text-align:center;">
+            <h3 style="margin-top:0; color:#333; font-size:22px;">¿Cuánto vas a despachar?</h3>
+            <h4 id="nombre_prod_cremeria" style="color:#0d6efd; margin-bottom:20px; font-size:18px;">🛒 Producto</h4>
+
+            <!-- Botones Inteligentes generados por el Kardex -->
+            <div style="text-align:left; font-size:14px; color:#666; margin-bottom:8px; font-weight:bold;">⚡ Más comunes (Según tu historial):</div>
+            <div id="botones_inteligentes_cant" style="display:flex; flex-wrap:wrap; gap:10px; justify-content:center; margin-bottom:20px;">
+                <!-- Aquí aparecerán los botones mágicamente -->
+            </div>
+
+            <!-- Entrada Manual y Botón de Dinero -->
+            <div style="display:flex; gap:10px; margin-bottom:25px;">
+                <input type="number" id="input_cant_cremeria" placeholder="Otra cantidad..." style="flex:1; padding:15px; font-size:20px; border:2px solid #ccc; border-radius:8px; text-align:center;" step="any">
+                <button id="btn_toggle_modo" onclick="calcularPorDineroCremeria()" style="background:#ffc107; border:none; padding:10px 20px; border-radius:8px; font-weight:bold; font-size:16px; cursor:pointer; box-shadow: 0 4px 6px rgba(0,0,0,0.1);" title="Cambiar modo">💲 De a $</button>
+            </div>
+
+            <!-- Botones de Acción -->
+            <div style="display:flex; gap:10px;">
+                <button onclick="cerrarModalCantidad()" style="flex:1; background:#dc3545; color:white; border:none; padding:15px; border-radius:8px; font-size:18px; font-weight:bold; cursor:pointer;">❌ Cancelar</button>
+                <button onclick="confirmarCantidadCremeria()" style="flex:1; background:#198754; color:white; border:none; padding:15px; border-radius:8px; font-size:18px; font-weight:bold; cursor:pointer;">✅ Aceptar</button>
+            </div>
+        </div>
+    </div>
+    <!-- BOTONES DE ACCIÓN FINAL -->
+        <div style="display:flex; gap:10px; margin-top:auto;">
+            <button onclick="imprimirTicketCremeria()" style="flex:1; background: #198754; color: white; border: none; padding: 15px 5px; font-size: 16px; font-weight: bold; border-radius: 10px; cursor: pointer; box-shadow: 0 4px 6px rgba(0,0,0,0.2);">🖨️ Crear Ticket</button>
+            <button onclick="pasarACajaDirectoCremeria()" style="flex:1; background: #0d6efd; color: white; border: none; padding: 15px 5px; font-size: 16px; font-weight: bold; border-radius: 10px; cursor: pointer; box-shadow: 0 4px 6px rgba(0,0,0,0.2);">➡️ Mandar a Caja</button>
+        </div>
 </div>
 </body>
 </html>
