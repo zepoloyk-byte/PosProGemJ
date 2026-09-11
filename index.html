@@ -1951,8 +1951,12 @@
 <!-- ========================================= -->
 <!-- 🛒 MODAL CREMERIA (Interfaz Principal Completa) -->
 <!-- CONTENEDOR PRINCIPAL CREMERÍA -->
-<div id="cremeria_contenedor_principal" style="display: flex; width: 100%; height: 100vh; height: 100dvh; overflow: hidden; background: #f8f9fa;">
-
+<!-- CÁMBIALE EL ID A ESTA LÍNEA: -->
+<div id="modal_cremeria" style="display: none; width: 100%; height: 100vh; height: 100dvh; overflow: hidden; background: #f8f9fa; position: fixed; top: 0; left: 0; z-index: 99999;">
+    
+    <!-- El resto de los paneles por dentro se queda igualito -->
+    <div id="cremeria_panel_izq" style="..."> ... </div>
+    <div id="cremeria_panel_der" style="..."> ... </div>
     <!-- PANEL IZQUIERDO: Botones y Pestañas -->
     <div id="cremeria_panel_izq" style="flex: 3; display: flex; flex-direction: column; padding: 20px; min-width: 0;">
         <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">

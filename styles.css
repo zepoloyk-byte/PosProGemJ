@@ -610,7 +610,7 @@ tbody tr { height: auto !important; }
 .btn-imprimir-cremeria:active { background: #146c43; }
 /* 📱 MODO CREMERÍA EN CELULARES */
 @media screen and (max-width: 768px) {
-    #cremeria_contenedor_principal {
+    #modal_cremeria {
         flex-direction: column !important;
         height: 100dvh !important;
         overflow: hidden !important;
