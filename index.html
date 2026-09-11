@@ -84,47 +84,7 @@
                 padding-top: 15px !important;
             }
         }
-        <!-- Enlace con versión para romper caché -->
-    <link rel="stylesheet" href="styles.css?v=2">
-
-    <!-- 📱 PARCHE DIRECTO PARA CELULARES (Prioridad Máxima) -->
-    <style>
-        @media (max-width: 768px) {
-            #modal_cremeria {
-                display: flex !important;
-                flex-direction: column !important;
-                height: 100dvh !important;
-                overflow: hidden !important;
-            }
-            .cremeria-izquierda {
-                flex: 1 1 55% !important;
-                min-height: 0 !important;
-                overflow-y: auto !important;
-                -webkit-overflow-scrolling: touch;
-            }
-            .cremeria-derecha {
-                display: flex !important;
-                flex: 0 0 45% !important;
-                min-height: 240px !important;
-                border-left: none !important;
-                border-top: 3px solid #0d6efd !important;
-                overflow-y: auto !important;
-                background: #ffffff !important;
-            }
-            /* Carrusel horizontal para que no se corten los botones de arriba */
-            .cremeria-izquierda > div:first-child {
-                display: flex !important;
-                overflow-x: auto !important;
-                white-space: nowrap !important;
-                gap: 8px !important;
-                padding-bottom: 6px !important;
-                -webkit-overflow-scrolling: touch;
-            }
-            .cremeria-izquierda > div:first-child button {
-                flex-shrink: 0 !important;
-            }
-        }
-    
+        
         
     </style>
     
@@ -1990,37 +1950,40 @@
 <!-- 🧀 PANTALLA: MODO CREMERÍA TÁCTIL -->
 <!-- ========================================= -->
 <!-- 🛒 MODAL CREMERIA (Interfaz Principal Completa) -->
-<div id="modal_cremeria" style="display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:#f8f9fa; z-index:999999; flex-direction:row; font-family:Arial, sans-serif;">
+<!-- CONTENEDOR PRINCIPAL CREMERÍA -->
+<div id="cremeria_contenedor_principal" style="display: flex; width: 100%; height: 100vh; height: 100dvh; overflow: hidden; background: #f8f9fa;">
 
     <!-- PANEL IZQUIERDO: Botones y Pestañas -->
-    <div style="flex: 3; display: flex; flex-direction: column; padding: 20px;">
-        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
-            <h2 style="margin: 0; color: #333;">🧀 Despacho de Mostrador</h2>
-            <button onclick="cerrarModoCremeria()" style="background: #dc3545; color: white; border: none; padding: 10px 20px; font-size: 16px; font-weight: bold; border-radius: 8px; cursor: pointer;">❌ Salir</button>
+    <div id="cremeria_panel_izq" style="flex: 3; display: flex; flex-direction: column; padding: 20px; min-width: 0;">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
+            <h2 style="margin: 0; color: #333; font-size: 22px;">🧀 Despacho de Mostrador</h2>
+            <button onclick="cerrarModoCremeria()" style="background: #dc3545; color: white; border: none; padding: 8px 16px; font-size: 15px; font-weight: bold; border-radius: 8px; cursor: pointer;">❌ Salir</button>
         </div>
 
-        <div id="tabs_cremeria" style="display: flex; gap: 10px; margin-bottom: 20px;"></div>
+        <!-- Pestañas con carrusel horizontal móvil -->
+        <div id="tabs_cremeria" style="display: flex; gap: 10px; margin-bottom: 15px; overflow-x: auto; -webkit-overflow-scrolling: touch; padding-bottom: 5px;"></div>
 
-        <div id="grid_cremeria" style="flex: 1; display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 15px; overflow-y: auto; align-content: start; padding-right: 10px;"></div>
+        <!-- Grid de productos -->
+        <div id="grid_cremeria" style="flex: 1; display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 12px; overflow-y: auto; align-content: start; padding-right: 5px;"></div>
     </div>
 
     <!-- PANEL DERECHO: Ticket Virtual y Botones de Acción -->
-    <div style="flex: 1; background: white; border-left: 3px solid #ddd; display: flex; flex-direction: column; padding: 20px; box-shadow: -5px 0 15px rgba(0,0,0,0.05);">
+    <div id="cremeria_panel_der" style="flex: 1; background: white; border-left: 3px solid #ddd; display: flex; flex-direction: column; padding: 20px; box-shadow: -5px 0 15px rgba(0,0,0,0.05); min-width: 0;">
         
-        <h3 style="margin-top:0; border-bottom:2px solid #0d6efd; padding-bottom:10px; color:#333;">📋 Ticket de Entrega</h3>
+        <h3 style="margin-top:0; border-bottom:2px solid #0d6efd; padding-bottom:10px; color:#333; font-size: 18px;">📋 Ticket de Entrega</h3>
         
-        <!-- Aquí aparecen los productos que despachas -->
-        <div id="carrito_cremeria" style="flex:1; overflow-y:auto; margin-bottom:20px;">
-            <div style="color:#aaa; text-align:center; margin-top:50px;">El ticket está vacío</div>
+        <!-- Carrito de despacho -->
+        <div id="carrito_cremeria" style="flex:1; overflow-y:auto; margin-bottom:15px;">
+            <div style="color:#aaa; text-align:center; margin-top:30px;">El ticket está vacío</div>
         </div>
         
-        <!-- Totales y Botones Finales -->
+        <!-- Totales y Botones -->
         <div style="margin-top: auto;">
-            <h2 id="total_cremeria" style="text-align: right; margin-bottom: 15px; font-size: 30px; font-weight: bold; color: #333;">$0.00</h2>
+            <h2 id="total_cremeria" style="text-align: right; margin-bottom: 10px; font-size: 26px; font-weight: bold; color: #333;">$0.00</h2>
             
             <div style="display:flex; gap:10px;">
-                <button onclick="imprimirTicketCremeria()" style="flex:1; background: #198754; color: white; border: none; padding: 15px 5px; font-size: 16px; font-weight: bold; border-radius: 10px; cursor: pointer; box-shadow: 0 4px 6px rgba(0,0,0,0.2);">🖨️ Imprimir</button>
-                <button onclick="pasarACajaDirectoCremeria()" style="flex:1; background: #0d6efd; color: white; border: none; padding: 15px 5px; font-size: 16px; font-weight: bold; border-radius: 10px; cursor: pointer; box-shadow: 0 4px 6px rgba(0,0,0,0.2);">➡️ A Caja</button>
+                <button onclick="imprimirTicketCremeria()" style="flex:1; background: #198754; color: white; border: none; padding: 12px 5px; font-size: 15px; font-weight: bold; border-radius: 8px; cursor: pointer;">🖨️ Imprimir</button>
+                <button onclick="pasarACajaDirectoCremeria()" style="flex:1; background: #0d6efd; color: white; border: none; padding: 12px 5px; font-size: 15px; font-weight: bold; border-radius: 8px; cursor: pointer;">➡️ A Caja</button>
             </div>
         </div>
         

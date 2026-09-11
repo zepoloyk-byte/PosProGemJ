@@ -608,33 +608,60 @@ tbody tr { height: auto !important; }
     background: #198754; color: white; border: none; padding: 20px; font-size: 20px; font-weight: bold; border-radius: 10px; cursor: pointer; margin-top: auto;
 }
 .btn-imprimir-cremeria:active { background: #146c43; }
-/* =========================================
-   📱 MODO CELULAR CREMERÍA (FORZADO)
-========================================= */
-@media (max-width: 768px) {
-    #modal_cremeria {
-        display: flex !important;
+/* 📱 MODO CREMERÍA EN CELULARES */
+@media screen and (max-width: 768px) {
+    #cremeria_contenedor_principal {
         flex-direction: column !important;
-        height: 100vh !important;
         height: 100dvh !important;
         overflow: hidden !important;
     }
-    
-    .cremeria-izquierda {
+
+    /* Mitad superior: catálogo y categorías */
+    #cremeria_panel_izq {
         flex: 1 1 55% !important;
         min-height: 0 !important;
-        overflow-y: auto !important;
-        -webkit-overflow-scrolling: touch;
+        padding: 10px !important;
+        overflow-y: hidden !important;
     }
-    
-    .cremeria-derecha {
-        display: flex !important;
-        flex: 0 0 45% !important;
-        min-height: 250px !important;
-        border-left: none !important;
-        border-top: 3px solid #0d6efd !important; /* Línea azul para identificarlo */
+
+    /* Carrusel de categorías para no cortar 'Escanear' */
+    #tabs_cremeria {
+        overflow-x: auto !important;
+        white-space: nowrap !important;
+        flex-wrap: nowrap !important;
+        scrollbar-width: none !important;
+    }
+    #tabs_cremeria::-webkit-scrollbar {
+        display: none !important;
+    }
+    #tabs_cremeria > * {
+        flex-shrink: 0 !important;
+    }
+
+    /* Grid ajustado a 2 columnas exactas para pantalla chica */
+    #grid_cremeria {
+        grid-template-columns: repeat(2, 1fr) !important;
+        gap: 8px !important;
+        padding-right: 0 !important;
         overflow-y: auto !important;
-        background: #ffffff !important;
-        box-shadow: 0 -6px 16px rgba(0,0,0,0.12) !important;
+    }
+
+    /* Mitad inferior: ticket de despacho y botones de cobro */
+    #cremeria_panel_der {
+        flex: 0 0 45% !important;
+        min-height: 230px !important;
+        padding: 12px !important;
+        border-left: none !important;
+        border-top: 3px solid #0d6efd !important;
+        box-shadow: 0 -4px 15px rgba(0,0,0,0.15) !important;
+    }
+
+    #carrito_cremeria {
+        margin-bottom: 8px !important;
+    }
+
+    #total_cremeria {
+        font-size: 22px !important;
+        margin-bottom: 6px !important;
     }
 }
