@@ -291,8 +291,9 @@
                 <div><label>P. Venta</label><input type="number" id="c_pv" oninput="calcGananciaDesdeVenta()" onkeydown="focoC(event, 'c_pm', 'c_gan')"></div>
                 <div><label>P. Mayo</label><input type="number" id="c_pm" onkeydown="focoC(event, 'c_md', 'c_pv')"></div>
                 <div><label>Min Mayo</label><input type="number" id="c_md" value="10" onkeydown="focoC(event, 'c_cant', 'c_pm')"></div>
-                <!-- 🌟 ALERTA DE PROMOCIONES EN COMPRAS -->
-<div id="c_promo_alert" style="display: none; background: #fff3cd; color: #856404; border: 1px solid #ffeeba; padding: 12px; margin-bottom: 15px; border-radius: 6px; box-shadow: 0 2px 4px rgba(0,0,0,0.05);"></div>
+                
+<!-- 🌟 ALERTA DE PROMOCIONES EN COMPRAS (Flotante sin empujar pantalla) -->
+<div id="c_promo_alert" style="display: none; position: fixed; top: 20px; right: 20px; z-index: 999999; background: #fff3cd; color: #856404; border: 2px solid #ffeeba; padding: 14px 20px; border-radius: 8px; box-shadow: 0 4px 15px rgba(0,0,0,0.25); font-weight: bold; max-width: 350px;"></div>
                 <div style="grid-column: span 3; background: #fff3cd; padding: 15px; border-radius: 8px; border: 1px solid #ffeeba;">
     
     <div style="display:flex; gap:15px; align-items:flex-end;">

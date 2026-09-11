@@ -193,6 +193,9 @@ const db = {
     }
 };
 // 🌐 SINCRONIZADOR EN TIEMPO REAL MULTI-DISPOSITIVO
+// Declaramos el temporizador fuera de la función
+let temporizadorKardex = null;
+
 if (typeof pb !== 'undefined') {
     // Le decimos a PocketBase que nos avise de CUALQUIER cambio en el Kardex
     pb.collection('kardex').subscribe('*', async function (e) {
@@ -201,12 +204,12 @@ if (typeof pb !== 'undefined') {
         if (e.action === 'create' || e.action === 'update') {
             let nuevoMov = e.record;
             
-            // 1. Lo metemos silenciosamente al disco duro local (IndexedDB)
+            // 1. Lo metemos silenciosamente al disco duro local (Esto es muy rápido, no afecta)
             if (window.dbLocal && dbLocal.kardex) {
                 await dbLocal.kardex.put(nuevoMov).catch(()=>{});
             }
             
-            // 2. Lo inyectamos a nuestra memoria RAM actual
+            // 2. Lo inyectamos a nuestra memoria RAM actual (También es instantáneo)
             if (window.historialKardex) {
                 let existe = window.historialKardex.findIndex(k => k.id === nuevoMov.id);
                 if (existe >= 0) {
@@ -216,17 +219,28 @@ if (typeof pb !== 'undefined') {
                 }
             }
             
-            // 🔥 3. AQUÍ ESTÁ LA MAGIA: Recalculamos el caché de dinero al instante
-            if (typeof window.actualizarCacheVentas === 'function') {
-                window.actualizarCacheVentas();
-                console.log(`🔄 Venta de otro dispositivo detectada. Caché actualizado: Prod ${nuevoMov.codigo}`);
-                
-                // (Opcional) Si el usuario está viendo la pestaña de inventario en ese exacto momento, redibujamos la tabla
-                if (typeof tabActual !== 'undefined' && tabActual === 'i-tab' && typeof renderTablaInventario === 'function') {
-                    // Volvemos a ordenar y pintar para que la ganancia suba en tiempo real
-                    if (typeof filtrarInventario === 'function') filtrarInventario(true);
+            // Corrección del undefined: buscamos un campo que sí exista en tu base de datos
+            let refProd = nuevoMov.codigo || nuevoMov.producto || nuevoMov.id;
+            console.log(`⏳ Registrando movimiento en memoria... (Ref: ${refProd})`);
+            
+            // 🔥 3. LA VERDADERA MAGIA (ANTIRREBOTE):
+            // Cancelamos cualquier actualización pesada que estuviera a punto de hacerse
+            clearTimeout(temporizadorKardex);
+            
+            // Y programamos una nueva para dentro de 1.5 segundos.
+            // Si llegan 20 productos seguidos, el temporizador se reinicia 20 veces, 
+            // y al final solo ejecutará el trabajo pesado UNA SOLA VEZ.
+            temporizadorKardex = setTimeout(() => {
+                if (typeof window.actualizarCacheVentas === 'function') {
+                    window.actualizarCacheVentas();
+                    console.log(`✅ Caché actualizado correctamente EN BLOQUE. (Fin de la ráfaga)`);
+                    
+                    // Si el usuario está viendo el inventario, redibujamos la tabla
+                    if (typeof tabActual !== 'undefined' && tabActual === 'i-tab' && typeof renderTablaInventario === 'function') {
+                        if (typeof filtrarInventario === 'function') filtrarInventario(true);
+                    }
                 }
-            }
+            }, 1500); // 1.5 segundos de calma antes de procesar el Cerebro
         }
     }).catch(err => console.warn("⚠️ No se pudo conectar el socket en tiempo real:", err));
 }
@@ -620,24 +634,37 @@ function guardarConfigAlertas() {
 // ====================================================================
 window.inv = window.inv || {};
 
-// 2. RADAR DE INVENTARIO (Sincronización en tiempo real y guardado en disco duro)
+// 2. RADAR DE INVENTARIO (Solo actualiza los productos que cambiaron)
 if (!window.radarInventarioActivo && typeof db !== 'undefined') {
     window.radarInventarioActivo = true;
 
     db.collection("inventario").onSnapshot((querySnapshot) => {
         let actualizadosArray = []; 
         
-        querySnapshot.forEach((doc) => { 
+        // ⚡ LA CLAVE: docChanges() solo entrega los productos modificados, no toda la base
+        querySnapshot.docChanges().forEach((change) => { 
+            let doc = change.doc;
             let idBruto = doc.id || (doc.data && typeof doc.data === 'function' ? doc.data().id : null) || '';
             let idLimpio = String(idBruto).trim();
             
-            // 🛡️ ESCUDO ANTI-FANTASMAS: Si no hay ID válido, le negamos la entrada
+            // Escudo anti-fantasmas
             if (!idLimpio || idLimpio === 'undefined' || idLimpio === 'null' || idLimpio === '') return;
 
-            let datosNube = typeof normalizarProducto === 'function' ? normalizarProducto(doc.data()) : doc.data();
-            datosNube.id = idLimpio; // Obligamos a que tenga ID para IndexedDB
+            // Si se eliminó un producto en la nube, lo quitamos de la memoria y del disco
+            if (change.type === "removed") {
+                if (window.inv) delete inv[idLimpio];
+                if (window.dbLocal && dbLocal.productos) {
+                    dbLocal.productos.delete(idLimpio).catch(()=>{});
+                }
+                return;
+            }
 
-            let datosLocales = inv[idLimpio] ? (typeof normalizarProducto === 'function' ? normalizarProducto(inv[idLimpio]) : inv[idLimpio]) : null;
+            let datosNube = typeof normalizarProducto === 'function' ? normalizarProducto(doc.data()) : doc.data();
+            datosNube.id = idLimpio;
+
+            let datosLocales = (window.inv && inv[idLimpio]) 
+                ? (typeof normalizarProducto === 'function' ? normalizarProducto(inv[idLimpio]) : inv[idLimpio]) 
+                : null;
 
             // Protección de cambios locales recientes
             if (datosLocales && datosLocales.updatedAt > datosNube.updatedAt) {
@@ -646,33 +673,33 @@ if (!window.radarInventarioActivo && typeof db !== 'undefined') {
                 inv[idLimpio] = datosLocales;
                 actualizadosArray.push(datosLocales);
             } else {
-                inv[idLimpio] = datosNube; 
+                if (window.inv) inv[idLimpio] = datosNube; 
                 actualizadosArray.push(datosNube);
             }
         });
         
-        // 💾 HOLA INDEXEDDB: Guardado masivo con doble filtro de seguridad
-        if (window.dbLocal && dbLocal.productos) {
-            // Última revisión: Aseguramos que la base de datos no se atragante con basura
-            let arrayFiltrado = actualizadosArray.filter(p => p && p.id && String(p.id).trim() !== '' && p.id !== 'undefined');
-            
-            if (arrayFiltrado.length > 0) {
-                dbLocal.productos.bulkPut(arrayFiltrado).catch(e => console.warn("⚠️ Error silencioso guardando inv en disco:", e));
+        // 💾 Guardado quirúrgico en IndexedDB: solo se guardan 1, 2 o los productos que hayan cambiado
+        if (actualizadosArray.length > 0) {
+            if (window.dbLocal && dbLocal.productos) {
+                let arrayFiltrado = actualizadosArray.filter(p => p && p.id && String(p.id).trim() !== '' && p.id !== 'undefined');
+                
+                if (arrayFiltrado.length > 0) {
+                    dbLocal.productos.bulkPut(arrayFiltrado).catch(e => console.warn("⚠️ Error guardando inv en disco:", e));
+                }
             }
-        }
-        
-        console.log(`☁️🔄💾 Inventario sincronizado al disco duro: ${actualizadosArray.length} productos salvados.`);
+            
+            console.log(`☁️🔄💾 Inventario sincronizado: ${actualizadosArray.length} producto(s) modificado(s).`);
 
-        // Refrescar pantalla si estamos viéndola
-        if (typeof tabActual !== 'undefined' && tabActual === 'i-tab' && typeof renderI === 'function') {
-            renderI(); 
+            // Refrescar pantalla si el usuario tiene abierta la pestaña de inventario
+            if (typeof tabActual !== 'undefined' && tabActual === 'i-tab' && typeof renderI === 'function') {
+                renderI(); 
+            }
         }
     }, (error) => {
         console.warn("⚠️ Sin internet. Radar de inventario en pausa, usando copia local.", error);
         window.radarInventarioActivo = false;
     });
 }
-
 // Usuarios
 db.collection("usuarios").onSnapshot((querySnapshot) => {
     usuariosData = {};
