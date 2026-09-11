@@ -609,13 +609,13 @@ tbody tr { height: auto !important; }
 }
 .btn-imprimir-cremeria:active { background: #146c43; }
 @media screen and (max-width: 768px) {
-    /* 1. Blindaje del Login */
-    #modal_cremeria[style*="display: none"] {
+    /* REGLA DE SEGURIDAD: Si está cerrado, desaparece por completo de la pantalla principal */
+    #modal_cremeria[style*="none"] {
         display: none !important;
     }
 
-    /* 2. Modal maestro: scroll vertical completo en todo el celular */
-    #modal_cremeria:not([style*="display: none"]) {
+    /* TU DISEÑO EXACTO (Sin tocar ni un pixel de lo que te gustó) */
+    #modal_cremeria:not([style*="none"]) {
         display: flex !important;
         flex-direction: column !important;
         position: fixed !important;
@@ -623,24 +623,22 @@ tbody tr { height: auto !important; }
         left: 0 !important;
         width: 100% !important;
         height: 100% !important;
-        overflow-y: auto !important; /* Desplazamiento táctil global */
+        overflow-y: auto !important;
         -webkit-overflow-scrolling: touch !important;
         background: #f8f9fa !important;
         z-index: 99999 !important;
     }
 
-    /* 3. Panel superior: Productos */
     #cremeria_panel_izq {
         flex: 0 0 auto !important;
         width: 100% !important;
         height: auto !important;
-        min-height: 400px !important; /* Altura mínima garantizada */
+        min-height: 400px !important;
         padding: 12px 10px !important;
         overflow: visible !important;
         box-sizing: border-box !important;
     }
 
-    /* Cuadrícula de botones */
     #grid_cremeria {
         display: grid !important;
         grid-template-columns: repeat(2, 1fr) !important;
@@ -652,7 +650,6 @@ tbody tr { height: auto !important; }
         padding: 4px 0 !important;
     }
 
-    /* Botones de productos: tamaño mínimo de 75px */
     #grid_cremeria button,
     #grid_cremeria > div {
         min-height: 75px !important;
@@ -686,22 +683,19 @@ tbody tr { height: auto !important; }
         margin-top: 4px !important;
     }
 
-    /* 4. Panel inferior: Ticket de Entrega */
     #cremeria_panel_der {
         flex: 0 0 auto !important;
         width: 100% !important;
         height: auto !important;
         min-height: 350px !important;
         padding: 15px !important;
-        /* Espacio libre al final para que la barra de gestos del celular no tape los botones */
-        padding-bottom: 85px !important; 
+        padding-bottom: 85px !important;
         border-left: none !important;
         border-top: 3px solid #0d6efd !important;
         box-sizing: border-box !important;
         overflow: visible !important;
     }
 
-    /* Lista del carrito */
     #carrito_cremeria {
         height: auto !important;
         min-height: 120px !important;
@@ -710,7 +704,6 @@ tbody tr { height: auto !important; }
         margin-bottom: 12px !important;
     }
 
-    /* Total y Botonera inferior */
     #cremeria_panel_der > div:last-child {
         display: block !important;
         margin-top: 15px !important;
