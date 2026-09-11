@@ -12342,9 +12342,9 @@ window.borrarItemCremeria = function(index) {
 window.imprimirTicketCremeria = function() {
     if(carritoCremeria.length === 0) return alert("El ticket de mostrador está vacío.");
 
-    // 1. Generar un Folio Único (Usamos la hora para que nunca se repita)
+    // 1. Generar un Folio Único
     let fecha = new Date();
-    let folio = "T-" + fecha.getTime().toString().slice(-6); // Ejemplo: T-843189
+    let folio = "T-" + fecha.getTime().toString().slice(-6);
 
     // 2. Calcular el total
     let totalTicket = carritoCremeria.reduce((sum, item) => sum + item.subtotal, 0);
@@ -12353,23 +12353,21 @@ window.imprimirTicketCremeria = function() {
     let ticketFantasma = {
         folio: folio,
         fecha: fecha.toLocaleString(),
-        // 🔒 Le pegamos la etiqueta de la sucursal actual (o 'General' por defecto)
         sucursal: (typeof sucursalActual !== 'undefined') ? sucursalActual : 'General',
         articulos: [...carritoCremeria],
         total: totalTicket
     };
     
-    // Usamos tu motor blindado para guardarlo en una colección nueva
     if (typeof db !== 'undefined') {
         db.collection('tickets_cremeria').doc(folio).set(ticketFantasma);
         console.log("☁️ Ticket enviado a la nube: " + folio);
     }
-    // 4. Diseñar el Recibo Térmico (Ajustado a 58mm y con Código de Barras)
+
+    // 4. Diseñar el Recibo Térmico
     let htmlTicket = `
         <html>
         <head>
             <style>
-                /* Ajuste estricto para 58mm encerrado SOLAMENTE para este ticket */
                 body { font-family: 'Courier New', Courier, monospace; font-size: 11px; margin: 0; padding: 5px; width: 190px; color: black; }
                 h2 { font-size: 14px; text-align: center; margin: 4px 0; }
                 h3 { font-size: 12px; text-align: center; margin: 4px 0; }
@@ -12385,7 +12383,6 @@ window.imprimirTicketCremeria = function() {
             <h2>DESPACHO MOSTRADOR</h2>
             <div class="center">Folio: <b>${folio}</b></div>
             
-            <!-- 🌟 AQUÍ ESTÁ LA MAGIA DEL CÓDIGO DE BARRAS -->
             <div class="center" style="margin: 10px 0;">
                 <img src="https://barcode.tec-it.com/barcode.ashx?data=${folio}&code=Code128" alt="Barcode ${folio}" style="max-width: 90%; height: 50px;">
             </div>
@@ -12417,13 +12414,12 @@ window.imprimirTicketCremeria = function() {
                 *** TICKET DE PRE-VENTA ***<br>
                 Pase a la caja principal con este ticket para realizar su pago.
             </div>
-            
             <br><br><br>
         </body>
         </html>
     `;
 
-    // 5. Crear la ventana invisible y lanzar la impresión
+    // 5. Preparar la impresora (Pero NO imprimimos todavía)
     let iframe = document.createElement('iframe');
     iframe.style.display = 'none';
     document.body.appendChild(iframe);
@@ -12432,19 +12428,34 @@ window.imprimirTicketCremeria = function() {
     iframe.contentWindow.document.write(htmlTicket);
     iframe.contentWindow.document.close();
 
-    // Damos medio segundo para que el navegador "dibuje" el recibo y luego imprimimos
-    setTimeout(() => {
+    // 🛑 6. PAUSA: Mostrar el código en la pantalla grande
+    document.getElementById('codigo_generado_pantalla').innerText = folio;
+    document.getElementById('modalVistaPreviaTicket').style.display = 'flex';
+
+    // 🟢 Acción A: El usuario presiona "Imprimir"
+    document.getElementById('btn_confirmar_impresion').onclick = function() {
         iframe.contentWindow.focus();
         iframe.contentWindow.print();
-        
-        // 6. Limpiar la mesa para el siguiente cliente
+        limpiarYPrepararSiguiente();
+    };
+
+    // 🟢 Acción B: El usuario presiona "Listo (Anotado a mano)"
+    let btnAnotado = document.querySelector('#modalVistaPreviaTicket button:first-of-type');
+    btnAnotado.onclick = function() {
+        limpiarYPrepararSiguiente();
+    };
+
+    // Función interna para limpiar todo después de cualquier decisión
+    function limpiarYPrepararSiguiente() {
+        document.getElementById('modalVistaPreviaTicket').style.display = 'none';
         carritoCremeria = [];
         dibujarCarritoCremeria();
-      
         
-        // Destruimos la ventana invisible para no saturar la memoria
-        setTimeout(() => { document.body.removeChild(iframe); }, 1000);
-    }, 500);
+        // Destruir el ticket de la memoria para que no haya duplicados
+        setTimeout(() => { 
+            if (iframe && iframe.parentNode) document.body.removeChild(iframe); 
+        }, 1000);
+    }
 };
 window.pasarACajaDirectoCremeria = function() {
     if(carritoCremeria.length === 0) return alert("El ticket de mostrador está vacío.");
