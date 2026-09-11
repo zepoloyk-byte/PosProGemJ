@@ -609,26 +609,32 @@ tbody tr { height: auto !important; }
 }
 .btn-imprimir-cremeria:active { background: #146c43; }
 /* =========================================
-   📱 MODO CELULAR PARA CREMERÍA (CORREGIDO)
+   📱 MODO CELULAR CREMERÍA (FORZADO)
 ========================================= */
 @media (max-width: 768px) {
     #modal_cremeria {
-        flex-direction: column; 
-        height: 100vh; /* Fuerza a que mida exactamente la pantalla del cel */
-        height: 100dvh; /* Evita que la barra del navegador de Chrome lo tape */
+        display: flex !important;
+        flex-direction: column !important;
+        height: 100vh !important;
+        height: 100dvh !important;
+        overflow: hidden !important;
     }
     
     .cremeria-izquierda {
-        flex: 1 1 0; /* Le dice: "toma el espacio sobrante" */
-        min-height: 0; /* 🚨 ESTA ES LA CLAVE: Evita que los productos empujen la pantalla */
-        overflow-y: auto; /* Permite deslizar solo los productos */
+        flex: 1 1 55% !important;
+        min-height: 0 !important;
+        overflow-y: auto !important;
+        -webkit-overflow-scrolling: touch;
     }
     
     .cremeria-derecha {
-        flex: 0 0 45vh; /* El carrito siempre ocupará el 45% de abajo */
-        border-left: none; 
-        border-top: 3px solid #ddd; 
-        box-shadow: 0 -5px 15px rgba(0,0,0,0.05); 
-        overflow-y: auto; /* Por si el carrito se llena de muchas cosas */
+        display: flex !important;
+        flex: 0 0 45% !important;
+        min-height: 250px !important;
+        border-left: none !important;
+        border-top: 3px solid #0d6efd !important; /* Línea azul para identificarlo */
+        overflow-y: auto !important;
+        background: #ffffff !important;
+        box-shadow: 0 -6px 16px rgba(0,0,0,0.12) !important;
     }
 }

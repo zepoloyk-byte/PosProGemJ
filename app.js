@@ -2530,13 +2530,31 @@ window.borrarArticuloVenta = function(index) {
     let articulo = carV[index];
     if (!articulo) return;
 
-    // 🕵️ CAJA NEGRA: Registramos el robo/borrado exacto
-    if (typeof registrarEventoVenta === 'function') {
-        let cajero = (typeof usuarioActual !== 'undefined' && usuarioActual) ? usuarioActual : 'Cajero';
-        registrarEventoVenta("BORRADO 🗑️", `[${cajero}] eliminó del carrito: ${articulo.can}x ${articulo.nom} (Precio: $${articulo.precioManual || 'Normal'})`);
+    let cajero = (typeof usuarioActual !== 'undefined' && usuarioActual) ? usuarioActual : 'Cajero';
+    let sucursal = (typeof sucursalActual !== 'undefined' && sucursalActual) ? sucursalActual : 'General';
+    let horaExacta = new Date().toLocaleTimeString('es-MX', { 
+        hour12: true, 
+        hour: '2-digit', 
+        minute: '2-digit', 
+        second: '2-digit' 
+    });
+    let fechaHoy = (typeof getFechaLocal === 'function') ? getFechaLocal() : new Date().toISOString().split('T')[0];
+
+    // 🚨 REGISTRO INMEDIATO: Se sube a la nube en el milisegundo que tocan la X
+    if (typeof pb !== 'undefined') {
+        pb.collection('auditoria_borrados').create({
+            fecha: fechaHoy,
+            hora: horaExacta,
+            cajero: cajero,
+            sucursal: sucursal,
+            producto: articulo.nom || 'Sin nombre',
+            codigo: articulo.cod || '',
+            cantidad: articulo.can || 1,
+            detalle: `Eliminó ${articulo.can}x ${articulo.nom}`
+        }).catch(err => console.warn("Error enviando alerta a PocketBase:", err));
     }
 
-    // Ejecutamos el borrado normal
+    // Ejecutamos el borrado normal del carrito
     carV.splice(index, 1);
     
     // Acomodamos la vista y el escáner
@@ -3222,6 +3240,7 @@ window.confirmarVenta = async function(cambioFinal = 0) {
             detalles: detallesParaGuardar, 
             anulada: false,
             sync_pendiente: true // 👈 Agregado aquí 
+            
         };
 
         // 🛡️ BLINDAJE ABSOLUTO: Si la lista desapareció, la recrea antes de fallar
@@ -7375,7 +7394,13 @@ window.onkeydown = (e) => {
         if (aId === 'v_cod' || aTag === 'BODY') {
             if (e.key === 'ArrowDown') { e.preventDefault(); if (focusVentaIndex < carV.length - 1) focusVentaIndex++; window.renderV(); return; }
             if (e.key === 'ArrowUp') { e.preventDefault(); if (focusVentaIndex > 0) focusVentaIndex--; window.renderV(); return; }
-            if (e.key === 'Delete') { e.preventDefault(); if (focusVentaIndex >= 0 && focusVentaIndex < carV.length && confirm(`⚠️ ¿Eliminar "${carV[focusVentaIndex].nom}"?`)) { carV.splice(focusVentaIndex, 1); if (focusVentaIndex >= carV.length) focusVentaIndex = carV.length - 1; window.renderV(); } return; }
+            if (e.key === 'Delete') { 
+    e.preventDefault(); 
+    if (focusVentaIndex >= 0 && focusVentaIndex < carV.length && confirm(`⚠️ ¿Eliminar "${carV[focusVentaIndex].nom}"?`)) { 
+        borrarArticuloVenta(focusVentaIndex);
+    } 
+    return; 
+}
             if (e.key === '+' || e.key === '-') {
                 e.preventDefault(); let tIdx = focusVentaIndex > -1 ? focusVentaIndex : carV.length - 1;
                 if (e.key === '+') { carV[tIdx].can++; window.renderV(); } 
@@ -12537,4 +12562,82 @@ window.agregarDirectoAlCarrito = function(idProducto, cantidad) {
         });
     }
     dibujarCarritoCremeria(); 
+};
+window.abrirAuditoriaBorrados = async function() {
+    let modal = document.getElementById('modalAuditoriaBorrados');
+    if (modal) modal.style.display = 'flex';
+    await cargarAuditoriaBorrados();
+};
+
+window.cargarAuditoriaBorrados = async function() {
+    let tbody = document.getElementById('lista_auditoria_borrados');
+    if (!tbody) return;
+    tbody.innerHTML = '<tr><td colspan="6" style="text-align:center; padding:15px; color:#666;">Cargando registros...</td></tr>';
+
+    try {
+        if (typeof pb === 'undefined') throw new Error("PocketBase no está disponible");
+
+        let res = await pb.collection('auditoria_borrados').getList(1, 100, {
+            sort: '-created'
+        });
+
+        if (!res.items || res.items.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="6" style="text-align:center; padding:15px; color:#888;">No hay registros de borrado.</td></tr>';
+            return;
+        }
+
+        tbody.innerHTML = res.items.map(r => `
+            <tr style="border-bottom:1px solid #eee;">
+                <td style="padding:8px 10px; white-space:nowrap;">
+                    <b>${r.fecha || ''}</b> <small style="color:#666;">${r.hora || ''}</small>
+                </td>
+                <td style="padding:8px 10px;">${r.cajero || 'Cajero'}</td>
+                <td style="padding:8px 10px;">${r.sucursal || 'General'}</td>
+                <td style="padding:8px 10px; color:#d63384; font-weight:bold;">${r.producto || 'Sin nombre'}</td>
+                <td style="padding:8px 10px; text-align:center;">${r.cantidad || 1}</td>
+                <td style="padding:8px 10px; text-align:center;">
+                    <button onclick="eliminarRegistroAuditoria('${r.id}')" title="Eliminar registro" style="background:#fee2e2; border:1px solid #f87171; color:#dc2626; border-radius:4px; padding:3px 8px; cursor:pointer;">🗑️</button>
+                </td>
+            </tr>
+        `).join('');
+    } catch (err) {
+        console.error("Error al consultar auditoría:", err);
+        tbody.innerHTML = `<tr><td colspan="6" style="text-align:center; padding:15px; color:red;">Error al cargar registros: ${err.message}</td></tr>`;
+    }
+};
+
+// Eliminar un solo registro
+window.eliminarRegistroAuditoria = async function(id) {
+    if (!confirm("¿Deseas eliminar este registro de la auditoría?")) return;
+    try {
+        await pb.collection('auditoria_borrados').delete(id);
+        cargarAuditoriaBorrados();
+    } catch (err) {
+        alert("Error al eliminar el registro: " + err.message);
+    }
+};
+
+// Vaciar toda la lista de PocketBase
+window.vaciarAuditoriaBorrados = async function() {
+    if (!confirm("⚠️ ¿Estás seguro de que deseas vaciar TODOS los registros de auditoría de la nube?")) return;
+    
+    let btn = event.target;
+    let textoOriginal = btn.innerText;
+    btn.innerText = "Borrando...";
+    btn.disabled = true;
+
+    try {
+        let registros = await pb.collection('auditoria_borrados').getFullList({ fields: 'id' });
+        
+        // Eliminación en lotes paralelos
+        await Promise.all(registros.map(r => pb.collection('auditoria_borrados').delete(r.id)));
+
+        alert("✅ Historial de auditoría purgado por completo.");
+        cargarAuditoriaBorrados();
+    } catch (err) {
+        alert("Error al vaciar la auditoría: " + err.message);
+    } finally {
+        btn.innerText = textoOriginal;
+        btn.disabled = false;
+    }
 };

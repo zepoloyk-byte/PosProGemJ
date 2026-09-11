@@ -13,7 +13,7 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/pocketbase/0.20.1/pocketbase.umd.js"></script>
     <script src="https://unpkg.com/html5-qrcode" type="text/javascript"></script>
 
-    <link rel="stylesheet" href="styles.css">
+    <link rel="stylesheet" href="styles.css?v=2">
 
     <style>
         /* 📱 BARRA DE PESTAÑAS SUPERIOR */
@@ -86,6 +86,47 @@
         }
         
     </style>
+    <!-- Enlace con versión para romper caché -->
+    <link rel="stylesheet" href="styles.css?v=2">
+
+    <!-- 📱 PARCHE DIRECTO PARA CELULARES (Prioridad Máxima) -->
+    <style>
+        @media (max-width: 768px) {
+            #modal_cremeria {
+                display: flex !important;
+                flex-direction: column !important;
+                height: 100dvh !important;
+                overflow: hidden !important;
+            }
+            .cremeria-izquierda {
+                flex: 1 1 55% !important;
+                min-height: 0 !important;
+                overflow-y: auto !important;
+                -webkit-overflow-scrolling: touch;
+            }
+            .cremeria-derecha {
+                display: flex !important;
+                flex: 0 0 45% !important;
+                min-height: 240px !important;
+                border-left: none !important;
+                border-top: 3px solid #0d6efd !important;
+                overflow-y: auto !important;
+                background: #ffffff !important;
+            }
+            /* Carrusel horizontal para que no se corten los botones de arriba */
+            .cremeria-izquierda > div:first-child {
+                display: flex !important;
+                overflow-x: auto !important;
+                white-space: nowrap !important;
+                gap: 8px !important;
+                padding-bottom: 6px !important;
+                -webkit-overflow-scrolling: touch;
+            }
+            .cremeria-izquierda > div:first-child button {
+                flex-shrink: 0 !important;
+            }
+        }
+    </style>
 </head>
 <body>
 
@@ -133,6 +174,9 @@
         <button style="background-color: var(--info, #17a2b8); color: white; border: none; padding: 10px 15px; border-radius: 5px; cursor: pointer; font-weight: bold; box-shadow: 0 2px 4px rgba(0,0,0,0.1);" onclick="mostrarEstadisticasAuditoria()">
             📊 VER PROGRESO DEL MES
         </button>
+        <button onclick="abrirAuditoriaBorrados()" style="background:#212529; color:white; border:none; padding:8px 12px; border-radius:5px; font-weight:bold; cursor:pointer;">
+    🕵️ Auditoría
+</button>
     </div>
     <div style="display:flex; gap:20px; margin-top:20px; align-items: flex-start;">
         
@@ -230,6 +274,7 @@
                     <button class="btn font-weight-bold" onclick="abrirModoCremeria()" style="background: #ffc107; color: #000; border: none; border-radius: 5px; padding: 8px 15px; margin-left: 5px; box-shadow: 0 2px 4px rgba(0,0,0,0.1);">
     🧀 Modo Cremería
 </button>
+
                     <div id="alertaRevisionContenedor" style="display: none; margin: 10px 0;">
     <button id="btnIrARevision" onclick="abrirRevisionAsignada()" class="btn-animado-alerta" style="background-color: #e67e22; color: white; border: none; padding: 12px 20px; font-weight: bold; border-radius: 5px; cursor: pointer; width: 100%; box-shadow: 0 4px 15px rgba(230,126,34,0.4);">
         🚨 TIENES (1) REVISIÓN DE INVENTARIO ASIGNADA ¡DAR CLIC AQUÍ!
@@ -2018,6 +2063,74 @@
             <button onclick="imprimirTicketCremeria()" style="flex:1; background: #198754; color: white; border: none; padding: 15px 5px; font-size: 16px; font-weight: bold; border-radius: 10px; cursor: pointer; box-shadow: 0 4px 6px rgba(0,0,0,0.2);">🖨️ Crear Ticket</button>
             <button onclick="pasarACajaDirectoCremeria()" style="flex:1; background: #0d6efd; color: white; border: none; padding: 15px 5px; font-size: 16px; font-weight: bold; border-radius: 10px; cursor: pointer; box-shadow: 0 4px 6px rgba(0,0,0,0.2);">➡️ Mandar a Caja</button>
         </div>
+</div>
+<!-- Modal Auditoría de Borrados -->
+<div id="modalAuditoriaBorrados" style="display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.6); z-index:99999; justify-content:center; align-items:center;">
+    <div style="background:#fff; width:92%; max-width:850px; max-height:85vh; border-radius:8px; padding:20px; display:flex; flex-direction:column; box-shadow:0 10px 25px rgba(0,0,0,0.3);">
+        
+        <!-- Encabezado -->
+        <div style="display:flex; justify-content:space-between; align-items:center; border-bottom:1px solid #eee; padding-bottom:10px;">
+            <h3 style="margin:0; font-size:18px; color:#333;">🕵️ Auditoría de Borrados (Caja Negra)</h3>
+            <button onclick="document.getElementById('modalAuditoriaBorrados').style.display='none'" style="border:none; background:#dc3545; color:white; border-radius:4px; padding:6px 12px; cursor:pointer; font-weight:bold;">✕</button>
+        </div>
+
+        <!-- Tabla de Registros -->
+        <div style="flex:1; overflow-y:auto; margin-top:15px; border:1px solid #eee; border-radius:4px;">
+            <table style="width:100%; border-collapse:collapse; font-size:13px; text-align:left;">
+                <thead style="background:#f8f9fa; position:sticky; top:0; border-bottom:2px solid #dee2e6;">
+                    <tr>
+                        <th style="padding:10px;">Fecha / Hora</th>
+                        <th style="padding:10px;">Cajero</th>
+                        <th style="padding:10px;">Sucursal</th>
+                        <th style="padding:10px;">Producto Eliminado</th>
+                        <th style="padding:10px; text-align:center;">Cant.</th>
+                        <th style="padding:10px; text-align:center;">Acción</th>
+                    </tr>
+                </thead>
+                <tbody id="lista_auditoria_borrados">
+                    <!-- Registros cargados por JS -->
+                </tbody>
+            </table>
+        </div>
+
+        <!-- Pie de acciones -->
+        <div style="display:flex; justify-content:flex-end; align-items:center; gap:10px; margin-top:15px; border-top:1px solid #eee; padding-top:10px;">
+            <button onclick="vaciarAuditoriaBorrados()" style="padding:8px 16px; background:#dc3545; color:#fff; border:none; border-radius:5px; cursor:pointer; font-weight:bold; margin-right:auto;">
+                🗑️ Vaciar Todo
+            </button>
+            <button onclick="cargarAuditoriaBorrados()" style="padding:8px 16px; background:#0d6efd; color:#fff; border:none; border-radius:5px; cursor:pointer; font-weight:bold;">
+                🔄 Actualizar
+            </button>
+            <button onclick="document.getElementById('modalAuditoriaBorrados').style.display='none'" style="padding:8px 16px; background:#6c757d; color:#fff; border:none; border-radius:5px; cursor:pointer;">
+                Cerrar
+            </button>
+        </div>
+
+    </div>
+</div>
+
+        <div style="flex:1; overflow-y:auto; margin-top:15px; border:1px solid #eee; border-radius:4px;">
+            <table style="width:100%; border-collapse:collapse; font-size:13px; text-align:left;">
+                <thead style="background:#f8f9fa; position:sticky; top:0; border-bottom:2px solid #dee2e6;">
+                    <tr>
+                        <th style="padding:10px;">Fecha / Hora</th>
+                        <th style="padding:10px;">Cajero</th>
+                        <th style="padding:10px;">Sucursal</th>
+                        <th style="padding:10px;">Producto Eliminado</th>
+                        <th style="padding:10px; text-align:center;">Cant.</th>
+                    </tr>
+                </thead>
+                <tbody id="lista_auditoria_borrados">
+                    <!-- Registros cargados por JS -->
+                </tbody>
+            </table>
+        </div>
+
+        <div style="display:flex; justify-content:flex-end; gap:10px; margin-top:15px; border-top:1px solid #eee; padding-top:10px;">
+            <button onclick="cargarAuditoriaBorrados()" style="padding:8px 16px; background:#0d6efd; color:#fff; border:none; border-radius:5px; cursor:pointer; font-weight:bold;">🔄 Actualizar</button>
+            <button onclick="document.getElementById('modalAuditoriaBorrados').style.display='none'" style="padding:8px 16px; background:#6c757d; color:#fff; border:none; border-radius:5px; cursor:pointer;">Cerrar</button>
+        </div>
+    </div>
 </div>
 </body>
 </html>
