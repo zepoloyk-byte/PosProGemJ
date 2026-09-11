@@ -3284,28 +3284,27 @@ window.confirmarVenta = async function(cambioFinal = 0) {
                 .catch(err => console.error("Error al guardar venta en disco duro:", err));
         }
 
-        // 🚀 GUARDADO DE LA VENTA EN NUBE (El Presente Intacto)
+        // 🚀 GUARDADO DE LA VENTA EN NUBE (Segundo plano, sin trabar la pantalla)
         if (typeof pb !== 'undefined') {
-            try {
-                let ventaNube = { 
-                    doc_id: String(idVentaNueva), 
-                    data: nuevaVenta 
-                };
-                let respPB = await pb.collection("ventas").create(ventaNube, { requestKey: null });
+            let ventaNube = { 
+                doc_id: String(idVentaNueva), 
+                data: nuevaVenta 
+            };
+            
+            // Le quitamos el "await". La app avanza inmediatamente a imprimir el ticket
+            pb.collection("ventas").create(ventaNube, { requestKey: null })
+            .then(async (respPB) => {
                 console.log("✅ Venta subida con éxito a PocketBase:", respPB.id);
-
                 // 🟢 AQUÍ: Como subió a la nube, le quitamos la bandera de pendiente
                 nuevaVenta.sync_pendiente = false;
                 if (window.dbLocal && dbLocal.ventas) {
                     await dbLocal.ventas.put(nuevaVenta);
                 }
-
-            } catch (errPB) {
+            })
+            .catch((errPB) => {
                 console.warn("⚠️ No se pudo subir a PocketBase (¿sin internet?). Queda guardada para el Sincronizador Fantasma.");
-                if (errPB.data) {
-                    console.error("Detalle del servidor:", JSON.stringify(errPB.data));
-                }
-            }
+            });
+            
         } else if (typeof db !== 'undefined') { 
             db.collection("ventas").doc(String(idVentaNueva)).set(nuevaVenta)
                 .then(async () => {
