@@ -94,30 +94,30 @@ const db = {
 
                         console.log(`✅ Radar en tiempo real conectado exitosamente para [${colName}].`);
 
-                        // 🚀 3. DESCARGA DELTA: Trae los cambios recientes que ocurrieron mientras no estábamos viendo
+                        // 🚀 3. ACTUALIZACIÓN DELTA SEGURA (Solo actualiza el producto individual, nunca borra la memoria)
                         if (colName === "inventario") {
                             pb.collection('inventario').getList(1, 100, { sort: '-updated', requestKey: null })
                             .then(res => {
                                 let actualizados = [];
                                 res.items.forEach(r => {
                                     let idProd = r.doc_id || r.id;
-                                    let dataNueva = r.data || r;
+                                    let dataNueva = (r.data && typeof r.data === 'object') ? r.data : r;
                                     dataNueva.id = idProd;
 
-                                    let actual = window.inv ? window.inv[idProd] : null;
-                                    // Si el precio o costo en la nube es más reciente o diferente, lo actualizamos en RAM
-                                    if (!actual || actual.pv !== dataNueva.pv || actual.cos !== dataNueva.cos || actual.updatedAt !== dataNueva.updatedAt) {
-                                        if (window.inv) window.inv[idProd] = dataNueva;
+                                    let actual = (typeof inv !== 'undefined' && inv) ? inv[idProd] : null;
+                                    
+                                    // Si hay discrepancia de precio o costo con la nube, actualiza solo ese artículo
+                                    if (actual && (actual.pv !== dataNueva.pv || actual.cos !== dataNueva.cos || actual.stock !== dataNueva.stock)) {
+                                        Object.assign(actual, dataNueva);
                                         actualizados.push(dataNueva);
                                     }
                                 });
 
                                 if (actualizados.length > 0) {
-                                    console.log(`⚡ Sincronización Delta: ${actualizados.length} producto(s) actualizados con la nube.`);
+                                    console.log(`⚡ Sincronización Delta: ${actualizados.length} producto(s) actualizados.`);
                                     if (window.dbLocal && dbLocal.productos) {
                                         dbLocal.productos.bulkPut(actualizados).catch(()=>{});
                                     }
-                                    try { localStorage.setItem("pos_precision_v6", JSON.stringify(window.inv)); } catch(e){}
                                     if (typeof renderI === 'function' && typeof tabActual !== 'undefined' && tabActual === 'i-tab') renderI();
                                 }
                             }).catch(()=>{});
