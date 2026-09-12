@@ -40,19 +40,28 @@ const db = {
                 let iniciarRadar = async () => {
                     if(intentando) return;
                     intentando = true;
+                    
                     try {
                         let cache = [];
 
-                        // 1. Carga inmediata desde RAM/Disco para no hacer esperar al cajero
+                        // 1. CARGA INMEDIATA DESDE DISCO / MEMORIA (Funciona 100% Offline)
                         if (colName === "inventario" && typeof inv !== 'undefined' && Object.keys(inv).length > 0) {
                             cache = Object.keys(inv).map(k => ({ doc_id: k, data: inv[k] }));
-                        } else {
-                            cache = await pb.collection(colName).getFullList(200, { requestKey: null });
+                        } else if (window.dbLocal && dbLocal[colName]) {
+                            try {
+                                let locales = await dbLocal[colName].toArray();
+                                if (locales && locales.length > 0) {
+                                    cache = locales.map(r => ({ doc_id: r.doc_id || r.id, data: r.data || r }));
+                                }
+                            } catch(e) {}
                         }
 
-                        let mapa = {}; 
-                        cache.forEach(r => { let key = r.doc_id || r.id; mapa[key] = r; });
-                        cache = Object.values(mapa); 
+                        // Si la caché sigue vacía, intenta descargar de PocketBase (primer inicio)
+                        if (cache.length === 0 && navigator.onLine) {
+                            try {
+                                cache = await pb.collection(colName).getFullList(200, { requestKey: null });
+                            } catch(e) { console.warn(`Fallo inicial al descargar [${colName}]`); }
+                        }
 
                         let emitCambio = (cambiosLista = null) => {
                             callback({
@@ -68,7 +77,15 @@ const db = {
                             });
                         };
 
+                        // ⚡ EMISIÓN INMEDIATA: Arranca usuarios e inventario aunque no haya red
                         emitCambio();
+
+                        // Si no hay red, pausamos aquí y reintentamos cuando vuelva
+                        if (!navigator.onLine) {
+                            intentando = false;
+                            window.addEventListener('online', () => iniciarRadar(), { once: true });
+                            return;
+                        }
 
                         // ⚡ 2. RADAR EN VIVO (Para cambios que ocurran a partir de ahora)
                         pb.collection(colName).subscribe('*', function(e) {
@@ -94,7 +111,7 @@ const db = {
 
                         console.log(`✅ Radar en tiempo real conectado exitosamente para [${colName}].`);
 
-                        // 🚀 3. ACTUALIZACIÓN DELTA SEGURA (Solo actualiza el producto individual, nunca borra la memoria)
+                        // 🚀 3. ACTUALIZACIÓN DELTA SEGURA
                         if (colName === "inventario") {
                             pb.collection('inventario').getList(1, 100, { sort: '-updated', requestKey: null })
                             .then(res => {
@@ -106,7 +123,6 @@ const db = {
 
                                     let actual = (typeof inv !== 'undefined' && inv) ? inv[idProd] : null;
                                     
-                                    // Si hay discrepancia de precio o costo con la nube, actualiza solo ese artículo
                                     if (actual && (actual.pv !== dataNueva.pv || actual.cos !== dataNueva.cos || actual.stock !== dataNueva.stock)) {
                                         Object.assign(actual, dataNueva);
                                         actualizados.push(dataNueva);
