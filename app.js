@@ -43,20 +43,21 @@ const db = {
                     
                     try {
                         let cache = [];
+                        // 🛠️ CORRECCIÓN: El nombre real de la tabla de inventario en IndexedDB es "productos"
+                        let tablaLocal = colName === "inventario" ? "productos" : colName;
 
-                        // 1. CARGA INMEDIATA DESDE DISCO / MEMORIA (Funciona 100% Offline)
+                        // 1. CARGA INMEDIATA DESDE DISCO / MEMORIA (Blindaje 100% Offline)
                         if (colName === "inventario" && typeof inv !== 'undefined' && Object.keys(inv).length > 0) {
                             cache = Object.keys(inv).map(k => ({ doc_id: k, data: inv[k] }));
-                        } else if (window.dbLocal && dbLocal[colName]) {
+                        } else if (window.dbLocal && dbLocal[tablaLocal]) {
                             try {
-                                let locales = await dbLocal[colName].toArray();
+                                let locales = await dbLocal[tablaLocal].toArray();
                                 if (locales && locales.length > 0) {
                                     cache = locales.map(r => ({ doc_id: r.doc_id || r.id, data: r.data || r }));
                                 }
                             } catch(e) {}
                         }
 
-                        // Si la caché sigue vacía, intenta descargar de PocketBase (primer inicio)
                         if (cache.length === 0 && navigator.onLine) {
                             try {
                                 cache = await pb.collection(colName).getFullList(200, { requestKey: null });
@@ -77,17 +78,15 @@ const db = {
                             });
                         };
 
-                        // ⚡ EMISIÓN INMEDIATA: Arranca usuarios e inventario aunque no haya red
                         emitCambio();
 
-                        // Si no hay red, pausamos aquí y reintentamos cuando vuelva
                         if (!navigator.onLine) {
                             intentando = false;
                             window.addEventListener('online', () => iniciarRadar(), { once: true });
                             return;
                         }
 
-                        // ⚡ 2. RADAR EN VIVO (Para cambios que ocurran a partir de ahora)
+                        // ⚡ 2. RADAR EN VIVO
                         pb.collection(colName).subscribe('*', function(e) {
                             let key = e.record.doc_id || e.record.id;
                             let dataObj = (e.record.data && typeof e.record.data === 'object') ? e.record.data : e.record;
@@ -97,40 +96,50 @@ const db = {
                                 let idx = cache.findIndex(x => (x.doc_id || x.id) === key);
                                 if (idx > -1) cache[idx] = e.record; 
                                 else cache.push(e.record); 
-                                if (colName === "inventario" && window.inv) inv[key] = dataObj;
+                                if (colName === "inventario" && window.inv) window.inv[key] = dataObj;
                             } else if (e.action === 'delete') {
                                 cache = cache.filter(x => (x.doc_id || x.id) !== key);
-                                if (colName === "inventario" && window.inv) delete inv[key];
+                                if (colName === "inventario" && window.inv) delete window.inv[key];
                             }
 
-                            emitCambio([{
-                                type: tipoCambio,
-                                doc: { id: key, data: () => dataObj }
-                            }]);
+                            emitCambio([{ type: tipoCambio, doc: { id: key, data: () => dataObj } }]);
                         });
 
-                        console.log(`✅ Radar en tiempo real conectado exitosamente para [${colName}].`);
+                        console.log(`✅ Radar conectado para [${colName}].`);
 
-                        // 🚀 3. ACTUALIZACIÓN DELTA SEGURA
+                        // 🚀 3. ACTUALIZACIÓN DELTA PROTEGIDA
                         if (colName === "inventario") {
-                            pb.collection('inventario').getList(1, 100, { sort: '-updated', requestKey: null })
+                            // 🛡️ ESCUDO OFFLINE: Si hay ventas en la mochila pendientes de subir, 
+                            // prohibimos la descarga Delta para no borrar los descuentos de stock locales.
+                            let ventasPendientes = (window.ventas || []).filter(v => v.sync_pendiente).length;
+                            if (ventasPendientes > 0) {
+                                console.warn(`⏳ Delta pausado: Hay ${ventasPendientes} venta(s) pendientes. Protegiendo stock local...`);
+                                return;
+                            }
+
+                            pb.collection('inventario').getList(1, 500, { sort: '-updated', requestKey: null })
                             .then(res => {
                                 let actualizados = [];
                                 res.items.forEach(r => {
                                     let idProd = r.doc_id || r.id;
                                     let dataNueva = (r.data && typeof r.data === 'object') ? r.data : r;
                                     dataNueva.id = idProd;
+                                    dataNueva.cod = dataNueva.cod || idProd; // 🛡️ Seguro anti-desaparición
 
                                     let actual = (typeof inv !== 'undefined' && inv) ? inv[idProd] : null;
                                     
-                                    if (actual && (actual.pv !== dataNueva.pv || actual.cos !== dataNueva.cos || actual.stock !== dataNueva.stock)) {
+                                    if (!actual) {
+                                        if (window.inv) window.inv[idProd] = dataNueva;
+                                        actualizados.push(dataNueva);
+                                    } else if (actual.pv !== dataNueva.pv || actual.cos !== dataNueva.cos || actual.stock !== dataNueva.stock) {
+                                        // Actualiza de forma segura sin romper la estructura en memoria
                                         Object.assign(actual, dataNueva);
                                         actualizados.push(dataNueva);
                                     }
                                 });
 
                                 if (actualizados.length > 0) {
-                                    console.log(`⚡ Sincronización Delta: ${actualizados.length} producto(s) actualizados.`);
+                                    console.log(`⚡ Sincronización Delta: ${actualizados.length} producto(s) alineados con la nube.`);
                                     if (window.dbLocal && dbLocal.productos) {
                                         dbLocal.productos.bulkPut(actualizados).catch(()=>{});
                                     }
@@ -141,11 +150,7 @@ const db = {
 
                     } catch (e) { 
                         intentando = false;
-                        if (e.status === 404 || e.status === 403) {
-                            console.warn(`⚠️ Radar de [${colName}] pausado por permisos.`);
-                        } else {
-                            setTimeout(iniciarRadar, 5000); 
-                        }
+                        setTimeout(iniciarRadar, 5000); 
                     }
                 };
                 iniciarRadar();
@@ -594,7 +599,11 @@ window.actualizarCacheVentas = function() {
         let diasTranscurridos = Math.ceil(diffTiempo / (1000 * 60 * 60 * 24));
         
         // Limitamos el rango de días para evitar promedios microscópicos o infinitos
-        if (diasTranscurridos === 0 || diasTranscurridos > 365) diasTranscurridos = 1; 
+        // Evitamos división entre cero si es su primer día de ventas
+        if (diasTranscurridos === 0) diasTranscurridos = 1; 
+        
+        // Si el producto tiene años de antigüedad, promediamos su rendimiento en base a un año comercial tope
+        if (diasTranscurridos > 365) diasTranscurridos = 365;
         
         datos.promedioDiario = datos.totalVendidas / diasTranscurridos;
     }
@@ -603,7 +612,7 @@ window.actualizarCacheVentas = function() {
     window.metricasVentasCache = tempCache;
     
     // Quitamos los Rayos X para no saturar tu consola y dejamos solo el estatus
-    console.log(`⚡ CEREBRO LISTO (Sucursal: ${miSucLimpia}). Rentabilidad y alertas calculadas para ${Object.keys(tempCache).length} productos.`);
+    console.log(`⚡ CEREBRO LISTO (Sucursal: ${miSucursalBruta || 'Todas'}). Rentabilidad y alertas calculadas para ${Object.keys(tempCache).length} productos.`);
 };
 // Si usas PocketBase y quieres que las cajas se comuniquen al instante
 if (typeof pb !== 'undefined') {
