@@ -28,51 +28,106 @@ const db = {
         return {
             get: async function() {
                 try {
-                    let records = await pb.collection(colName).getFullList({ requestKey: null });
+                    // Límite de 200 para evitar Error 400 en Pikapod
+                    let records = await pb.collection(colName).getFullList(200, { requestKey: null });
                     let mapa = {}; records.forEach(r => mapa[r.doc_id || r.id] = r);
                     return { forEach: (cb) => Object.values(mapa).forEach(r => cb({ id: r.doc_id || r.id, data: () => r.data || r })) };
                 } catch(e) { console.error(e); return { forEach: ()=>{} }; }
             },
             
-            onSnapshot: async function(callback) {
+           onSnapshot: async function(callback) {
                 let intentando = false;
                 let iniciarRadar = async () => {
                     if(intentando) return;
                     intentando = true;
                     try {
-                        let cache = await pb.collection(colName).getFullList({ requestKey: null });
+                        let cache = [];
+
+                        // 1. Carga inmediata desde RAM/Disco para no hacer esperar al cajero
+                        if (colName === "inventario" && typeof inv !== 'undefined' && Object.keys(inv).length > 0) {
+                            cache = Object.keys(inv).map(k => ({ doc_id: k, data: inv[k] }));
+                        } else {
+                            cache = await pb.collection(colName).getFullList(200, { requestKey: null });
+                        }
+
                         let mapa = {}; 
                         cache.forEach(r => { let key = r.doc_id || r.id; mapa[key] = r; });
                         cache = Object.values(mapa); 
-                        
-                        let emit = () => { 
-                            callback({ 
+
+                        let emitCambio = (cambiosLista = null) => {
+                            callback({
+                                docChanges: () => cambiosLista || cache.map(r => ({
+                                    type: 'added',
+                                    doc: { id: r.doc_id || r.id, data: () => (r.data && typeof r.data === 'object') ? r.data : r }
+                                })),
                                 forEach: (cb) => cache.forEach(r => {
                                     let key = r.doc_id || r.id;
                                     let dataObj = (r.data && typeof r.data === 'object') ? r.data : r;
                                     cb({ id: key, data: () => dataObj });
-                                }) 
-                            }); 
+                                })
+                            });
                         };
-                        emit(); 
-                        
+
+                        emitCambio();
+
+                        // ⚡ 2. RADAR EN VIVO (Para cambios que ocurran a partir de ahora)
                         pb.collection(colName).subscribe('*', function(e) {
                             let key = e.record.doc_id || e.record.id;
+                            let dataObj = (e.record.data && typeof e.record.data === 'object') ? e.record.data : e.record;
+                            let tipoCambio = e.action === 'delete' ? 'removed' : (e.action === 'create' ? 'added' : 'modified');
+
                             if (e.action === 'create' || e.action === 'update') {
                                 let idx = cache.findIndex(x => (x.doc_id || x.id) === key);
                                 if (idx > -1) cache[idx] = e.record; 
                                 else cache.push(e.record); 
+                                if (colName === "inventario" && window.inv) inv[key] = dataObj;
                             } else if (e.action === 'delete') {
                                 cache = cache.filter(x => (x.doc_id || x.id) !== key);
+                                if (colName === "inventario" && window.inv) delete inv[key];
                             }
-                            emit();
+
+                            emitCambio([{
+                                type: tipoCambio,
+                                doc: { id: key, data: () => dataObj }
+                            }]);
                         });
+
+                        console.log(`✅ Radar en tiempo real conectado exitosamente para [${colName}].`);
+
+                        // 🚀 3. DESCARGA DELTA: Trae los cambios recientes que ocurrieron mientras no estábamos viendo
+                        if (colName === "inventario") {
+                            pb.collection('inventario').getList(1, 100, { sort: '-updated', requestKey: null })
+                            .then(res => {
+                                let actualizados = [];
+                                res.items.forEach(r => {
+                                    let idProd = r.doc_id || r.id;
+                                    let dataNueva = r.data || r;
+                                    dataNueva.id = idProd;
+
+                                    let actual = window.inv ? window.inv[idProd] : null;
+                                    // Si el precio o costo en la nube es más reciente o diferente, lo actualizamos en RAM
+                                    if (!actual || actual.pv !== dataNueva.pv || actual.cos !== dataNueva.cos || actual.updatedAt !== dataNueva.updatedAt) {
+                                        if (window.inv) window.inv[idProd] = dataNueva;
+                                        actualizados.push(dataNueva);
+                                    }
+                                });
+
+                                if (actualizados.length > 0) {
+                                    console.log(`⚡ Sincronización Delta: ${actualizados.length} producto(s) actualizados con la nube.`);
+                                    if (window.dbLocal && dbLocal.productos) {
+                                        dbLocal.productos.bulkPut(actualizados).catch(()=>{});
+                                    }
+                                    try { localStorage.setItem("pos_precision_v6", JSON.stringify(window.inv)); } catch(e){}
+                                    if (typeof renderI === 'function' && typeof tabActual !== 'undefined' && tabActual === 'i-tab') renderI();
+                                }
+                            }).catch(()=>{});
+                        }
+
                     } catch (e) { 
                         intentando = false;
                         if (e.status === 404 || e.status === 403) {
-                            console.warn(`⚠️ Radar de [${colName}] pausado. Revisa permisos (API Rules) o si la colección existe.`);
+                            console.warn(`⚠️ Radar de [${colName}] pausado por permisos.`);
                         } else {
-                            console.warn(`📡 Sin internet para radar de [${colName}]. Reintentando en 5s...`);
                             setTimeout(iniciarRadar, 5000); 
                         }
                     }
@@ -84,7 +139,7 @@ const db = {
                 return {
                     get: async function() {
                         try {
-                            let records = await pb.collection(colName).getFullList({ requestKey: null });
+                            let records = await pb.collection(colName).getFullList(200, { requestKey: null });
                             let mapa = {}; records.forEach(r => mapa[r.doc_id || r.id] = r);
                             let unicos = Object.values(mapa);
                             unicos.sort((a, b) => {
@@ -101,94 +156,82 @@ const db = {
             },
             
             doc: function(docId) {
-    docId = String(docId).trim();
-    return {
-        set: async function(dataObj) {
-            dataObj.updatedAt = Date.now();
-            
-            // 1. Guardado visual inmediato (RAM)
-            if (colName === "inventario" && typeof inv !== 'undefined') {
-                inv[docId] = dataObj;
-                try { localStorage.setItem("pos_precision_v6", JSON.stringify(inv)); } catch(e){}
-            }
-
-            let reintentos = 3;
-            for (let i = 1; i <= reintentos; i++) {
-                try {
-                    // LLAVE ÚNICA: Evita que PocketBase bloquee las ventas rápidas
-                    let llaveUnica = `${colName}_${docId}_${Date.now()}_${Math.random()}`;
-
-                    let record = null;
-                    try { 
-                        record = await pb.collection(colName).getFirstListItem(`doc_id="${docId}"`, { requestKey: llaveUnica + "_busca" }); 
-                    } catch (e) {}
-
-                    let limpio = JSON.parse(JSON.stringify(dataObj));
-                    delete limpio.id; delete limpio.collectionId; delete limpio.collectionName; 
-                    delete limpio.created; delete limpio.updated;
-                    if (limpio.data) delete limpio.data;
-
-                    let payload = {
-                        doc_id: docId,
-                        data: limpio
-                    };
-
-                    if (record) {
-                        await pb.collection(colName).update(record.id, payload, { requestKey: llaveUnica + "_upd" });
-                    } else {
-                        await pb.collection(colName).create(payload, { requestKey: llaveUnica + "_cre" });
-                    }
-                    
-                    return true; 
-
-                } catch (error) {
-                    let esSuperpuesta = (error.isAbort || error.status === 0 || JSON.stringify(error.response || {}) === "{}");
-                    
-                    // Reintento silencioso en caso de choque
-                    if (esSuperpuesta && i < reintentos) {
-                        await new Promise(resolve => setTimeout(resolve, 300));
-                        continue; 
-                    }
-
-                    // 🌟 MODO SILENCIOSO: Va a la mochila sin molestar con alertas
-                    let motivo = error.response ? JSON.stringify(error.response.data || error.response) : error.message;
-                    console.warn(`📦 Guardado en Mochila Offline [${colName} -> ${docId}]. Motivo: ${motivo || 'Fallo de red'}`);
-                    
-                    let mochila = JSON.parse(localStorage.getItem("pos_mochila")) || [];
-                    mochila = mochila.filter(m => !(m.col === colName && m.id === docId));
-                    mochila.push({ col: colName, id: docId, data: dataObj });
-                    localStorage.setItem("pos_mochila", JSON.stringify(mochila));
-                    
-                    return false; 
-                }
-            }
-        },
-
-        onSnapshot: async function(callback) {
-            let emit = (exists, data) => callback({ exists, data: () => data });
-            let intentandoDoc = false;
-            let iniciarRadarDoc = async () => {
-                if(intentandoDoc) return;
-                intentandoDoc = true;
-                try {
-                    let record = await pb.collection(colName).getFirstListItem(`doc_id="${docId}"`);
-                    emit(true, record.data || record);
-                    pb.collection(colName).subscribe('*', function(e) {
-                        if ((e.record.doc_id || e.record.id) === docId) {
-                            if (e.action === 'delete') emit(false, {});
-                            else emit(true, e.record.data || e.record);
+                docId = String(docId).trim();
+                return {
+                    set: async function(dataObj) {
+                        dataObj.updatedAt = Date.now();
+                        
+                        if (colName === "inventario" && typeof inv !== 'undefined') {
+                            inv[docId] = dataObj;
+                            try { localStorage.setItem("pos_precision_v6", JSON.stringify(inv)); } catch(e){}
                         }
-                    });
-                } catch (e) { 
-                    intentandoDoc = false;
-                    if(e.status === 404) { emit(false, {}); } 
-                    else { setTimeout(iniciarRadarDoc, 5000); } 
-                }
-            };
-            iniciarRadarDoc();
-        }
-    };
-}
+
+                        let reintentos = 3;
+                        for (let i = 1; i <= reintentos; i++) {
+                            try {
+                                let llaveUnica = `${colName}_${docId}_${Date.now()}_${Math.random()}`;
+                                let record = null;
+                                try { 
+                                    record = await pb.collection(colName).getFirstListItem(`doc_id="${docId}"`, { requestKey: llaveUnica + "_busca" }); 
+                                } catch (e) {}
+
+                                let limpio = JSON.parse(JSON.stringify(dataObj));
+                                delete limpio.id; delete limpio.collectionId; delete limpio.collectionName; 
+                                delete limpio.created; delete limpio.updated;
+                                if (limpio.data) delete limpio.data;
+
+                                let payload = { doc_id: docId, data: limpio };
+
+                                if (record) {
+                                    await pb.collection(colName).update(record.id, payload, { requestKey: llaveUnica + "_upd" });
+                                } else {
+                                    await pb.collection(colName).create(payload, { requestKey: llaveUnica + "_cre" });
+                                }
+                                return true; 
+
+                            } catch (error) {
+                                let esSuperpuesta = (error.isAbort || error.status === 0 || JSON.stringify(error.response || {}) === "{}");
+                                if (esSuperpuesta && i < reintentos) {
+                                    await new Promise(resolve => setTimeout(resolve, 300));
+                                    continue; 
+                                }
+                                let motivo = error.response ? JSON.stringify(error.response.data || error.response) : error.message;
+                                console.warn(`📦 Guardado en Mochila Offline [${colName} -> ${docId}]. Motivo: ${motivo || 'Fallo de red'}`);
+                                
+                                let mochila = JSON.parse(localStorage.getItem("pos_mochila")) || [];
+                                mochila = mochila.filter(m => !(m.col === colName && m.id === docId));
+                                mochila.push({ col: colName, id: docId, data: dataObj });
+                                localStorage.setItem("pos_mochila", JSON.stringify(mochila));
+                                return false; 
+                            }
+                        }
+                    },
+
+                    onSnapshot: async function(callback) {
+                        let emit = (exists, data) => callback({ exists, data: () => data });
+                        let intentandoDoc = false;
+                        let iniciarRadarDoc = async () => {
+                            if(intentandoDoc) return;
+                            intentandoDoc = true;
+                            try {
+                                let record = await pb.collection(colName).getFirstListItem(`doc_id="${docId}"`);
+                                emit(true, record.data || record);
+                                pb.collection(colName).subscribe('*', function(e) {
+                                    if ((e.record.doc_id || e.record.id) === docId) {
+                                        if (e.action === 'delete') emit(false, {});
+                                        else emit(true, e.record.data || e.record);
+                                    }
+                                });
+                            } catch (e) { 
+                                intentandoDoc = false;
+                                if(e.status === 404) { emit(false, {}); } 
+                                else { setTimeout(iniciarRadarDoc, 5000); } 
+                            }
+                        };
+                        iniciarRadarDoc();
+                    }
+                };
+            }
         };
     }
 };
@@ -755,8 +798,8 @@ async function iniciarRadarVentasVeloz() {
         if (typeof pb === 'undefined') return;
         console.log("☁️ Descargando historial reciente de ventas para el disco duro...");
 
-        // Traemos las últimas 300 ventas (suficientes para varios días) sin saturar la RAM
-        let res = await pb.collection('ventas').getList(1, 300, {
+        // Traemos las últimas 200 ventas (suficientes para varios días) sin saturar la RAM
+        let res = await pb.collection('ventas').getList(1, 200, {
             sort: '-created', // 👈 ¡Perfecto, esto ya está limpio!
             requestKey: null
         }).catch(() => null);
