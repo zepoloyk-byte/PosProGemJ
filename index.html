@@ -564,7 +564,7 @@
 <!-- Fila 1: Botones de Análisis (Se apilan en celular automáticamente) -->
 <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; margin-top: 20px; margin-bottom: 12px;">
     
-    <button class="btn-final" style="background: var(--p, #0d6efd); color: white; width: 100%; font-size: 15px; padding: 12px; font-weight: bold; border: none; border-radius: 8px; cursor: pointer; box-shadow: 0 4px 6px rgba(0,0,0,0.1); transition: 0.2s;" onclick="calcularTotalesCorte()">
+    <button id="btn_analizar_local" class="btn-final" style="background: var(--p, #0d6efd); color: white; width: 100%; font-size: 15px; padding: 12px; font-weight: bold; border: none; border-radius: 8px; cursor: pointer; box-shadow: 0 4px 6px rgba(0,0,0,0.1); transition: 0.2s;" onclick="analizarVentasLocales()">
         📊 ANALIZAR (LOCAL)
     </button>
 
@@ -2086,6 +2086,6 @@
         </div>
     </div>
 </div>
-<script src="app.js?v=47"></script>
+<script src="app.js?v=49"></script>
 </body>
 </html>

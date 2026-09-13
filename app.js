@@ -192,9 +192,13 @@ const db = {
                             try {
                                 let llaveUnica = `${colName}_${docId}_${Date.now()}_${Math.random()}`;
                                 let record = null;
+                                
                                 try { 
                                     record = await pb.collection(colName).getFirstListItem(`doc_id="${docId}"`, { requestKey: llaveUnica + "_busca" }); 
-                                } catch (e) {}
+                                } catch (e) {
+                                    // 🛡️ PARCHE ANTI-DUPLICADOS: Solo ignoramos si el error es 404 (No existe). Si es fallo de red, abortamos para no duplicar.
+                                    if (e.status !== 404) throw e; 
+                                }
 
                                 let limpio = JSON.parse(JSON.stringify(dataObj));
                                 delete limpio.id; delete limpio.collectionId; delete limpio.collectionName; 
@@ -211,7 +215,7 @@ const db = {
                                 return true; 
 
                             } catch (error) {
-                                let esSuperpuesta = (error.isAbort || error.status === 0 || JSON.stringify(error.response || {}) === "{}");
+                                let esSuperpuesta = (error.isAbort || error.status === 0 || error.status >= 500 || JSON.stringify(error.response || {}) === "{}");
                                 if (esSuperpuesta && i < reintentos) {
                                     await new Promise(resolve => setTimeout(resolve, 300));
                                     continue; 
@@ -251,10 +255,10 @@ const db = {
                         };
                         iniciarRadarDoc();
                     }
-                };
-            }
-        };
-    }
+               }; // <-- Cierra el return de la función doc
+            } // <-- Cierra doc: function(docId)
+        }; // <-- Cierra el return de la función collection
+    } // <-- Cierra collection: function(colName)
 };
 // 🌐 SINCRONIZADOR EN TIEMPO REAL MULTI-DISPOSITIVO
 // Declaramos el temporizador fuera de la función
@@ -370,8 +374,6 @@ async function vaciarMochilaRezagada() {
 
         while (mochila.length > 0 && navigator.onLine) {
             let tarea = mochila[0];
-            
-            // 1. Mapeo de colecciones obsoletas para evitar Error 404
             let colLimpia = tarea.col === 'productos' ? 'inventario' : tarea.col;
             let docId = String(tarea.id).trim();
 
@@ -379,17 +381,17 @@ async function vaciarMochilaRezagada() {
                 let record = null;
                 try { 
                     record = await clientePB.collection(colLimpia).getFirstListItem(`doc_id="${docId}"`); 
-                } catch(e){}
+                } catch(e) {
+                    // 🛡️ PARCHE ANTI-DUPLICADOS: Solo ignoramos si es 404. Si es otro error (Ej. 502), abortamos el intento.
+                    if (e.status !== 404) throw e; 
+                }
 
-                // 2. Limpieza de metadatos internos
                 let dataObj = tarea.data || {};
                 let limpio = typeof dataObj === 'object' ? JSON.parse(JSON.stringify(dataObj)) : {};
                 delete limpio.id; delete limpio.collectionId; delete limpio.collectionName; 
                 delete limpio.created; delete limpio.updated;
 
-                // 3. Empaquetado esparcido para actualizar columnas reales de PocketBase
                 let payload = {
-                    ...limpio,
                     doc_id: docId,
                     data: limpio
                 };
@@ -400,14 +402,18 @@ async function vaciarMochilaRezagada() {
                     await clientePB.collection(colLimpia).create(payload);
                 }
 
-                // 4. Si tuvo éxito, lo quitamos de la cola
                 mochila.shift(); 
                 localStorage.setItem("pos_mochila", JSON.stringify(mochila));
                 console.log(`✅ Cartero: Paquete rezagado sincronizado (${colLimpia} -> ${docId})`);
 
             } catch(e) {
-                console.warn(`⚠️ Cartero: Paquete descartado por error de formato en [${colLimpia} -> ${docId}]:`, e);
-                // 🚀 CLAVE ANTI-BLOQUEO: Si el paquete da error (ej. 400/404), se descarta para NO trabar la cola
+                // 🛡️ PARCHE ANTI-PÉRDIDA DE DATOS
+                if (e.status === 0 || e.status >= 500 || e.isAbort) {
+                    console.warn(`⏳ Cartero: Servidor inestable (Error ${e.status}). Pausando envíos temporalmente para proteger datos.`);
+                    break; // Detiene el bucle, NO borra la mochila, espera al próximo intento
+                }
+                
+                console.warn(`⚠️ Cartero: Paquete descartado por error IRREVERSIBLE (formato inválido) en [${colLimpia} -> ${docId}]:`, e);
                 mochila.shift(); 
                 localStorage.setItem("pos_mochila", JSON.stringify(mochila));
             }
@@ -644,17 +650,40 @@ window.cargarKardexLocal = async function() {
 };
 
 // ====================================================================
-// 🧠 CEREBRO DE PRONÓSTICO DE INVENTARIO
+// 🧠 CEREBRO DE PRONÓSTICO Y RENTABILIDAD (AUTO-REPARABLE)
 // ====================================================================
 
-// 1. Subir Kardex a la memoria RAM para que la fórmula pueda leerlo rápido
 window.cargarKardexLocal = async function() {
     if (window.dbLocal && dbLocal.kardex) {
         try {
             window.historialKardex = await dbLocal.kardex.toArray();
-            console.log(`🧠 Inteligencia lista: ${window.historialKardex.length} movimientos de Kardex listos.`);
             
-            // 🔥 LO NUEVO: Construimos el caché de promedios al instante
+            // 🛡️ REPARADOR AUTOMÁTICO: Si el celular o PC tiene el historial vacío, lo baja de la nube
+            if (window.historialKardex.length === 0 && navigator.onLine && typeof pb !== 'undefined') {
+                console.log("☁️ Dispositivo nuevo o caché borrado. Descargando historial de Kardex maestro...");
+                
+                try {
+                    // Descargamos todo el historial sin límites
+                    let resKardex = await pb.collection('kardex').getFullList({ batch: 500, requestKey: null });
+                    
+                    let kardexLimpio = resKardex.map(r => {
+                        let d = (r.data && typeof r.data === 'object') ? r.data : r;
+                        d.id = r.doc_id || r.id || d.id;
+                        return d;
+                    });
+                    
+                    // Lo guardamos en el disco duro del celular para que no lo vuelva a pedir
+                    await dbLocal.kardex.bulkPut(kardexLimpio);
+                    window.historialKardex = kardexLimpio;
+                    console.log(`✅ Historial clonado exitosamente: ${kardexLimpio.length} registros listos.`);
+                } catch(errPB) {
+                    console.warn("⚠️ Error bajando Kardex maestro:", errPB);
+                }
+            }
+
+            console.log(`🧠 Inteligencia lista: ${window.historialKardex.length} movimientos de Kardex para rentabilidad.`);
+            
+            // 🔥 Construimos el caché de promedios al instante con los datos correctos
             if (typeof window.actualizarCacheVentas === 'function') {
                 window.actualizarCacheVentas();
             }
@@ -702,23 +731,24 @@ function guardarConfigAlertas() {
 // ====================================================================
 window.inv = window.inv || {};
 
-// 2. RADAR DE INVENTARIO (Solo actualiza los productos que cambiaron)
+// 2. RADAR DE INVENTARIO (Blindado para respetar el código de barras)
 if (!window.radarInventarioActivo && typeof db !== 'undefined') {
     window.radarInventarioActivo = true;
 
     db.collection("inventario").onSnapshot((querySnapshot) => {
         let actualizadosArray = []; 
         
-        // ⚡ LA CLAVE: docChanges() solo entrega los productos modificados, no toda la base
         querySnapshot.docChanges().forEach((change) => { 
             let doc = change.doc;
-            let idBruto = doc.id || (doc.data && typeof doc.data === 'function' ? doc.data().id : null) || '';
-            let idLimpio = String(idBruto).trim();
             
-            // Escudo anti-fantasmas
+            // 🛡️ CORRECCIÓN: Extraer el JSON primero para proteger tu código de barras
+            let datosNube = typeof normalizarProducto === 'function' ? normalizarProducto(doc.data()) : doc.data();
+            
+            // El ID absoluto es el código de barras numérico que viene en tu JSON
+            let idLimpio = String(datosNube.id || doc.id).trim();
+
             if (!idLimpio || idLimpio === 'undefined' || idLimpio === 'null' || idLimpio === '') return;
 
-            // Si se eliminó un producto en la nube, lo quitamos de la memoria y del disco
             if (change.type === "removed") {
                 if (window.inv) delete inv[idLimpio];
                 if (window.dbLocal && dbLocal.productos) {
@@ -727,14 +757,12 @@ if (!window.radarInventarioActivo && typeof db !== 'undefined') {
                 return;
             }
 
-            let datosNube = typeof normalizarProducto === 'function' ? normalizarProducto(doc.data()) : doc.data();
-            datosNube.id = idLimpio;
+            datosNube.id = idLimpio; // Fijamos el código 750... permanentemente
 
             let datosLocales = (window.inv && inv[idLimpio]) 
                 ? (typeof normalizarProducto === 'function' ? normalizarProducto(inv[idLimpio]) : inv[idLimpio]) 
                 : null;
 
-            // Protección de cambios locales recientes
             if (datosLocales && datosLocales.updatedAt > datosNube.updatedAt) {
                 datosLocales.stock = datosNube.stock;
                 datosLocales.sold_without_stock = datosNube.sold_without_stock;
@@ -746,25 +774,21 @@ if (!window.radarInventarioActivo && typeof db !== 'undefined') {
             }
         });
         
-        // 💾 Guardado quirúrgico en IndexedDB: solo se guardan 1, 2 o los productos que hayan cambiado
         if (actualizadosArray.length > 0) {
             if (window.dbLocal && dbLocal.productos) {
                 let arrayFiltrado = actualizadosArray.filter(p => p && p.id && String(p.id).trim() !== '' && p.id !== 'undefined');
-                
                 if (arrayFiltrado.length > 0) {
-                    dbLocal.productos.bulkPut(arrayFiltrado).catch(e => console.warn("⚠️ Error guardando inv en disco:", e));
+                    dbLocal.productos.bulkPut(arrayFiltrado).catch(()=>{});
                 }
             }
             
             console.log(`☁️🔄💾 Inventario sincronizado: ${actualizadosArray.length} producto(s) modificado(s).`);
 
-            // Refrescar pantalla si el usuario tiene abierta la pestaña de inventario
             if (typeof tabActual !== 'undefined' && tabActual === 'i-tab' && typeof renderI === 'function') {
                 renderI(); 
             }
         }
     }, (error) => {
-        console.warn("⚠️ Sin internet. Radar de inventario en pausa, usando copia local.", error);
         window.radarInventarioActivo = false;
     });
 }
@@ -821,32 +845,48 @@ async function iniciarRadarVentasVeloz() {
 
     try {
         if (typeof pb === 'undefined') return;
-        console.log("☁️ Descargando historial reciente de ventas para el disco duro...");
+        console.log("☁️ Descargando TODO el historial de ventas de los últimos 3 días...");
 
-        // Traemos las últimas 200 ventas (suficientes para varios días) sin saturar la RAM
-        let res = await pb.collection('ventas').getList(1, 200, {
-            sort: '-created', // 👈 ¡Perfecto, esto ya está limpio!
+        // 1. Calculamos la fecha de hace 3 días
+        let fechaLimite = new Date();
+        fechaLimite.setDate(fechaLimite.getDate() - 3);
+        let fechaString = fechaLimite.toISOString().replace('T', ' ');
+
+        // 2. Traemos TODAS las ventas recientes en lotes de 200 usando getFullList
+        let res = await pb.collection('ventas').getFullList({
+            batch: 200,
+            filter: `created >= "${fechaString}"`,
+            sort: '-created', 
             requestKey: null
-        }).catch(() => null);
+        }).catch((err) => {
+            console.warn("⚠️ Detalle rechazo ventas:", err);
+            return null;
+        });
 
-        if (!res) return;
+        if (!res || res.length === 0) return;
 
-        let items = Array.isArray(res) ? res : (res.items || []);
-        if (!Array.isArray(items) || items.length === 0) return;
+        // getFullList devuelve directamente el array completo de todas las ventas
+        let items = res; 
 
         let listaDescargada = items.map(r => {
             let data = (r && r.data) ? r.data : r;
             if (typeof data === 'string') {
                 try { data = JSON.parse(data); } catch(e) {}
             }
+            // Aseguramos mantener el ID exacto
+            if (data && typeof data === 'object') {
+                data.id = r.doc_id || r.id || data.id;
+            }
             return data;
-        }).filter(v => v && v.id); // Guardamos todo lo que tenga ID, sin importar la fecha
+        }).filter(v => v && v.id);
 
         if (listaDescargada.length > 0) {
-            // 1. Lo ponemos en RAM para uso inmediato en el corte de hoy
+            console.log(`✅ ¡Éxito! Se descargaron ${listaDescargada.length} ventas (sin límites) de la nube.`);
+            
+            // 1. Lo ponemos en RAM para uso inmediato en el corte
             window.ventas = listaDescargada;
             
-            // 2. 💾 LO GUARDAMOS EN EL DISCO DURO (IndexedDB) EN VEZ DE LOCALSTORAGE
+            // 2. 💾 LO GUARDAMOS EN EL DISCO DURO gigante (IndexedDB)
             if (window.dbLocal && dbLocal.ventas) {
                 await dbLocal.ventas.bulkPut(listaDescargada).catch(e => console.warn("⚠️ Error guardando ventas en disco:", e));
             }
@@ -856,7 +896,7 @@ async function iniciarRadarVentasVeloz() {
     } catch (err) {
         console.warn("⚠️ Radar ventas en pausa temporal:", err);
     } finally {
-        // 🔓 QUITAMOS EL CANDADO al terminar, por si el usuario necesita recargar horas después
+        // 🔓 QUITAMOS EL CANDADO al terminar
         window.descargaVentasEnProceso = false;
     }
 }
@@ -6410,56 +6450,45 @@ window.descargarVentasNube = async function() {
     btn.disabled = true;
 
     try {
-        // 1. Descargamos las VENTAS
-        let ventasNube = [];
-        let pagV = 1; let totalPagV = 1;
-        while(pagV <= totalPagV) {
-            let resV = await pb.collection('ventas').getList(pagV, 500, {
-                filter: `data.fecha >= "${fInicio}" && data.fecha <= "${fFin}"`,
-                requestKey: null
-            });
-            if(pagV === 1) totalPagV = resV.totalPages;
-            
-            // 🛡️ INYECTOR DE IDs: Le devolvemos su folio a cada venta
-            resV.items.forEach(r => {
-                let d = r.data || {};
-                d.id = d.id || r.doc_id || r.id;
-                ventasNube.push(d);
-            });
-            pagV++;
-        }
+        // 1. Descarga controlada en lotes de 100 para no saturar la CPU de PikaPod
+        let resV = await pb.collection('ventas').getFullList({
+            batch: 100, // Lotes ligeros: evita el error 502 Bad Gateway
+            filter: `data.fecha >= "${fInicio}" && data.fecha <= "${fFin}"`,
+            requestKey: null
+        });
+        
+        let ventasNube = resV.map(r => {
+            let d = (r.data && typeof r.data === 'object') ? r.data : r;
+            d.id = r.doc_id || r.id || d.id;
+            return d;
+        });
 
-        // 2. Descargamos los MOVIMIENTOS (Ingresos/Gastos)
-        let movsNube = [];
-        let pagM = 1; let totalPagM = 1;
-        while(pagM <= totalPagM) {
-            let resM = await pb.collection('movimientos').getList(pagM, 500, {
-                filter: `data.fecha >= "${fInicio}" && data.fecha <= "${fFin}"`,
-                requestKey: null
-            });
-            if(pagM === 1) totalPagM = resM.totalPages;
-            
-            // 🛡️ INYECTOR DE IDs: Le devolvemos su folio a cada movimiento
-            resM.items.forEach(r => {
-                let d = r.data || {};
-                d.id = d.id || r.doc_id || r.id;
-                movsNube.push(d);
-            });
-            pagM++;
-        }
+        // 2. Descarga controlada de MOVIMIENTOS
+        let resM = await pb.collection('movimientos').getFullList({
+            batch: 100,
+            filter: `data.fecha >= "${fInicio}" && data.fecha <= "${fFin}"`,
+            requestKey: null
+        });
+        
+        let movsNube = resM.map(r => {
+            let d = (r.data && typeof r.data === 'object') ? r.data : r;
+            d.id = r.doc_id || r.id || d.id;
+            return d;
+        });
 
-        // 3. Guardamos los datos reparados en la RAM temporalmente
+        console.log(`✅ Dashboard: ${ventasNube.length} ventas y ${movsNube.length} movimientos procesados.`);
+
         window.ventasHistoricasTemporales = ventasNube;
         window.movsHistoricosTemporales = movsNube;
         
-        alert(`✅ Éxito: Se descargaron ${ventasNube.length} ventas y ${movsNube.length} movimientos.\n\nGráficas y detalles listos.`); 
+        alert(`✅ Éxito: Se descargaron ${ventasNube.length} ventas y ${movsNube.length} movimientos.`); 
         
-        // Refrescamos ambos motores gráficos
         if (typeof renderCorte === 'function') renderCorte();
         if (typeof calcularTotalesCorte === 'function') calcularTotalesCorte();
         
     } catch(err) { 
-        alert("❌ Error al consultar la nube: " + err.message); 
+        console.error("⚠️ Error descargando Dashboard:", err);
+        alert("❌ El servidor tardó en responder. Por favor intenta con un rango de fechas más corto (ej. 1 o 2 días)."); 
     } finally {
         btn.innerText = "☁️ DESCARGAR DE LA NUBE"; 
         btn.disabled = false;
@@ -6538,9 +6567,13 @@ async function filtrarVisorTickets() {
             if (counterEl) counterEl.innerText = "⚡...";
 
             try {
-                // 🌟 Buscamos CUALQUIERA de los dos formatos de fecha en la base de datos
+                // ✅ CORRECCIÓN APLICADA: Búsqueda exacta en la llave "fecha" dentro de la columna "data"
+                // ✅ FILTRO NATIVO INFALIBLE: Todo el rango del día en hora exacta
+                let inicioDia = `${selectedDate} 00:00:00.000Z`;
+                let finDia = `${selectedDate} 23:59:59.999Z`;
+
                 let records = await pb.collection('ventas').getFullList({
-                    filter: `data~'${selectedDate}' || data~'${altDate}'`, 
+                    filter: `created >= "${inicioDia}" && created <= "${finDia}"`, 
                     requestKey: null
                 });
 
@@ -12744,5 +12777,125 @@ window.vaciarAuditoriaBorrados = async function() {
     } finally {
         btn.innerText = textoOriginal;
         btn.disabled = false;
+    }
+};// ====================================================================
+// ⚡ SINCRONIZACIÓN DELTA (ATRAPA PRODUCTOS NUEVOS/EDITADOS MIENTRAS ESTABAS OFFLINE)
+// ====================================================================
+window.sincronizarCambiosRecientes = async function() {
+    if (!navigator.onLine || typeof pb === 'undefined') return;
+
+    console.log("⚡ Buscando cambios recientes en la nube (Sincronización Delta)...");
+    try {
+        // 1. Calculamos la fecha límite (Ej: Traer todo lo modificado en los últimos 3 días)
+        let fechaLimite = new Date();
+        fechaLimite.setDate(fechaLimite.getDate() - 3);
+        let fStr = fechaLimite.toISOString().replace('T', ' ');
+
+        // 2. Pedimos SOLO lo que haya cambiado recientemente (Súper rápido y ligero)
+        let res = await pb.collection('inventario').getFullList({
+            batch: 200,
+            filter: `updated >= "${fStr}"`,
+            requestKey: null
+        });
+
+        if (!res || res.length === 0) return;
+
+        let actualizados = [];
+        res.forEach(r => {
+            let d = (r.data && typeof r.data === 'object') ? r.data : r;
+            let codOriginal = d.id || r.doc_id || r.id;
+            
+            d.id = String(codOriginal).trim();
+            d.pb_id = r.id; // Protegemos ID de PocketBase
+            d.cod = d.cod || d.id; // Protección de buscador
+
+            // Lo inyectamos en la memoria RAM
+            if (window.inv) window.inv[d.id] = d;
+            actualizados.push(d);
+        });
+
+        // 3. Lo inyectamos en el disco duro local
+        if (actualizados.length > 0) {
+            if (window.dbLocal && dbLocal.productos) {
+                await dbLocal.productos.bulkPut(actualizados).catch(()=>{});
+            }
+            
+            // Actualizamos la copia de seguridad vieja
+            localStorage.setItem("pos_precision_v6", JSON.stringify(window.inv || {}));
+            
+            console.log(`✅ Delta completado: ${actualizados.length} productos actualizados/nuevos integrados al equipo.`);
+            
+            // Refresca la vista si el usuario está en el catálogo
+            if (typeof renderI === 'function' && typeof tabActual !== 'undefined' && tabActual === 'i-tab') {
+                renderI();
+            }
+        }
+    } catch (e) {
+        console.warn("⚠️ Sincronización Delta en pausa:", e);
+    }
+};
+
+// Lo arrancamos 4 segundos después de abrir la app
+setTimeout(window.sincronizarCambiosRecientes, 4000);
+// ====================================================================
+// 📊 MOTOR DE ANÁLISIS LOCAL (Vuela usando IndexedDB sin internet)
+// ====================================================================
+window.analizarVentasLocales = async function() {
+    let fInicio = document.getElementById('corte_fecha_inicio').value;
+    let fFin = document.getElementById('corte_fecha_fin').value;
+    let btn = document.getElementById('btn_analizar_local'); // Asegúrate de que este ID coincida con tu botón azul
+
+    if (!fInicio || !fFin) return alert("⚠️ Selecciona un rango de fechas primero.");
+
+    if (btn) { btn.innerText = "⏳ LEYENDO DISCO DURO..."; btn.disabled = true; }
+
+    try {
+        if (!window.dbLocal || !dbLocal.ventas) {
+            throw new Error("IndexedDB no está listo.");
+        }
+
+        console.log("⚡ Extrayendo tickets desde IndexedDB...");
+
+        // 1. Extraemos todo de golpe del disco duro (toma milisegundos)
+        let todasLasVentas = await dbLocal.ventas.toArray();
+
+        // 2. Filtramos en memoria RAM ultra rápido
+        let ventasFiltradas = todasLasVentas.filter(v => {
+            // Buscamos la fecha en los distintos formatos en los que pueda estar guardada
+            let fechaVenta = v.fecha || (v.data && v.data.fecha) || v.created;
+            if (!fechaVenta) return false;
+            
+            // Cortamos la fecha para que solo quede "YYYY-MM-DD" y poder compararla
+            let soloFecha = String(fechaVenta).split(' ')[0].split('T')[0];
+            return soloFecha >= fInicio && soloFecha <= fFin;
+        });
+
+        // 3. Pasamos las ventas encontradas a la variable global que lee tu Dashboard
+        window.ventasHistoricasTemporales = ventasFiltradas;
+        
+        // (Opcional) Si también guardas movimientos locales, haz lo mismo aquí
+        if (dbLocal.movimientos) {
+            let todosLosMovs = await dbLocal.movimientos.toArray();
+            window.movsHistoricosTemporales = todosLosMovs.filter(m => {
+                let fMov = m.fecha || (m.data && m.data.fecha) || m.created;
+                if(!fMov) return false;
+                let fSolo = String(fMov).split(' ')[0].split('T')[0];
+                return fSolo >= fInicio && fSolo <= fFin;
+            });
+        } else {
+            window.movsHistoricosTemporales = [];
+        }
+
+        console.log(`✅ Análisis Local completado: ${ventasFiltradas.length} tickets encontrados en el disco duro.`);
+
+        // 4. Disparamos el renderizado de las gráficas y totales
+        if (typeof renderCorte === 'function') renderCorte();
+        if (typeof calcularTotalesCorte === 'function') calcularTotalesCorte();
+
+    } catch (e) {
+        console.error("⚠️ Error leyendo DB Local:", e);
+        alert("Ocurrió un error al leer el disco duro. Revisa la consola.");
+    } finally {
+        if (btn) { btn.innerText = "📊 ANALIZAR (LOCAL)"; btn.disabled = false; }
     }
 };
