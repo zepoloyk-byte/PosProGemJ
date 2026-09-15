@@ -29,7 +29,7 @@ const db = {
             get: async function() {
                 try {
                     // Límite de 200 para evitar Error 400 en Pikapod
-                    let records = await pb.collection(colName).getFullList(200, { requestKey: null });
+                    let records = (await pb.collection(colName).getList(1, 300, { sort: '-updated', requestKey: null })).items;
                     let mapa = {}; records.forEach(r => mapa[r.doc_id || r.id] = r);
                     return { forEach: (cb) => Object.values(mapa).forEach(r => cb({ id: r.doc_id || r.id, data: () => r.data || r })) };
                 } catch(e) { console.error(e); return { forEach: ()=>{} }; }
@@ -60,7 +60,7 @@ const db = {
 
                         if (cache.length === 0 && navigator.onLine) {
                             try {
-                                cache = await pb.collection(colName).getFullList(200, { requestKey: null });
+                                cache = (await pb.collection(colName).getList(1, 300, { sort: '-updated', requestKey: null })).items;
                             } catch(e) { console.warn(`Fallo inicial al descargar [${colName}]`); }
                         }
 
@@ -160,7 +160,7 @@ const db = {
                 return {
                     get: async function() {
                         try {
-                            let records = await pb.collection(colName).getFullList(200, { requestKey: null });
+                            let records = (await pb.collection(colName).getList(1, 300, { sort: '-created', requestKey: null })).items;
                             let mapa = {}; records.forEach(r => mapa[r.doc_id || r.id] = r);
                             let unicos = Object.values(mapa);
                             unicos.sort((a, b) => {
@@ -654,45 +654,73 @@ window.cargarKardexLocal = async function() {
 // ====================================================================
 
 window.cargarKardexLocal = async function() {
-    if (window.dbLocal && dbLocal.kardex) {
-        try {
-            window.historialKardex = await dbLocal.kardex.toArray();
+    if (!window.dbLocal || !dbLocal.kardex) return;
+
+    try {
+        window.historialKardex = await dbLocal.kardex.toArray();
+        
+        // 🛡️ REPARADOR AUTOMÁTICO EN MODO SUAVE: Si el disco local está vacío, descarga por lotes regulados
+        if (window.historialKardex.length === 0 && navigator.onLine && typeof pb !== 'undefined') {
+            console.log("☁️ Historial de Kardex vacío. Descargando en lotes suaves...");
             
-            // 🛡️ REPARADOR AUTOMÁTICO: Si el celular o PC tiene el historial vacío, lo baja de la nube
-            if (window.historialKardex.length === 0 && navigator.onLine && typeof pb !== 'undefined') {
-                console.log("☁️ Dispositivo nuevo o caché borrado. Descargando historial de Kardex maestro...");
-                
-                try {
-                    // Descargamos todo el historial sin límites
-                    let resKardex = await pb.collection('kardex').getFullList({ batch: 500, requestKey: null });
-                    
-                    let kardexLimpio = resKardex.map(r => {
+            let pagina = 1;
+            let totalPaginas = 1;
+            let listaKardexCompleta = [];
+
+            try {
+                while (pagina <= totalPaginas) {
+                    let res = await pb.collection('kardex').getList(pagina, 200, {
+                        sort: '-created',
+                        requestKey: null
+                    }).catch(err => {
+                        console.warn(`⚠️ Error en lote ${pagina} de Kardex:`, err);
+                        return null;
+                    });
+
+                    if (!res || !res.items || res.items.length === 0) break;
+
+                    totalPaginas = res.totalPages;
+
+                    let loteLimpio = res.items.map(r => {
                         let d = (r.data && typeof r.data === 'object') ? r.data : r;
                         d.id = r.doc_id || r.id || d.id;
                         return d;
                     });
-                    
-                    // Lo guardamos en el disco duro del celular para que no lo vuelva a pedir
-                    await dbLocal.kardex.bulkPut(kardexLimpio);
-                    window.historialKardex = kardexLimpio;
-                    console.log(`✅ Historial clonado exitosamente: ${kardexLimpio.length} registros listos.`);
-                } catch(errPB) {
-                    console.warn("⚠️ Error bajando Kardex maestro:", errPB);
-                }
-            }
 
-            console.log(`🧠 Inteligencia lista: ${window.historialKardex.length} movimientos de Kardex para rentabilidad.`);
-            
-            // 🔥 Construimos el caché de promedios al instante con los datos correctos
-            if (typeof window.actualizarCacheVentas === 'function') {
-                window.actualizarCacheVentas();
+                    // Guardado directo y progresivo en IndexedDB
+                    await dbLocal.kardex.bulkPut(loteLimpio).catch(() => {});
+                    listaKardexCompleta.push(...loteLimpio);
+
+                    pagina++;
+
+                    // Pausa de 60ms para no asfixiar la RAM del servidor
+                    await new Promise(resolve => setTimeout(resolve, 60));
+                }
+
+                window.historialKardex = listaKardexCompleta;
+                console.log(`✅ Kardex clonado exitosamente: ${listaKardexCompleta.length} registros listos.`);
+
+            } catch (errPB) {
+                console.warn("⚠️ Error bajando Kardex maestro:", errPB);
             }
-            
-        } catch(e) { console.warn("Error leyendo Kardex local", e); }
+        }
+
+        console.log(`🧠 Inteligencia lista: ${window.historialKardex.length} movimientos de Kardex para rentabilidad.`);
+        
+        // 🔥 Construcción de promedios una vez asegurados los datos
+        if (typeof window.actualizarCacheVentas === 'function') {
+            window.actualizarCacheVentas();
+        }
+        
+    } catch (e) { 
+        console.warn("Error leyendo Kardex local", e); 
     }
 };
-window.cargarKardexLocal();
 
+// Arranque desfasado para evitar colisión con el inventario
+setTimeout(() => {
+    window.cargarKardexLocal();
+}, 2500);
 // 2. La fórmula matemática mejorada (Ahora detecta stock en 0 o negativos)
 window.evaluarRiesgoAgotamiento = function(productoId, stockActual) {
     // ⚡ Leemos directo del caché en 1 milisegundo
@@ -837,70 +865,80 @@ db.collection("movimientos").onSnapshot((querySnapshot) => {
     if (tabActual === 'r-tab') renderCorte();
 });
 
-// 🚀 RADAR ULTRARRÁPIDO DE VENTAS (Conectado al Disco Duro)
+// 🚀 RADAR SUAVE DE VENTAS (Descarga paginada por lotes hacia IndexedDB)
 async function iniciarRadarVentasVeloz() {
-    // 🔒 CANDADO ANTI-CLONES: Bloquea si ya hay una descarga de ventas corriendo
     if (window.descargaVentasEnProceso) return;
     window.descargaVentasEnProceso = true;
 
     try {
         if (typeof pb === 'undefined') return;
-        console.log("☁️ Descargando TODO el historial de ventas de los últimos 3 días...");
+        console.log("☁️ Descargando ventas recientes (Modo Suave)...");
 
-        // 1. Calculamos la fecha de hace 3 días
+        // 1. Fecha límite (últimos 3 días)
         let fechaLimite = new Date();
         fechaLimite.setDate(fechaLimite.getDate() - 3);
         let fechaString = fechaLimite.toISOString().replace('T', ' ');
 
-        // 2. Traemos TODAS las ventas recientes en lotes de 200 usando getFullList
-        let res = await pb.collection('ventas').getFullList({
-            batch: 200,
-            filter: `created >= "${fechaString}"`,
-            sort: '-created', 
-            requestKey: null
-        }).catch((err) => {
-            console.warn("⚠️ Detalle rechazo ventas:", err);
-            return null;
-        });
+        let pagina = 1;
+        let totalPaginas = 1;
+        let todasLasVentas = [];
 
-        if (!res || res.length === 0) return;
+        // 2. Descarga controlada página por página de 100 en 100
+        while (pagina <= totalPaginas) {
+            let res = await pb.collection('ventas').getList(pagina, 100, {
+                filter: `created >= "${fechaString}"`,
+                sort: '-created',
+                requestKey: null
+            }).catch(err => {
+                console.warn(`⚠️ Error en lote ${pagina} de ventas:`, err);
+                return null;
+            });
 
-        // getFullList devuelve directamente el array completo de todas las ventas
-        let items = res; 
+            if (!res || !res.items || res.items.length === 0) break;
 
-        let listaDescargada = items.map(r => {
-            let data = (r && r.data) ? r.data : r;
-            if (typeof data === 'string') {
-                try { data = JSON.parse(data); } catch(e) {}
+            totalPaginas = res.totalPages;
+
+            let loteProcesado = res.items.map(r => {
+                let data = (r && r.data) ? r.data : r;
+                if (typeof data === 'string') {
+                    try { data = JSON.parse(data); } catch(e) {}
+                }
+                if (data && typeof data === 'object') {
+                    data.id = r.doc_id || r.id || data.id;
+                }
+                return data;
+            }).filter(v => v && v.id);
+
+            // Guardado progresivo en disco duro (IndexedDB) para no saturar memoria
+            if (window.dbLocal && dbLocal.ventas && loteProcesado.length > 0) {
+                await dbLocal.ventas.bulkPut(loteProcesado).catch(() => {});
             }
-            // Aseguramos mantener el ID exacto
-            if (data && typeof data === 'object') {
-                data.id = r.doc_id || r.id || data.id;
-            }
-            return data;
-        }).filter(v => v && v.id);
 
-        if (listaDescargada.length > 0) {
-            console.log(`✅ ¡Éxito! Se descargaron ${listaDescargada.length} ventas (sin límites) de la nube.`);
-            
-            // 1. Lo ponemos en RAM para uso inmediato en el corte
-            window.ventas = listaDescargada;
-            
-            // 2. 💾 LO GUARDAMOS EN EL DISCO DURO gigante (IndexedDB)
-            if (window.dbLocal && dbLocal.ventas) {
-                await dbLocal.ventas.bulkPut(listaDescargada).catch(e => console.warn("⚠️ Error guardando ventas en disco:", e));
-            }
-            
+            todasLasVentas.push(...loteProcesado);
+            pagina++;
+
+            // Pausa de 80ms para ceder CPU al servidor
+            await new Promise(resolve => setTimeout(resolve, 80));
+        }
+
+        if (todasLasVentas.length > 0) {
+            // Solo guardamos en RAM lo necesario para el corte activo
+            window.ventas = todasLasVentas;
+            console.log(`✅ ${todasLasVentas.length} ventas descargadas y aseguradas en disco.`);
             if (typeof renderCorte === 'function') renderCorte();
         }
+
     } catch (err) {
-        console.warn("⚠️ Radar ventas en pausa temporal:", err);
+        console.warn("⚠️ Radar ventas pausado:", err);
     } finally {
-        // 🔓 QUITAMOS EL CANDADO al terminar
         window.descargaVentasEnProceso = false;
     }
 }
-iniciarRadarVentasVeloz();
+
+// Arranque desfasado para no chocar con el inicio de la app
+setTimeout(() => {
+    iniciarRadarVentasVeloz();
+}, 4000);
 // 🛑 Función para apagarlo cuando el usuario cierre sesión (para tu botón de salir/logout)
 window.detenerRadarTransferencias = function() {
     if (window.intervaloRadar) {
@@ -1244,20 +1282,37 @@ function obtenerProductoMaestro(cod) {
     return p;
 }
 
-window.onload = () => { 
+window.onload = async () => { 
     cargarFondosDesdeNube(); 
     document.querySelectorAll('.modal').forEach(m => document.body.appendChild(m));
     renderGestSucursales();
     setInterval(updateClock, 1000); updateClock(); initLoginSelect();
     document.getElementById('ui_sucursal').value = sucursalActual; document.getElementById('corte_sucursal').value = sucursalActual;
     actualizarEtiquetasSucursal(); cargarConfigEnUI(); 
+
+    // ⚡ 1. Despertar el inventario desde IndexedDB antes de pintar la tabla
+    if (window.dbLocal && dbLocal.productos) {
+        try {
+            let guardados = await dbLocal.productos.toArray();
+            if (guardados && guardados.length > 0) {
+                window.inv = window.inv || {};
+                guardados.forEach(p => {
+                    let idProd = p.id || p.cod || p.doc_id;
+                    window.inv[idProd] = p;
+                });
+                console.log(`⚡ Inventario restaurado desde disco duro: ${guardados.length} productos listos.`);
+            }
+        } catch (e) {
+            console.warn("⚠️ Error restaurando inventario desde disco local:", e);
+        }
+    }
+
     renderI(); renderClientes(); renderProveedores(); renderPromos(); renderUsuarios(); actualizarContadorPausadas(); actualizarContadorRecepciones();
     document.getElementById('login_pin').focus();
     let hoy = getFechaLocal(); document.getElementById('pr_ini').value = hoy; document.getElementById('corte_fecha_inicio').value = hoy; document.getElementById('corte_fecha_fin').value = hoy;
     renderCorte();
     if (typeof renderKardex === 'function') window.renderKardex();
 };
-
 // =========================================================================
 // 🔀 ENRUTADOR PRINCIPAL (AUTO-RESCATE INFALIBLE)
 // =========================================================================
@@ -6450,12 +6505,28 @@ window.descargarVentasNube = async function() {
     btn.disabled = true;
 
     try {
-        // 1. Descarga controlada en lotes de 100 para no saturar la CPU de PikaPod
-        let resV = await pb.collection('ventas').getFullList({
-            batch: 100, // Lotes ligeros: evita el error 502 Bad Gateway
-            filter: `data.fecha >= "${fInicio}" && data.fecha <= "${fFin}"`,
-            requestKey: null
-        });
+        // 1. Descarga controlada de VENTAS (Paginación suave sin asfixiar la RAM)
+        let resV = [];
+        let pagV = 1;
+        let totV = 1;
+
+        while (pagV <= totV) {
+            let loteV = await pb.collection('ventas').getList(pagV, 100, {
+                filter: `data.fecha >= "${fInicio}" && data.fecha <= "${fFin}"`,
+                sort: '-created',
+                requestKey: null
+            });
+
+            totV = loteV.totalPages;
+            if (loteV.items && loteV.items.length > 0) {
+                resV.push(...loteV.items);
+            } else {
+                break;
+            }
+
+            pagV++;
+            if (pagV <= totV) await new Promise(resolve => setTimeout(resolve, 50));
+        }
         
         let ventasNube = resV.map(r => {
             let d = (r.data && typeof r.data === 'object') ? r.data : r;
@@ -6463,12 +6534,28 @@ window.descargarVentasNube = async function() {
             return d;
         });
 
-        // 2. Descarga controlada de MOVIMIENTOS
-        let resM = await pb.collection('movimientos').getFullList({
-            batch: 100,
-            filter: `data.fecha >= "${fInicio}" && data.fecha <= "${fFin}"`,
-            requestKey: null
-        });
+        // 2. Descarga controlada de MOVIMIENTOS (Paginación suave de 100 en 100)
+        let resM = [];
+        let pagM = 1;
+        let totM = 1;
+
+        while (pagM <= totM) {
+            let loteM = await pb.collection('movimientos').getList(pagM, 100, {
+                filter: `data.fecha >= "${fInicio}" && data.fecha <= "${fFin}"`,
+                sort: '-created',
+                requestKey: null
+            });
+
+            totM = loteM.totalPages;
+            if (loteM.items && loteM.items.length > 0) {
+                resM.push(...loteM.items);
+            } else {
+                break;
+            }
+
+            pagM++;
+            if (pagM <= totM) await new Promise(resolve => setTimeout(resolve, 50));
+        }
         
         let movsNube = resM.map(r => {
             let d = (r.data && typeof r.data === 'object') ? r.data : r;
@@ -12693,12 +12780,28 @@ window.sincronizarCambiosRecientes = async function() {
         fechaLimite.setDate(fechaLimite.getDate() - 3);
         let fStr = fechaLimite.toISOString().replace('T', ' ');
 
-        // 2. Pedimos SOLO lo que haya cambiado recientemente (Súper rápido y ligero)
-        let res = await pb.collection('inventario').getFullList({
-            batch: 200,
-            filter: `updated >= "${fStr}"`,
-            requestKey: null
-        });
+        // 2. Pedimos los cambios recientes en lotes suaves de 100
+        let res = [];
+        let pagina = 1;
+        let totalPaginas = 1;
+
+        while (pagina <= totalPaginas) {
+            let lote = await pb.collection('inventario').getList(pagina, 100, {
+                filter: `updated >= "${fStr}"`,
+                sort: '-updated',
+                requestKey: null
+            });
+
+            totalPaginas = lote.totalPages;
+            if (lote.items && lote.items.length > 0) {
+                res.push(...lote.items);
+            } else {
+                break;
+            }
+
+            pagina++;
+            if (pagina <= totalPaginas) await new Promise(resolve => setTimeout(resolve, 50));
+        }
 
         if (!res || res.length === 0) return;
 
@@ -12723,7 +12826,9 @@ window.sincronizarCambiosRecientes = async function() {
             }
             
             // Actualizamos la copia de seguridad vieja
-            localStorage.setItem("pos_precision_v6", JSON.stringify(window.inv || {}));
+            try {
+                localStorage.setItem("pos_precision_v6", JSON.stringify(window.inv || {}));
+            } catch(eLS) {}
             
             console.log(`✅ Delta completado: ${actualizados.length} productos actualizados/nuevos integrados al equipo.`);
             
@@ -12736,7 +12841,6 @@ window.sincronizarCambiosRecientes = async function() {
         console.warn("⚠️ Sincronización Delta en pausa:", e);
     }
 };
-
 // Lo arrancamos 4 segundos después de abrir la app
 setTimeout(window.sincronizarCambiosRecientes, 4000);
 // ====================================================================
