@@ -428,7 +428,9 @@
                 <button onclick="document.getElementById('modalImport').style.display='block'" style="background:var(--p); color:white; border:none; padding:10px 15px; border-radius:8px; cursor:pointer; font-weight:bold; font-size:13px;">📥 EXCEL</button>
                 <button onclick="abrirCorteCaja()" style="background:#851414; color:white; border:none; padding:10px 15px; border-radius:8px; cursor:pointer; font-weight:bold; border-left: 4px solid red; font-size:13px; box-shadow: 0 4px 6px rgba(0,0,0,0.15);" title="Cierre de Turno / Corte Z">🛑 CERRAR CAJA</button>
                 <button id="btn_hacer_inv_ciego" style="background:#17a2b8; color:white; font-weight:bold; padding: 8px 12px; border:none; border-radius:5px; cursor:pointer; margin-right: 5px; box-shadow: 0 2px 4px rgba(0,0,0,0.2);" onclick="abrirModalInventarioCiego()">📦 HACER INV. CIEGO</button>
-                
+                <button id="btn_sync_inventario" onclick="forzarSincronizacionInventario()" style="background: #ff9800; color: white; padding: 12px 20px; font-size: 14px; font-weight: bold; border: none; border-radius: 8px; cursor: pointer; box-shadow: 0 4px 6px rgba(0,0,0,0.1); transition: 0.2s; display: inline-flex; align-items: center; gap: 8px;">
+    🔄 FORZAR DESCARGA DE CATÁLOGO
+</button>
             </div>
         </div>
         <div style="display: flex; gap: 10px; margin-bottom: 15px;">

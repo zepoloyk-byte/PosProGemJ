@@ -12899,3 +12899,78 @@ window.analizarVentasLocales = async function() {
         if (btn) { btn.innerText = "📊 ANALIZAR (LOCAL)"; btn.disabled = false; }
     }
 };
+// ====================================================================
+// 🔄 SINCRONIZACIÓN FORZADA (SUAVE + ESCUDO + AMNESIA)
+// ====================================================================
+window.forzarSincronizacionInventario = async function() {
+    let seguro = confirm("⚠️ ¿Quieres forzar la descarga de TODO el catálogo desde la nube?\n\nÚsalo solo si te faltan productos. Esto tomará unos segundos.");
+    if (!seguro) return;
+
+    let btn = document.getElementById('btn_sync_inventario');
+    if (btn) {
+        btn.innerText = "⏳ DESCARGANDO Y LIMPIANDO...";
+        btn.disabled = true;
+    }
+
+    try {
+        console.log("🧨 MODO EMERGENCIA: Destruyendo catálogos viejos y corruptos...");
+        
+        // 1. ELIMINAMOS LA MEMORIA RÁPIDA VIEJA (Para que no se aferre a ella)
+        localStorage.removeItem("pos_precision_v6");
+        
+        // 2. Limpiamos el disco duro (IndexedDB)
+        if (window.dbLocal && dbLocal.productos) {
+            await dbLocal.productos.clear();
+        }
+
+        console.log("☁️ Descargando catálogo 100% fresco (Modo Suave)...");
+        let invLimpio = {};
+        let listaSegura = [];
+        
+        // Descargamos de 200 en 200
+        let pagina = 1;
+        let totalPaginas = 1;
+        
+        while(pagina <= totalPaginas) {
+            console.log(`⏳ Descargando paquete ${pagina} de ${totalPaginas}...`);
+            let res = await pb.collection('inventario').getList(pagina, 200, { requestKey: null });
+            totalPaginas = res.totalPages;
+            
+            res.items.forEach(r => {
+                let d = (r.data && typeof r.data === 'object') ? r.data : r;
+                let codigoOriginal = d.id || r.doc_id || r.id; 
+                d.id = String(codigoOriginal).trim();
+                d.pb_id = r.id; 
+                d.cod = d.cod || d.id; 
+                invLimpio[d.id] = d;
+                listaSegura.push(d);
+            });
+            pagina++;
+        }
+
+        console.log("💾 Guardando en Disco Duro (IndexedDB)...");
+        if (window.dbLocal && dbLocal.productos) {
+            await dbLocal.productos.bulkPut(listaSegura);
+        }
+        
+        window.inv = invLimpio;
+        
+        // 3. Intentamos guardar en memoria rápida (Si explota, no pasa nada)
+        try {
+            localStorage.setItem("pos_precision_v6", JSON.stringify(window.inv));
+        } catch(errMemoria) {
+            console.warn("⚠️ Memoria rápida llena. Dependeremos 100% del Disco Duro (IndexedDB).");
+        }
+
+        alert(`✅ ¡Éxito! Se descargaron y guardaron ${listaSegura.length} productos.\n\nEl sistema se reiniciará completamente limpio.`);
+        location.reload();
+
+    } catch (error) {
+        console.error("⚠️ Error forzando sincronización:", error);
+        alert("❌ Ocurrió un error al descargar. Asegúrate de tener conexión estable a internet.");
+        if (btn) {
+            btn.innerText = "🔄 FORZAR DESCARGA DE CATÁLOGO";
+            btn.disabled = false;
+        }
+    }
+};
