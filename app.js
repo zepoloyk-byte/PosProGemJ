@@ -12022,14 +12022,16 @@ window.sincronizadorFantasma = async function() {
             return;
         }
 
-        // 📦 MEJORA 1: Procesar en lotes (Máximo 50 por pasada)
-        // Esto evita que una sincronización masiva sature la RAM
-        let loteAProcesar = pendientes.slice(0, 50);
+        // 📦 MEJORA 1: Reducir el lote a 15 ventas por pasada
+        // Evita sobrecargar las operaciones de escritura de SQLite en PikaPods
+        let loteAProcesar = pendientes.slice(0, 15);
 
         console.log(`👻 Sincronizador Fantasma: detectadas ${pendientes.length} venta(s) pendientes. Subiendo lote de ${loteAProcesar.length}...`);
 
         // ⏱️ Función para pausar (Freno de mano)
         const esperar = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+
+        let huboFallo = false;
 
         for (let venta of loteAProcesar) {
             try {
@@ -12047,9 +12049,9 @@ window.sincronizadorFantasma = async function() {
 
                 console.log(`☁️ Venta #${venta.id} sincronizada con la nube exitosamente.`);
                 
-                // 🛑 MEJORA 2: El Freno de Mano
-                // Pausamos 150ms antes de enviar la siguiente para no trabar Chrome
-                await esperar(150);
+                // 🛑 MEJORA 2: Freno regulado de 350ms entre ventas individuales
+                // Le permite a SQLite cerrar cada transacción antes de recibir la siguiente
+                await esperar(350);
 
             } catch (err) {
                 // Si ya existía en la nube (error 400), la marcamos como sincronizada
@@ -12057,11 +12059,22 @@ window.sincronizadorFantasma = async function() {
                     venta.sync_pendiente = false;
                     await dbLocal.ventas.put(venta);
                 } else {
-                    console.warn(`⏳ Falla de conexión al subir venta #${venta.id}. Se reintentará luego.`);
-                    break; // Cortamos el bucle si no hay respuesta del servidor
+                    console.warn(`⏳ Falla de conexión al subir venta #${venta.id} (Error ${err.status || 'Red'}).`);
+                    huboFallo = true;
+                    break; // Cortamos el lote inmediatamente para no castigar al pod caído
                 }
             }
         }
+
+        // 🛑 MEJORA 3: Pausa de recuperación tras cada lote
+        if (huboFallo) {
+            // Si el servidor dio error (502, timeout), congelamos el sincronizador 15 segundos completos
+            await esperar(15000);
+        } else if (pendientes.length > 15) {
+            // Si todo salió bien pero aún quedan ventas, damos 3 segundos de descanso a la CPU
+            await esperar(3000);
+        }
+
     } catch (e) {
         console.error("❌ Error en el Sincronizador Fantasma:", e);
     } finally {
