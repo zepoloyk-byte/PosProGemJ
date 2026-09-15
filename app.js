@@ -874,10 +874,14 @@ async function iniciarRadarVentasVeloz() {
         if (typeof pb === 'undefined') return;
         console.log("☁️ Descargando ventas recientes (Modo Suave)...");
 
-        // 1. Fecha límite (últimos 3 días)
+        // 1. Fecha límite (últimos 3 días normalizada para PocketBase)
         let fechaLimite = new Date();
         fechaLimite.setDate(fechaLimite.getDate() - 3);
-        let fechaString = fechaLimite.toISOString().replace('T', ' ');
+
+        let fAno = fechaLimite.getFullYear();
+        let fMes = String(fechaLimite.getMonth() + 1).padStart(2, '0');
+        let fDia = String(fechaLimite.getDate()).padStart(2, '0');
+        let fechaString = `${fAno}-${fMes}-${fDia} 00:00:00`;
 
         let pagina = 1;
         let totalPaginas = 1;
@@ -12072,7 +12076,7 @@ window.sincronizadorFantasma = async function() {
             await esperar(15000);
         } else if (pendientes.length > 15) {
             // Si todo salió bien pero aún quedan ventas, damos 3 segundos de descanso a la CPU
-            await esperar(3000);
+            await esperar(7000);
         }
 
     } catch (e) {
