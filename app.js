@@ -7906,124 +7906,51 @@ function parsearFechaHoraKardex(reg) {
     return isNaN(dt.getTime()) ? 0 : dt.getTime();
 }
 // =========================================================================
-// 📊 CONTROLADOR DE FILTRADO, ORDENAMIENTO Y RENDERIZADO DEL KARDEX
+// 🔄 DESCARGA MASIVA Y SEGURA DEL KARDEX (MODO SUAVE)
 // =========================================================================
-window.filtrarKardex = async function() {
+window.cargarHistorialKardex = async function() {
+    console.log("☁️ Descargando historial de Kardex (Modo Suave)...");
     try {
-        // Captura reactiva de valores desde el DOM
-        let txtInput = document.getElementById('kardex_buscar');
-        let txt = txtInput ? txtInput.value.toLowerCase().trim() : "";
+        let listaSegura = [];
+        let pagina = 1;
+        let totalPaginas = 1;
         
-        let sucSelect = document.getElementById('kardex_sucursal');
-        let sucFiltro = sucSelect ? sucSelect.value.replace(/📍/g, '').trim().toLowerCase() : "";
-        
-        let tipoSelect = document.getElementById('kardex_tipo');
-        let tipoFiltro = tipoSelect ? tipoSelect.value.trim().toUpperCase() : "";
-
-        let fIniInput = document.getElementById('kardex_fecha_ini');
-        let fIni = fIniInput ? fIniInput.value : "";
-
-        let fFinInput = document.getElementById('kardex_fecha_fin');
-        let fFin = fFinInput ? fFinInput.value : "";
-
-        // Verificamos si el usuario está realizando alguna búsqueda activa
-        let hayFiltros = (txt !== "" || fIni !== "" || fFin !== "" || sucFiltro !== "" || tipoFiltro !== "");
-
-        // 🛡️ MAGIA DE RECUPERACIÓN (ANTI-RADAR)
-        let fuente = window.historialKardex || window.kardex || (typeof kardex !== 'undefined' ? kardex : []);
-        let registros = Array.isArray(fuente) ? fuente : Object.values(fuente);
-
-        // Si el usuario aplicó un filtro, pero el Radar nos recortó la memoria RAM a solo 200 registros, 
-        // sacamos TODO el arsenal del disco duro profundo de forma instantánea.
-        if (hayFiltros && registros.length < 1000 && window.dbLocal && dbLocal.kardex) {
-            let tbody = document.getElementById('kardex_tabla_body');
-            if (tbody && tbody.innerHTML.indexOf('Buscando') === -1) {
-                tbody.innerHTML = '<tr><td colspan="10" style="text-align:center; padding:20px; color:#0d6efd;">⏳ Extrayendo historial profundo del archivo...</td></tr>';
-            }
-            // Sacamos los casi 160,000 registros
-            registros = await dbLocal.kardex.toArray();
-            // Lo devolvemos a la memoria RAM para que no repita el proceso en la siguiente tecla
-            window.historialKardex = registros; 
+        // Paginación de 500 en 500 para proteger el Giga de RAM de PikaPod
+        while(pagina <= totalPaginas) {
+            console.log(`⏳ Kardex: Descargando paquete ${pagina} de ${totalPaginas}...`);
+            let res = await pb.collection('kardex').getList(pagina, 500, { 
+                sort: '-created', // Ordenados del más reciente al más antiguo
+                requestKey: null 
+            });
+            totalPaginas = res.totalPages;
+            
+            res.items.forEach(r => {
+                let d = (r.data && typeof r.data === 'object') ? r.data : r;
+                d.pb_id = r.id; 
+                listaSegura.push(d);
+            });
+            pagina++;
         }
 
-        // Pipeline de filtrado
-        let filtrados = registros.filter(reg => {
-            if (!reg) return false;
-
-            // 1. Filtro por texto (Código o Nombre)
-            let cod = String(reg.codigo || '').toLowerCase();
-            let nom = String(reg.nombre || '').toLowerCase();
-            let matchTxt = txt === "" || cod.includes(txt) || nom.includes(txt);
-
-            // 2. Filtro por sucursal
-            let sucReg = String(reg.sucursal || '').replace(/📍/g, '').trim().toLowerCase();
-            let matchSuc = sucFiltro === "" || sucReg === sucFiltro;
-
-            // 3. Filtro por tipo de movimiento
-            let tipoReg = String(reg.tipo || '').toUpperCase();
-            let matchTipo = tipoFiltro === "" || tipoReg.includes(tipoFiltro);
-
-            // 4. Filtro por rango de fechas normalizado
-            let fReg = String(reg.fecha || '');
-            if (fReg.includes('/')) {
-                let p = fReg.split('/');
-                if (p.length === 3 && p[2].length === 4) {
-                    fReg = `${p[2]}-${p[1].padStart(2, '0')}-${p[0].padStart(2, '0')}`;
-                }
-            }
-            let matchFIni = fIni === "" || fReg >= fIni;
-            let matchFFin = fFin === "" || fReg <= fFin;
-
-            return matchTxt && matchSuc && matchTipo && matchFIni && matchFFin;
-        });
-
-        // 🌟 ORDENAMIENTO CRONOLÓGICO SEGURO
-        filtrados.sort((a, b) => {
-            if (typeof parsearFechaHoraKardex === 'function') {
-                return parsearFechaHoraKardex(b) - parsearFechaHoraKardex(a);
-            }
-            return (Number(b.id) || b.timestamp || 0) - (Number(a.id) || a.timestamp || 0);
-        });
-
-        let html = '';
+        console.log(`💾 Guardando ${listaSegura.length} movimientos de Kardex en disco duro (IndexedDB)...`);
         
-        // Renderizado optimizado para los primeros 300 registros
-        filtrados.slice(0, 300).forEach(reg => {
-            let tipoLimpio = String(reg.tipo || '').toUpperCase();
-            let colorTipo = '#000';
-            
-            // Asignación de colores dinámicos (Agregué los envíos en morado)
-            if (tipoLimpio.includes('VENTA')) colorTipo = 'var(--s)';
-            else if (tipoLimpio.includes('COMPRA')) colorTipo = '#17a2b8';
-            else if (tipoLimpio.includes('EDICIÓN')) colorTipo = 'var(--p)';
-            else if (tipoLimpio.includes('AJUSTE')) colorTipo = '#fd7e14';
-            else if (tipoLimpio.includes('ANULACIÓN')) colorTipo = 'var(--danger)';
-            else if (tipoLimpio.includes('TRANSFERENCIA') || tipoLimpio.includes('ENVÍO') || tipoLimpio.includes('ENVIO')) colorTipo = '#6f42c1';
+        if (window.dbLocal && dbLocal.kardex) {
+             // Limpiamos la base local antes de meter la nueva para evitar duplicados masivos
+            await dbLocal.kardex.clear(); 
+            await dbLocal.kardex.bulkPut(listaSegura);
+        }
+        
+        // Mantenemos solo los últimos 200 en RAM para velocidad, el resto queda en el disco duro
+        window.historialKardex = listaSegura.slice(0, 200); 
+        console.log(`✅ Historial de Kardex listo. Registros activos en RAM: ${window.historialKardex.length}`);
 
-            let cant = parseFloat(reg.cantidad) || 0;
-            let colorCant = cant > 0 ? 'var(--s)' : (cant < 0 ? 'var(--danger)' : '#666');
-
-            html += `<tr style="border-bottom: 1px solid #eee;">
-                <td style="padding:8px;">${reg.fecha || ''}<br><small style="color:#888;">${reg.hora || ''}</small></td>
-                <td style="padding:8px;"><b>${reg.nombre || 'Sin Nombre'}</b><br><small style="color:#666;">${reg.codigo || ''}</small></td>
-                <td style="padding:8px;"><span class="badge-kit" style="background:${colorTipo}; color:white; font-weight:bold; padding:2px 6px; border-radius:4px; font-size:11px;">${tipoLimpio}</span></td>
-                <td style="padding:8px; text-align:center; font-weight:bold; color:${colorCant};">${cant > 0 ? '+' : ''}${cant}</td>
-                <td style="padding:8px; text-align:center; color:#666; background:rgba(0,0,0,0.02);">${reg.stock_antes !== undefined ? reg.stock_antes : '-'}</td>
-                <td style="padding:8px; text-align:center; font-weight:bold; color:var(--p); background:rgba(0,0,0,0.04);">${reg.stock_despues !== undefined ? reg.stock_despues : '-'}</td>
-                <td style="padding:8px; text-align:right;">$${(parseFloat(reg.precio) || 0).toFixed(2)}</td>
-                <td style="padding:8px; text-align:right; color:#666;">$${(parseFloat(reg.costo) || 0).toFixed(2)}</td>
-                <td style="padding:8px;">📍 ${reg.sucursal || ''}</td>
-                <td style="padding:8px;">👤 ${reg.cajero || reg.usuario || ''}</td>
-            </tr>`;
-        });
-
-        let tbody = document.getElementById('kardex_tabla_body');
-        if (tbody) {
-            tbody.innerHTML = html || `<tr><td colspan="10" style="text-align:center; padding:20px; color:#999;">No se encontraron movimientos registrados con los filtros seleccionados.</td></tr>`;
+        // Opcional: Renderizar si la tabla está visible
+        if (typeof filtrarKardex === 'function') {
+            filtrarKardex();
         }
 
     } catch (error) {
-        console.error("❌ Error en filtrarKardex:", error);
+        console.error("⚠️ Error descargando historial de Kardex:", error);
     }
 };
 
@@ -11611,7 +11538,7 @@ document.addEventListener('DOMContentLoaded', () => {
 });
 
 // ====================================================================
-// 💸 MÓDULO DE RECEPCIÓN Y DEVOLUCIÓN DE TRANSFERENCIAS
+// 💸 MÓDULO DE RECEPCIÓN Y DEVOLUCIÓN DE TRANSFERENCIAS (BLINDADO)
 // ====================================================================
 
 window.transferenciaPendienteActual = null;
@@ -11619,113 +11546,88 @@ window.transferenciaDevueltaActual = null;
 window.transferenciasVistas = window.transferenciasVistas || new Set();
 
 window.iniciarRadarTransferencias = function() {
-
     // 🔒 Candado booleano inmediato
     if (window.radarTransferenciasBloqueado) return;
     window.radarTransferenciasBloqueado = true;
 
-    if (window.intervaloRadar) clearInterval(window.intervaloRadar);
-    console.log("🚀 Motor de Radar de Transferencias encendido (Versión JSON)...");
+    if (window.intervaloRadar) clearTimeout(window.intervaloRadar); // Cambiado a clearTimeout
+    console.log("🚀 Motor de Radar de Transferencias encendido (Versión Inteligente con Freno)...");
 
-    window.intervaloRadar = setInterval(async () => {
-        // ...resto del código...
-    
-        if (typeof usuarioActual === 'undefined' || !usuarioActual) return; 
+    // Función recursiva que espera a que termine el proceso anterior
+    async function cicloRadar() {
+        let tiempoEspera = 3000; // Por defecto: 3 segundos si todo está sano
+
+        if (typeof usuarioActual === 'undefined' || !usuarioActual) {
+            window.intervaloRadar = setTimeout(cicloRadar, tiempoEspera);
+            return;
+        }
+
         let miNombreLimpio = String(usuarioActual).trim().toLowerCase();
 
         try {
             let url = `https://sexy-starling.pikapod.net/api/collections/transferencias/records?perPage=20&sort=-created&_t=${Date.now()}`;
             let res = await fetch(url, { cache: 'no-store' });
-            if (!res.ok) return;
             
-            let result = await res.json();
-            let lista = result.items || [];
+            if (!res.ok) {
+                // 🛑 FRENO DE MANO: Si el servidor manda error (ej. 503), esperamos 15 segundos para no asfixiarlo
+                console.warn(`⚠️ Radar Transferencias: Servidor saturado (Error ${res.status}). Frenando 15 segundos...`);
+                tiempoEspera = 15000; 
+            } else {
+                let result = await res.json();
+                let lista = result.items || [];
 
-            for (let record of lista) {
-                // 🌟 TRUCO CLAVE: Desempaquetar "data" por si PocketBase lo envía como texto
-                let payload = record.data || {};
-                if (typeof payload === 'string') {
-                    try { payload = JSON.parse(payload); } catch(e) {}
-                }
-                
-                let idRecord = record.id; 
-                
-                // 🌟 PRIORIDAD: Leer el estado desde 'payload' (el bloque JSON que ya arreglamos)
-                let estado = String(payload.estado || record.estado || '').toLowerCase();
-                
-                let claveMemoria = idRecord + "_" + estado;
-                
-                if (window.transferenciasVistas.has(claveMemoria)) continue;
-
-                let rec = String(payload.receptor || record.receptor || '').trim().toLowerCase();
-                let emi = String(payload.emisor || record.emisor || '').trim().toLowerCase();
-
-                // 📥 Dinero recibido
-                if (rec === miNombreLimpio && estado === "pendiente") {
-                    window.transferenciasVistas.add(claveMemoria);
+                for (let record of lista) {
+                    let payload = record.data || {};
+                    if (typeof payload === 'string') {
+                        try { payload = JSON.parse(payload); } catch(e) {}
+                    }
                     
-                    let datosModal = {
-                        id_pb: idRecord,
-                        emisor: payload.emisor || record.emisor,
-                        receptor: payload.receptor || record.receptor,
-                        monto: payload.monto || record.monto
-                    };
+                    let idRecord = record.id; 
+                    let estado = String(payload.estado || record.estado || '').toLowerCase();
+                    let claveMemoria = idRecord + "_" + estado;
                     
-                    if (typeof mostrarNotificacionFlotante === 'function') {
-                        mostrarNotificacionFlotante(idRecord, datosModal, 'recibir');
+                    if (window.transferenciasVistas.has(claveMemoria)) continue;
+
+                    let rec = String(payload.receptor || record.receptor || '').trim().toLowerCase();
+                    let emi = String(payload.emisor || record.emisor || '').trim().toLowerCase();
+
+                    // 📥 Dinero recibido
+                    if (rec === miNombreLimpio && estado === "pendiente") {
+                        window.transferenciasVistas.add(claveMemoria);
+                        
+                        let datosModal = {
+                            id_pb: idRecord,
+                            emisor: payload.emisor || record.emisor,
+                            receptor: payload.receptor || record.receptor,
+                            monto: payload.monto || record.monto
+                        };
+                        
+                        if (typeof mostrarNotificacionFlotante === 'function') {
+                            mostrarNotificacionFlotante(idRecord, datosModal, 'recibir');
+                        }
                     }
                 }
             }
-        } catch (e) {}
-    }, 3000);
+        } catch (e) {
+            // 🛑 FRENO DE MANO: Si se va el internet o el servidor no responde nada, esperamos 15 segundos
+            console.warn("⚠️ Radar Transferencias: Servidor inalcanzable. Frenando 15 segundos...");
+            tiempoEspera = 15000;
+        }
+
+        // Programar el siguiente disparo SOLO cuando todo este proceso haya terminado
+        window.intervaloRadar = setTimeout(cicloRadar, tiempoEspera);
+    }
+
+    // Iniciar el primer ciclo
+    cicloRadar();
 };
 
-// Auto-iniciar a los 2 segundos
-setTimeout(() => { if(typeof iniciarRadarTransferencias === 'function') iniciarRadarTransferencias(); }, 2000);
-
-// ⚡ ARRANQUE AUTOMÁTICO DE SEGURIDAD
-setTimeout(() => {
+// ⚡ ARRANQUE AUTOMÁTICO LIMPIO (Una sola vez)
+setTimeout(() => { 
     if (typeof iniciarRadarTransferencias === 'function') {
-        iniciarRadarTransferencias();
+        iniciarRadarTransferencias(); 
     }
-}, 2000);
-
-// ⚡ ARRANQUE AUTOMÁTICO DE SEGURIDAD (Obliga al radar a prenderse al abrir el sistema)
-setTimeout(() => {
-    if (typeof iniciarRadarTransferencias === 'function') {
-        iniciarRadarTransferencias();
-    }
-}, 2000);
-// 2. MOSTRAR ALERTA DE DINERO NUEVO RECIBIDO
-// ==========================================
-// 1. ABRIR VENTANA DE RECIBIR DINERO (SIMPLIFICADA)
-// ==========================================
-// ==========================================
-// 1. ABRIR VENTANA DE RECIBIR DINERO
-// ==========================================
-window.abrirModalTransferencia = function(idRecord, datosModal) {
-    // Guardamos los datos de la transferencia temporalmente
-    window.transferenciaPendienteActual = { id_pb: idRecord, ...datosModal };
-
-    // Buscamos la ventana y los textos en tu nuevo HTML
-    let modal = document.getElementById('modalNotificacionTransferencia');
-    let lblEmisor = document.getElementById('lbl_transf_emisor');
-    let lblMonto = document.getElementById('lbl_transf_monto');
-    let lblSucursal = document.getElementById('lbl_transf_sucursal');
-
-    if (!modal) {
-        console.error("No se encontró la ventana del modal en el HTML.");
-        return;
-    }
-
-    // Rellenamos los datos si encontramos las etiquetas
-    if (lblEmisor) lblEmisor.innerText = datosModal.emisor || "Admin";
-    if (lblMonto) lblMonto.innerText = parseFloat(datosModal.monto || 0).toFixed(2);
-    if (lblSucursal) lblSucursal.innerText = typeof sucursalActual !== 'undefined' ? sucursalActual : 'Matriz';
-
-    // Mostramos la ventana (usamos 'flex' para que se centre perfectamente)
-    modal.style.display = 'flex';
-};
+}, 3000);
 // ==========================================
 // 2. ACEPTAR Y GUARDAR DIRECTO A LA CAJA
 // ==========================================
