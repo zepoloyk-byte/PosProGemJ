@@ -909,6 +909,7 @@ async function iniciarRadarVentasVeloz() {
                 }
                 if (data && typeof data === 'object') {
                     data.id = r.doc_id || r.id || data.id;
+                    data.sync_pendiente = false; // 👈 EL PARCHE PREVENTIVO: Obliga a que sean falsas
                 }
                 return data;
             }).filter(v => v && v.id);
@@ -3589,119 +3590,121 @@ function abrirGranel(c) {
 // 🛑 INICIO DEL BLOQUE MAESTRO DE VENTAS PAUSADAS
 // =========================================================
 
-// =========================================================
-// 🛑 VENTAS PAUSADAS
-// =========================================================
+// 🌟 GENERADOR DE IDs COMPATIBLES CON POCKETBASE (15 caracteres exactos)
+function generarIdPB() {
+    let chars = 'abcdefghijklmnopqrstuvwxyz0123456789';
+    let id = '';
+    for (let i = 0; i < 15; i++) id += chars[Math.floor(Math.random() * chars.length)];
+    return id;
+}
 
 // =========================================================
-// 🛑 VENTAS PAUSADAS (VERSIÓN ORIGINAL INTACTA)
+// 1. PAUSAR VENTA (CON ENVOLTORIO "DATA" PARA POCKETBASE)
 // =========================================================
+async function preguntarPausar() { 
+    if (!carV || carV.length === 0) return; 
 
-function preguntarPausar() { 
-    if(carV.length === 0) return; 
-    let n = prompt("Nombre venta pausada:", nombreVentaActual || "Cliente "+(pausadas.length+1)); 
-    if(n) { 
-        let idNuevo = String(Date.now());
-        let idPausada = window.idVentaPausadaActual ? window.idVentaPausadaActual : idNuevo; 
-        
-        // 🕵️ 1. DETECCIÓN DE RE-PAUSAS Y CONTADOR
-        let ventaExistente = pausadas.find(p => String(p.id) === String(idPausada));
-        let conteoPausas = ventaExistente ? (Number(ventaExistente.veces_pausada || 1) + 1) : 1;
-        let cajeroActual = (typeof usuarioActual !== 'undefined' && usuarioActual) ? usuarioActual : 'Desconocido';
-        let totalActual = document.getElementById('v_total') ? document.getElementById('v_total').innerText : '0.00';
-        let horaPausa = new Date().toLocaleTimeString('es-MX', { hour12: true, hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    let n = prompt("Nombre venta pausada:", nombreVentaActual || "Cliente " + (pausadas.length + 1)); 
+    if (!n) return;
 
-        // 🕵️ 2. REGISTRAR EVENTO EN LA CAJA NEGRA
-        if (typeof registrarEventoVenta === 'function') {
-            registrarEventoVenta("PAUSA", `Pausa #${conteoPausas} por [${cajeroActual}]. Total: $${totalActual}. Nombre: "${n}"`);
-        }
+    // Si ya era una pausa recuperada, usamos su ID; si no, generamos uno nuevo.
+    let idUnico = window.idVentaPausadaActual ? String(window.idVentaPausadaActual) : generarIdPB(); 
+    
+    let cajeroActual = (typeof usuarioActual !== 'undefined' && usuarioActual) ? usuarioActual : 'Desconocido';
+    let totalActual = document.getElementById('v_total') ? document.getElementById('v_total').innerText : '0.00';
+    let horaPausa = new Date().toLocaleTimeString('es-MX', { hour12: true, hour: '2-digit', minute: '2-digit', second: '2-digit' });
 
-        // Conservamos todas las propiedades originales y aseguramos 'can', 'cant' y 'cantidad'
-        let itemsLimpios = carV.map(item => {
-            let q = item.can || item.cant || item.cantidad || 1;
-            return {
-                ...item,
-                can: q,
-                cant: q,
-                cantidad: q
-            };
-        });
+    if (typeof registrarEventoVenta === 'function') {
+        registrarEventoVenta("PAUSA", `Pausa por [${cajeroActual}]. Total: $${totalActual}. Nombre: "${n}"`);
+    }
 
-        // 🕵️ 3. ESTRUCTURA CON HISTORIAL AUDITABLE
-        let nuevaPausada = { 
-            id: String(idPausada), 
-            nom: n, 
-            total: totalActual, 
-            items: itemsLimpios, 
-            sucursal: typeof sucursalActual !== 'undefined' ? sucursalActual : "Matriz",
-            // Campos de auditoría para cámaras y seguridad:
-            veces_pausada: conteoPausas,
-            ultima_pausa_hora: horaPausa,
-            cajero_pauso: cajeroActual,
-            caja_negra: [...(window.historialVentaActual || [])]
-        }; 
-        
-        pausadas = pausadas.filter(p => String(p.id) !== String(idPausada)); 
+    let itemsLimpios = carV.map(item => {
+        let q = item.can || item.cant || item.cantidad || 1;
+        return { ...item, can: q, cant: q, cantidad: q };
+    });
+
+    // Este es el objeto que usa tu navegador localmente
+    let nuevaPausada = { 
+        id: idUnico, 
+        nom: n.trim(), 
+        total: totalActual, 
+        items: itemsLimpios, 
+        sucursal: typeof sucursalActual !== 'undefined' ? sucursalActual : "Matriz",
+        ultima_pausa_hora: horaPausa,
+        cajero_pauso: cajeroActual,
+        caja_negra: [...(window.historialVentaActual || [])]
+    }; 
+
+    // Actualización local
+    let idx = pausadas.findIndex(p => p.id === idUnico);
+    if(idx !== -1) {
+        pausadas[idx] = nuevaPausada; 
+    } else {
         pausadas.push(nuevaPausada); 
-        localStorage.setItem("pos_pausadas_v6", JSON.stringify(pausadas)); 
-        
-        // CÓDIGO DE NUBE POCKETBASE
-        try { 
-            if (typeof db !== 'undefined') {
-                if (typeof db.collection("pausadas").create === 'function') {
-                    db.collection("pausadas").create(nuevaPausada).catch(() => {
-                        if(typeof db.collection("pausadas").update === 'function') {
-                            db.collection("pausadas").update(String(idPausada), nuevaPausada);
-                        }
-                    });
-                } else if (db.collection("pausadas").doc) {
-                    db.collection("pausadas").doc(String(idPausada)).set(nuevaPausada);
-                }
-            }
-        } catch(e) { console.error("Error al subir a la nube:", e); }
-        
-        // 🕵️ 4. LIMPIEZA DE MEMORIA PARA EL SIGUIENTE CLIENTE
-        if (typeof limpiarCajaNegra === 'function') {
-            limpiarCajaNegra();
-        } else {
-            window.historialVentaActual = [];
-        }
+    }
+    localStorage.setItem("pos_pausadas_v6", JSON.stringify(pausadas)); 
+    
+    // 📦 EL PARCHE CLAVE: El envoltorio que exige tu colección de PocketBase
+    let payloadNube = {
+        id: idUnico,           // Forzamos el ID nativo para poder editarlo/borrarlo después
+        doc_id: idUnico,       // Para que el Radar viejo no se confunda
+        data: nuevaPausada     // 👈 AQUÍ VAN LOS ARTÍCULOS Y EL TOTAL (Para que no quede en null)
+    };
 
-        carV = []; 
-        forceWholesale = false; 
-        window.idVentaPausadaActual = null;
-        let badgeMayoreo = document.getElementById('v_mayoreo_status');
-        if(badgeMayoreo) { 
-            badgeMayoreo.innerText = "MAYOREO: DESACTIVADO"; 
-            badgeMayoreo.style.background = "#444"; 
-            badgeMayoreo.style.color = "#bbb"; 
+    // ☁️ UPSERT A LA NUBE
+    if (typeof pb !== 'undefined' && navigator.onLine) {
+        try {
+            await pb.collection("pausadas").update(idUnico, payloadNube, { requestKey: null });
+        } catch (err) {
+            pb.collection("pausadas").create(payloadNube, { requestKey: null }).catch(e => console.warn("Falla nube:", e));
         }
-        window.renderV(); 
-        actualizarContadorPausadas(); 
-    } 
+    }
+    
+    if (typeof limpiarCajaNegra === 'function') {
+        limpiarCajaNegra();
+    } else {
+        window.historialVentaActual = [];
+    }
+
+    carV = []; 
+    forceWholesale = false; 
+    nombreVentaActual = "";
+    window.idVentaPausadaActual = null; 
+
+    let badgeMayoreo = document.getElementById('v_mayoreo_status');
+    if (badgeMayoreo) { 
+        badgeMayoreo.innerText = "MAYOREO: DESACTIVADO"; 
+        badgeMayoreo.style.background = "#444"; 
+        badgeMayoreo.style.color = "#bbb"; 
+    }
+
+    if (typeof window.renderV === 'function') window.renderV(); 
+    if (typeof actualizarContadorPausadas === 'function') actualizarContadorPausadas(); 
+
     setTimeout(() => { 
         let inputEscaner = document.getElementById('v_cod'); 
-        if(inputEscaner) { inputEscaner.value = ''; inputEscaner.focus(); } 
+        if (inputEscaner) { inputEscaner.value = ''; inputEscaner.focus(); } 
     }, 150);
 }
-// =========================================================
-// RETOMAR VENTA (BORRADO FANTASMA)
-// =========================================================
 
+// =========================================================
+// 2. RETOMAR VENTA (CON ENVOLTORIO FANTASMA)
+// =========================================================
 function retomarVenta(idBuscar) { 
-    let i = pausadas.findIndex(p => String(p.id) === String(idBuscar));
-    if(i === -1) return;
+    let idStr = String(idBuscar);
+    let i = pausadas.findIndex(p => String(p.id) === idStr);
+    if (i === -1) return;
 
     let ventaRecuperada = pausadas[i];
-    carV = Array.isArray(ventaRecuperada.items) ? ventaRecuperada.items : [];
+    
+    carV = Array.isArray(ventaRecuperada.items) ? [...ventaRecuperada.items] : [];
     nombreVentaActual = ventaRecuperada.nom || "Venta";
-    window.idVentaPausadaActual = String(ventaRecuperada.id);
+    
+    // Retenemos el ID
+    window.idVentaPausadaActual = idStr; 
 
-    // 🕵️ 1. RESTAURAR LA CAJA NEGRA Y REGISTRAR LA ACCIÓN
-    // Recuperamos el historial que traía esta venta desde que se pausó
     window.historialVentaActual = ventaRecuperada.caja_negra ? [...ventaRecuperada.caja_negra] : [];
     
-    // Anotamos en la bitácora que la venta volvió a la vida
     if (typeof registrarEventoVenta === 'function') {
         let cajero = (typeof usuarioActual !== 'undefined' && usuarioActual) ? usuarioActual : 'Desconocido';
         registrarEventoVenta("REANUDAR", `Venta "${nombreVentaActual}" despausada por [${cajero}]`);
@@ -3710,36 +3713,38 @@ function retomarVenta(idBuscar) {
     pausadas.splice(i, 1);
     localStorage.setItem("pos_pausadas_v6", JSON.stringify(pausadas));
 
-    // 👻 SOBREESCRITURA FANTASMA (En vez de borrar, la vaciamos)
-    try {
-        if (typeof db !== 'undefined') {
-            let idStr = String(ventaRecuperada.id);
-            let payloadFantasma = { id: idStr, nom: 'FANTASMA', sucursal: 'FANTASMA', items: [], updatedAt: Date.now() };
-
-            if (typeof db.collection("pausadas").update === 'function') {
-                db.collection("pausadas").update(idStr, payloadFantasma).catch(e=>{});
-            } else if (db.collection("pausadas").doc) {
-                db.collection("pausadas").doc(idStr).set(payloadFantasma).catch(e=>{});
-            }
-        }
-    } catch(e) { console.error("Error fantasma:", e); }
+    // ☁️ ENVOLTORIO FANTASMA Y BORRADO
+    if (typeof pb !== 'undefined' && navigator.onLine) {
+        // También metemos al fantasma dentro de "data"
+        let payloadFantasma = {
+            data: { nom: 'FANTASMA', items: [], updatedAt: Date.now() }
+        };
+        // 1. Lo vaciamos para que el radar local lo ignore si lo llega a pescar
+        pb.collection("pausadas").update(idStr, payloadFantasma, { requestKey: null })
+          .then(() => {
+              // 2. Lo destruimos de la nube de PikaPods
+              pb.collection("pausadas").delete(idStr, { requestKey: null }).catch(() => {});
+          })
+          .catch(() => {
+              pb.collection("pausadas").delete(idStr, { requestKey: null }).catch(() => {});
+          });
+    }
 
     if (typeof window.renderV === 'function') window.renderV();
     if (typeof cerrarModales === 'function') cerrarModales();
-    actualizarContadorPausadas();
+    if (typeof actualizarContadorPausadas === 'function') actualizarContadorPausadas();
 }
 
 // =========================================================
-// CONFIRMAR ELIMINAR (BORRADO FANTASMA)
+// 3. ELIMINAR VENTA PAUSADA
 // =========================================================
-
 function confirmarEliminarPausada() {
     let pinElemento = document.getElementById('auth_pausada_pin');
     let pinIngresado = pinElemento ? pinElemento.value : '';
     let pinCajero = (typeof usuariosData !== 'undefined' && usuariosData[usuarioActual]) ? usuariosData[usuarioActual].pin : null;
     let pinAdmin = (typeof usuariosData !== 'undefined' && usuariosData["Admin"]) ? usuariosData["Admin"].pin : null;
 
-    if(pinIngresado !== pinCajero && pinIngresado !== pinAdmin) {
+    if (pinIngresado !== pinCajero && pinIngresado !== pinAdmin) {
         alert("❌ PIN Incorrecto.");
         if (pinElemento) {
             pinElemento.value = '';
@@ -3747,35 +3752,35 @@ function confirmarEliminarPausada() {
         }
         return;
     }
+    if (pinElemento) pinElemento.value = '';
 
-    let i = pausadas.findIndex(p => String(p.id) === String(idPausadaAEliminar));
-    if(i !== -1) {
+    let idTarget = String(window.idPausadaAEliminar || (typeof idPausadaAEliminar !== 'undefined' ? idPausadaAEliminar : ''));
+    let i = pausadas.findIndex(p => String(p.id) === idTarget || String(p.doc_id) === idTarget);
+    
+    if (i !== -1) {
         let ventaAEliminar = pausadas[i];
-        
+        let idReal = String(ventaAEliminar.id);
+
         pausadas.splice(i, 1);
         localStorage.setItem("pos_pausadas_v6", JSON.stringify(pausadas));
 
-        // 👻 SOBREESCRITURA FANTASMA
-        try {
-            if (ventaAEliminar && typeof db !== 'undefined') {
-                let idStr = String(ventaAEliminar.id);
-                let payloadFantasma = { id: idStr, nom: 'FANTASMA', sucursal: 'FANTASMA', items: [], updatedAt: Date.now() };
-
-                if (typeof db.collection("pausadas").update === 'function') {
-                    db.collection("pausadas").update(idStr, payloadFantasma).catch(e=>{});
-                } else if (db.collection("pausadas").doc) {
-                    db.collection("pausadas").doc(idStr).set(payloadFantasma).catch(e=>{});
-                }
-            }
-        } catch(e) { console.error("Error fantasma:", e); }
+        // ☁️ BORRADO DEFINITIVO EN LA NUBE
+        if (typeof pb !== 'undefined' && navigator.onLine) {
+            let payloadFantasma = { data: { nom: 'FANTASMA', items: [] } };
+            pb.collection("pausadas").update(idReal, payloadFantasma, { requestKey: null })
+              .then(() => pb.collection("pausadas").delete(idReal, { requestKey: null }).catch(() => {}))
+              .catch(() => {
+                  pb.collection("pausadas").delete(idReal, { requestKey: null }).catch(() => {});
+              });
+        }
     }
 
     actualizarContadorPausadas();
 
     let sucLimpia = String(typeof sucursalActual !== 'undefined' ? sucursalActual : '').replace(/📍/g, '').trim();
     pausadasFiltradas = pausadas.filter(p => {
-        if(!p || p.nom === "FANTASMA") return false;
-        if(!p.sucursal) return true;
+        if (!p || p.nom === "FANTASMA") return false;
+        if (!p.sucursal) return true;
         return (String(p.sucursal).replace(/📍/g, '').trim() === sucLimpia);
     });
 
@@ -3783,9 +3788,9 @@ function confirmarEliminarPausada() {
     if (typeof renderTablaPausadas === 'function') renderTablaPausadas();
 
     let modal = document.getElementById('modalAuthPausada');
-    if(modal) modal.style.display = 'none';
+    if (modal) modal.style.display = 'none';
 
-    if(pausadasFiltradas.length === 0 && typeof cerrarModales === 'function') { 
+    if (pausadasFiltradas.length === 0 && typeof cerrarModales === 'function') { 
         cerrarModales(); 
     }
 }
