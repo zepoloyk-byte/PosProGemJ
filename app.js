@@ -649,8 +649,9 @@ window.cargarKardexLocal = async function() {
     }
 };
 
+
 // ====================================================================
-// 🧠 CEREBRO DE PRONÓSTICO Y RENTABILIDAD (AUTO-REPARABLE)
+// 🧠 CEREBRO DE PRONÓSTICO Y RENTABILIDAD (CON ESCUDO DE MEMORIA)
 // ====================================================================
 
 window.cargarKardexLocal = async function() {
@@ -659,9 +660,9 @@ window.cargarKardexLocal = async function() {
     try {
         window.historialKardex = await dbLocal.kardex.toArray();
         
-        // 🛡️ REPARADOR AUTOMÁTICO EN MODO SUAVE: Si el disco local está vacío, descarga por lotes regulados
+        // 🛡️ REPARADOR AUTOMÁTICO: Si el disco local está vacío, descarga por lotes regulados
         if (window.historialKardex.length === 0 && navigator.onLine && typeof pb !== 'undefined') {
-            console.log("☁️ Historial de Kardex vacío. Descargando en lotes suaves...");
+            console.log("☁️ Historial de Kardex vacío. Descargando recientes (Modo Seguro)...");
             
             let pagina = 1;
             let totalPaginas = 1;
@@ -670,7 +671,7 @@ window.cargarKardexLocal = async function() {
             try {
                 while (pagina <= totalPaginas) {
                     let res = await pb.collection('kardex').getList(pagina, 200, {
-                        sort: '-created',
+                        sort: '-created', // Trae lo más nuevo primero
                         requestKey: null
                     }).catch(err => {
                         console.warn(`⚠️ Error en lote ${pagina} de Kardex:`, err);
@@ -679,7 +680,13 @@ window.cargarKardexLocal = async function() {
 
                     if (!res || !res.items || res.items.length === 0) break;
 
+                    // 🛡️ EL ESCUDO SALVA-SERVIDORES
+                    // Aunque haya miles de páginas en la historia, solo bajaremos 15 (3,000 registros).
+                    // Esto protege la RAM del servidor y es suficiente para la fórmula de 7 días.
                     totalPaginas = res.totalPages;
+                    if (totalPaginas > 15) {
+                        totalPaginas = 15; 
+                    }
 
                     let loteLimpio = res.items.map(r => {
                         let d = (r.data && typeof r.data === 'object') ? r.data : r;
@@ -687,7 +694,7 @@ window.cargarKardexLocal = async function() {
                         return d;
                     });
 
-                    // Guardado directo y progresivo en IndexedDB
+                    // Guardado directo en IndexedDB local
                     await dbLocal.kardex.bulkPut(loteLimpio).catch(() => {});
                     listaKardexCompleta.push(...loteLimpio);
 
@@ -698,14 +705,14 @@ window.cargarKardexLocal = async function() {
                 }
 
                 window.historialKardex = listaKardexCompleta;
-                console.log(`✅ Kardex clonado exitosamente: ${listaKardexCompleta.length} registros listos.`);
+                console.log(`✅ Kardex blindado exitosamente: ${listaKardexCompleta.length} registros listos.`);
 
             } catch (errPB) {
                 console.warn("⚠️ Error bajando Kardex maestro:", errPB);
             }
         }
 
-        console.log(`🧠 Inteligencia lista: ${window.historialKardex.length} movimientos de Kardex para rentabilidad.`);
+        console.log(`🧠 Inteligencia lista: ${window.historialKardex.length} movimientos recientes procesados.`);
         
         // 🔥 Construcción de promedios una vez asegurados los datos
         if (typeof window.actualizarCacheVentas === 'function') {
