@@ -1205,18 +1205,18 @@ window.cargarFondosDesdeNube = async function() {
                 }
             }
             
-            // 2. Fondo Panel Derecho (Con Efecto Cine / Fade)
-            if (record.fondo_panel) {
-                let urlPanel = pb.files.getUrl(record, record.fondo_panel) + '?t=' + tiempoExacto;
-                
-                document.querySelectorAll('.panel-der').forEach(panel => {
-                    // Inyectamos el degradado (oscuro abajo, transparente arriba) y la imagen nueva
-                    panel.style.backgroundImage = `linear-gradient(to bottom, rgba(0,0,0,0) 0%, rgba(0,0,0,0.2) 40%, rgba(0,0,0,0.85) 75%, rgba(0,0,0,0.95) 100%), url('${urlPanel}')`;
-                    panel.style.backgroundSize = "cover";
-                    panel.style.backgroundPosition = "center";
-                    panel.style.backgroundRepeat = "no-repeat"; // Protege para que no se formen mosaicos
-                });
-            }
+            // 2. Fondo Panel Derecho (Imagen limpia sin degradado)
+if (record.fondo_panel) {
+    let urlPanel = pb.files.getUrl(record, record.fondo_panel) + '?t=' + tiempoExacto;
+    
+    document.querySelectorAll('.panel-der').forEach(panel => {
+        // Inyectamos ÚNICAMENTE la imagen pura
+        panel.style.backgroundImage = `url('${urlPanel}')`;
+        panel.style.backgroundSize = "cover";
+        panel.style.backgroundPosition = "center";
+        panel.style.backgroundRepeat = "no-repeat"; 
+    });
+}
         }
     } catch (e) {
         console.warn("⚠️ Error al consultar el diseño visual a la base de datos:", e);
@@ -3102,8 +3102,10 @@ window.confirmarVenta = async function(cambioFinal = 0) {
         let sumaEntregada = 0;
         let nombresClientes = [];
 
-        // 🌟 1. ID ÚNICO DE LA VENTA
-        let idVentaNueva = Date.now() + Math.floor(Math.random()*1000);
+        // 🌟 1. ID ÚNICO DE 15 CARACTERES EXACTOS (Formato PocketBase)
+        let chars = 'abcdefghijklmnopqrstuvwxyz0123456789';
+        let idVentaNueva = '';
+        for (let i = 0; i < 15; i++) idVentaNueva += chars[Math.floor(Math.random() * chars.length)];
 
         if (Array.isArray(pagosActuales) && pagosActuales.length > 0) {
             for (let p of pagosActuales) {
@@ -3154,7 +3156,7 @@ window.confirmarVenta = async function(cambioFinal = 0) {
                             let provNube = await pb.collection('clientes').getFirstListItem(`doc_id="${telCliente}"`);
                             provNube.data.saldo = c.saldo;
                             provNube.data.historial = c.historial;
-                            await pb.collection('clientes').update(provNube.id, provNube);
+                            await pb.collection('clientes').update(provNube.id, provNube, { requestKey: null });
                         } catch(e) { console.warn("Error cliente PB"); }
                     } else if (typeof db !== 'undefined') { 
                         db.collection("clientes").doc(String(telCliente)).set(c)
@@ -3190,9 +3192,7 @@ window.confirmarVenta = async function(cambioFinal = 0) {
             let pOriginal = inv[x.cod] || {}; 
             let codMaestro = x.maestro_cod || (pOriginal.grupo && inv[pOriginal.grupo] ? pOriginal.grupo : x.cod);
             let pMaestro = inv[codMaestro] || pOriginal;
-
             let cantVendida = parseFloat(x.can) || 1;
-
             let stockAntes = obtenerStockRealSucursal(pMaestro, suc);
             if (stockAntes === 0 && pOriginal) {
                 stockAntes = obtenerStockRealSucursal(pOriginal, suc);
@@ -3208,7 +3208,7 @@ window.confirmarVenta = async function(cambioFinal = 0) {
                 itemsParaDescontar.push({ cod: String(codMaestro), can: cantVendida });
             }
 
-            // 🌟 2. DESCUENTO LOCAL INMEDIATO
+            // Descuento local
             for (let itemA of itemsParaDescontar) {
                 let pLoc = inv[itemA.cod];
                 if (pLoc) {
@@ -3323,32 +3323,28 @@ window.confirmarVenta = async function(cambioFinal = 0) {
                 id_venta: idVentaNueva
             };
 
-            if (typeof window.historialKardex !== 'undefined' && Array.isArray(window.historialKardex)) {
-                window.historialKardex.unshift(regKardex);
-            }
-            if (typeof window.kardex !== 'undefined' && Array.isArray(window.kardex)) {
-                window.kardex.unshift(regKardex);
-            }
+            if (typeof window.historialKardex !== 'undefined' && Array.isArray(window.historialKardex)) window.historialKardex.unshift(regKardex);
+            if (typeof window.kardex !== 'undefined' && Array.isArray(window.kardex)) window.kardex.unshift(regKardex);
 
             if (typeof db !== 'undefined') {
                 db.collection("kardex").doc(String(regKardex.id)).set(regKardex).catch(e => console.warn("Kardex offline:", e));
             } else if (typeof pb !== 'undefined') {
-                pb.collection('kardex').create(regKardex).catch(e => console.warn("Kardex pb offline:", e));
+                pb.collection('kardex').create(regKardex, { requestKey: null }).catch(e => console.warn("Kardex pb offline:", e));
             }
 
-            // 🌟 5. ACTUALIZACIÓN INTELIGENTE EN LA NUBE (En segundo plano ⚡)
+            // Actualización de inventario en la nube en background
             for (let itemA of itemsParaDescontar) {
                 if (typeof pb !== 'undefined' && itemA.cod) { 
                     (async () => {
                         try {
-                            let pNube = await pb.collection('inventario').getFirstListItem(`doc_id="${itemA.cod}"`);
+                            let pNube = await pb.collection('inventario').getFirstListItem(`doc_id="${itemA.cod}"`, { requestKey: null });
                             if (pNube.data) {
                                 if (!pNube.data.stock) pNube.data.stock = {};
                                 pNube.data.stock[suc] = (parseFloat(pNube.data.stock[suc]) || 0) - itemA.can;
                                 pNube.data.updatedAt = Date.now();
-                                await pb.collection('inventario').update(pNube.id, pNube);
+                                await pb.collection('inventario').update(pNube.id, pNube, { requestKey: null });
                             }
-                        } catch(e) { console.warn("Fallo PB background en venta", e); }
+                        } catch(e) {}
                     })();
                 } else if (typeof db !== 'undefined' && itemA.cod) { 
                     (async () => {
@@ -3363,11 +3359,11 @@ window.confirmarVenta = async function(cambioFinal = 0) {
                                 }
                                 await db.collection("inventario").doc(String(itemA.cod)).set(productoRealNube);
                             }
-                        } catch(e) { console.warn("Fallo FB background en venta", e); }
+                        } catch(e) {}
                     })();
                 }
             }
-        } // Fin del ciclo For del carrito
+        } 
 
         if (sumaTotalCobrada > (tot + 0.01)) {
             let ahorroGlobal = sumaTotalCobrada - tot;
@@ -3395,7 +3391,6 @@ window.confirmarVenta = async function(cambioFinal = 0) {
         let elCajero = document.getElementById('ticket_cajero');
         if (elCajero) elCajero.innerText = usr;
         
-       // --- INYECCIÓN ACUMULADOR (Efectivo y Métodos Digitales) ---
         let efectivoRealACaja = 0;
         let idSesionTurno = (window.sesionCajaActual && window.sesionCajaActual.id) ? window.sesionCajaActual.id : null;
 
@@ -3403,10 +3398,7 @@ window.confirmarVenta = async function(cambioFinal = 0) {
             pagosActuales.forEach(p => {
                 let m = (p.metodo || "").toLowerCase();
                 let montoAp = parseFloat(p.montoAplicado) || 0;
-
-                if (m.includes('efectivo')) {
-                    efectivoRealACaja += montoAp;
-                }
+                if (m.includes('efectivo')) { efectivoRealACaja += montoAp; }
             });
         } else if (metodosStr.toLowerCase().includes('efectivo')) {
             efectivoRealACaja = tot;
@@ -3415,11 +3407,10 @@ window.confirmarVenta = async function(cambioFinal = 0) {
         if (efectivoRealACaja > 0 && typeof window.actualizarAcumuladorSesion === 'function') {
             window.actualizarAcumuladorSesion('venta_efectivo', efectivoRealACaja);
         }
-        // -----------------------------------------------------------
 
         let nuevaVenta = { 
             id: idVentaNueva, 
-            doc_id: String(idVentaNueva), 
+            doc_id: idVentaNueva, 
             id_sesion_caja: idSesionTurno,
             fecha: hoy, 
             hora: horaVenta, 
@@ -3434,43 +3425,36 @@ window.confirmarVenta = async function(cambioFinal = 0) {
             items: carV.map(x => x.nom || '').join(','), 
             detalles: detallesParaGuardar, 
             anulada: false,
-            sync_pendiente: true // 👈 Agregado aquí 
-            
+            sync_pendiente: true 
         };
 
-        // 🛡️ BLINDAJE ABSOLUTO: Si la lista desapareció, la recrea antes de fallar
         window.ventas = window.ventas || (typeof ventas !== 'undefined' && Array.isArray(ventas) ? ventas : []);
         window.ventas.push(nuevaVenta);
         
-        // ❌ ADIÓS LOCALSTORAGE (Liberamos la memoria de Chrome)
-        // try { localStorage.setItem("pos_ventas_v6", JSON.stringify(window.ventas.slice(-200))); } catch(e) {}
-
-        // ✅ HOLA INDEXEDDB (Guardado local seguro en disco duro)
         if (window.dbLocal) {
             dbLocal.ventas.put(nuevaVenta)
                 .then(() => console.log("💾 Venta guardada localmente en IndexedDB."))
                 .catch(err => console.error("Error al guardar venta en disco duro:", err));
         }
 
-        // 🚀 GUARDADO DE LA VENTA EN NUBE (Segundo plano, sin trabar la pantalla)
-        if (typeof pb !== 'undefined') {
+        // 🚀 GUARDADO PERFECTO EN NUBE POCKETBASE
+        if (typeof pb !== 'undefined' && navigator.onLine) {
             let ventaNube = { 
-                doc_id: String(idVentaNueva), 
+                id: idVentaNueva, // 👈 Clave maestra
+                doc_id: idVentaNueva, 
                 data: nuevaVenta 
             };
             
-            // Le quitamos el "await". La app avanza inmediatamente a imprimir el ticket
             pb.collection("ventas").create(ventaNube, { requestKey: null })
             .then(async (respPB) => {
                 console.log("✅ Venta subida con éxito a PocketBase:", respPB.id);
-                // 🟢 AQUÍ: Como subió a la nube, le quitamos la bandera de pendiente
                 nuevaVenta.sync_pendiente = false;
                 if (window.dbLocal && dbLocal.ventas) {
                     await dbLocal.ventas.put(nuevaVenta);
                 }
             })
             .catch((errPB) => {
-                console.warn("⚠️ No se pudo subir a PocketBase (¿sin internet?). Queda guardada para el Sincronizador Fantasma.");
+                console.warn("⚠️ No se pudo subir a PocketBase. Queda para el Sincronizador Fantasma.");
             });
             
         } else if (typeof db !== 'undefined') { 
@@ -3478,8 +3462,7 @@ window.confirmarVenta = async function(cambioFinal = 0) {
                 .then(async () => {
                     nuevaVenta.sync_pendiente = false;
                     if (window.dbLocal && dbLocal.ventas) await dbLocal.ventas.put(nuevaVenta);
-                })
-                .catch(e => console.warn("Venta a FB offline.")); 
+                }).catch(e => {}); 
         }
         
         carV = []; nombreVentaActual = ""; 
@@ -3490,18 +3473,15 @@ window.confirmarVenta = async function(cambioFinal = 0) {
         let badgeMayoreo = document.getElementById('v_mayoreo_status');
         if(badgeMayoreo) { badgeMayoreo.innerText = "MAYOREO: DESACTIVADO"; badgeMayoreo.style.background = "#444"; badgeMayoreo.style.color = "#bbb"; }
 
-        // ⚡ 1. MOSTRAR EL TICKET INSTANTÁNEAMENTE
         let modalCobro = document.getElementById('modalCobro');
         if (modalCobro) modalCobro.style.display = 'none'; 
         
         let modalTicket = document.getElementById('modalTicket');
         if (modalTicket) modalTicket.style.display = 'block';
 
-        // ⚡ 2. MANDAR EL TRABAJO PESADO A SEGUNDO PLANO
         setTimeout(() => {
             if(typeof window.renderV === "function") window.renderV(); else if(typeof renderV === "function") renderV();
             if(typeof window.renderClientes === "function") window.renderClientes();
-            
             let btnCerrar = document.getElementById('btnCerrarTicket'); 
             if(btnCerrar) btnCerrar.focus();
         }, 50); 
@@ -3512,10 +3492,7 @@ window.confirmarVenta = async function(cambioFinal = 0) {
         console.error("Error catastrofico en Venta:", err); 
         alert("⚠️ Hubo un error al procesar la venta: " + err.message); 
     } finally {
-        // 🛡️ 3. ABRIMOS EL CANDADO SIEMPRE
-        setTimeout(() => {
-            window.ventaEnProceso = false;
-        }, 1000); 
+        setTimeout(() => { window.ventaEnProceso = false; }, 1000); 
     }
 };
 // Granel
@@ -3793,6 +3770,47 @@ function confirmarEliminarPausada() {
     if (pausadasFiltradas.length === 0 && typeof cerrarModales === 'function') { 
         cerrarModales(); 
     }
+}
+// =========================================================
+// 🛡️ PARCHE AUTO-DESTRUCTOR (CAZADOR DE ZOMBIES)
+// =========================================================
+if (!window.renderV_original_blindado) {
+    window.renderV_original_blindado = window.renderV;
+    
+    window.renderV = function() {
+        if (window.idVentaPausadaActual && (!window.carV || window.carV.length === 0)) {
+            
+            let idSobrante = window.idVentaPausadaActual;
+            window.idVentaPausadaActual = null; 
+            window.nombreVentaActual = "";
+            
+            if (typeof pb !== 'undefined' && navigator.onLine) {
+                (async () => {
+                    try {
+                        // Intento 1: Borrar como si fuera una venta nueva
+                        await pb.collection("pausadas").delete(idSobrante, { requestKey: null });
+                    } catch (e) {
+                        // Intento 2: 🧟 CAZADOR DE ZOMBIES. Si falló, la busca por dentro y la fulmina.
+                        try {
+                            let encontrado = await pb.collection("pausadas").getFirstListItem(
+                                `id="${idSobrante}" || doc_id="${idSobrante}"`, 
+                                { requestKey: null }
+                            );
+                            if (encontrado && encontrado.id) {
+                                await pb.collection("pausadas").delete(encontrado.id, { requestKey: null });
+                                console.log("🧟 Zombie cazado y destruido en la nube.");
+                            }
+                        } catch (errBusqueda) {}
+                    }
+                })();
+            }
+            console.log("💥 Venta pausada vaciada y destruida localmente.");
+        }
+        
+        if (typeof window.renderV_original_blindado === 'function') {
+            window.renderV_original_blindado();
+        }
+    };
 }
 
 // =========================================================
@@ -12008,79 +12026,74 @@ function aplicarDescuentoMasivo() {
     // Limpiamos la casilla después de aplicar para el siguiente uso
     document.getElementById('desc_masivo').value = "";
 }// =====================================================
-// 👻 EL SINCRONIZADOR FANTASMA (OFFLINE-FIRST) - OPTIMIZADO 🚀
+// 👻 EL SINCRONIZADOR FANTASMA (OFFLINE-FIRST) - BLINDADO 🚀
 // =====================================================
 window.sincronizadorFantasma = async function() {
-    // 🛡️ 1. Candado anti-colisiones (evita dos procesos al mismo tiempo)
     if (window.sincronizandoEnProceso) return;
-    
-    // 🛡️ 2. Si el navegador no detecta internet o PocketBase no está listo, salimos
     if (!navigator.onLine || typeof pb === 'undefined') return;
     if (!window.dbLocal || !dbLocal.ventas) return;
 
     window.sincronizandoEnProceso = true;
 
     try {
-        // Buscamos las ventas que quedaron pendientes
-        let pendientes = await dbLocal.ventas
-            .filter(v => v.sync_pendiente === true)
-            .toArray();
+        let pendientes = await dbLocal.ventas.filter(v => v.sync_pendiente === true).toArray();
 
         if (pendientes.length === 0) {
             window.sincronizandoEnProceso = false;
             return;
         }
 
-        // 📦 MEJORA 1: Reducir el lote a 15 ventas por pasada
-        // Evita sobrecargar las operaciones de escritura de SQLite en PikaPods
         let loteAProcesar = pendientes.slice(0, 15);
-
         console.log(`👻 Sincronizador Fantasma: detectadas ${pendientes.length} venta(s) pendientes. Subiendo lote de ${loteAProcesar.length}...`);
 
-        // ⏱️ Función para pausar (Freno de mano)
         const esperar = (ms) => new Promise(resolve => setTimeout(resolve, ms));
-
         let huboFallo = false;
 
         for (let venta of loteAProcesar) {
             try {
+                let idLimpio = String(venta.id);
+                
                 let ventaNube = {
-                    doc_id: String(venta.id),
+                    doc_id: idLimpio,
                     data: venta
                 };
 
-                // Subimos a PocketBase
-                await pb.collection("ventas").create(ventaNube, { requestKey: null });
+                // Si la venta ya es de las nuevas (15 caracteres), le inyectamos su ID maestro
+                if (idLimpio.length === 15 && !idLimpio.includes('_')) {
+                    ventaNube.id = idLimpio;
+                    try {
+                        await pb.collection("ventas").update(idLimpio, ventaNube, { requestKey: null });
+                    } catch (e) {
+                        await pb.collection("ventas").create(ventaNube, { requestKey: null });
+                    }
+                } else {
+                    // Si es una venta vieja (numérica) se sube dejando que PB asigne un ID al azar
+                    await pb.collection("ventas").create(ventaNube, { requestKey: null });
+                }
 
-                // Marcamos como sincronizada en el disco duro local
+                // Desmarcamos en el disco duro asegurándonos de guardar el cambio
                 venta.sync_pendiente = false;
                 await dbLocal.ventas.put(venta);
 
-                console.log(`☁️ Venta #${venta.id} sincronizada con la nube exitosamente.`);
-                
-                // 🛑 MEJORA 2: Freno regulado de 350ms entre ventas individuales
-                // Le permite a SQLite cerrar cada transacción antes de recibir la siguiente
+                console.log(`☁️ Venta #${idLimpio} sincronizada con la nube exitosamente.`);
                 await esperar(350);
 
             } catch (err) {
-                // Si ya existía en la nube (error 400), la marcamos como sincronizada
+                // Si da un error 400 es porque los datos viejos no le gustaron a PB. Se ignora para no atascar.
                 if (err.status === 400 || (err.data && err.data.doc_id)) {
                     venta.sync_pendiente = false;
                     await dbLocal.ventas.put(venta);
                 } else {
                     console.warn(`⏳ Falla de conexión al subir venta #${venta.id} (Error ${err.status || 'Red'}).`);
                     huboFallo = true;
-                    break; // Cortamos el lote inmediatamente para no castigar al pod caído
+                    break; 
                 }
             }
         }
 
-        // 🛑 MEJORA 3: Pausa de recuperación tras cada lote
         if (huboFallo) {
-            // Si el servidor dio error (502, timeout), congelamos el sincronizador 15 segundos completos
             await esperar(15000);
         } else if (pendientes.length > 15) {
-            // Si todo salió bien pero aún quedan ventas, damos 3 segundos de descanso a la CPU
             await esperar(7000);
         }
 
@@ -12090,7 +12103,6 @@ window.sincronizadorFantasma = async function() {
         window.sincronizandoEnProceso = false;
     }
 };
-
 // ⏰ Disparador automático cada 60 segundos
 setInterval(() => {
     if (typeof window.sincronizadorFantasma === 'function') {
