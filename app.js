@@ -773,15 +773,33 @@ setTimeout(() => {
 }, 2500);
 // 2. La fórmula matemática mejorada (Ahora detecta stock en 0 o negativos)
 window.evaluarRiesgoAgotamiento = function(productoId, stockActual) {
-    // ⚡ Leemos directo del caché en 1 milisegundo
-    let totalVendido = window.ventasSemanalesCache[String(productoId)] || 0;
+    let p = typeof inv !== 'undefined' ? inv[productoId] : null;
     
-    if (totalVendido === 0) return 999; 
+    // Si no tiene registros de ventas recientes, hay stock para siempre
+    if (!p || !p.mes_registro) return 999;
+
+    let mesHoy = (typeof getFechaLocal === 'function') ? getFechaLocal().slice(0, 7) : new Date().toISOString().slice(0, 7);
+    let totalReciente = 0;
+    let diasDivisor = 30; // Promedio base de 1 mes
+
+    if (p.mes_registro === mesHoy) {
+        totalReciente = (parseFloat(p.ventas_mes_anterior) || 0) + (parseFloat(p.ventas_mes_actual) || 0);
+        let diaDeHoy = new Date().getDate();
+        diasDivisor = 30 + diaDeHoy; // Ampliamos la ventana de días
+    } else {
+        totalReciente = 0; // Muerto
+    }
+
+    if (totalReciente <= 0) return 999; 
+
+    let ventasPorDia = totalReciente / diasDivisor;
     let stockNum = parseFloat(stockActual) || 0;
+    
     if (stockNum <= 0) return 0; 
 
-    let ventasPorDia = totalVendido / 7;
-    return (stockNum / ventasPorDia); 
+    // Esperanza de vida
+    let diasRestantes = stockNum / ventasPorDia;
+    return parseFloat(diasRestantes.toFixed(1)); 
 };
 function guardarConfigAlertas() {
     let checkActiva = document.getElementById('check_alerta_stock');
@@ -2670,8 +2688,16 @@ async function guardarEdicion() {
         else delete inv[codNuevo].grupo;
         
         inv[codNuevo].updatedAt = Date.now(); 
+        inv[codNuevo].sync_pendiente = true; // 🛡️ Escudo Anti-Zombies activado
         
         delete inv[codViejo];
+        
+        // Guardamos en local inmediatamente
+        localStorage.setItem("pos_precision_v6", JSON.stringify(inv)); 
+        if (window.dbLocal && dbLocal.inventario) {
+            await dbLocal.inventario.delete(codViejo).catch(()=>{});
+            await dbLocal.inventario.put(inv[codNuevo]).catch(()=>{});
+        }
         
         // ☁️ POCKETBASE: Borra el viejo y crea el nuevo
         if (typeof pb !== 'undefined') {
@@ -2681,10 +2707,14 @@ async function guardarEdicion() {
             } catch(e) {}
             try {
                 await pb.collection('inventario').create({ doc_id: String(codNuevo), data: inv[codNuevo] }, { requestKey: null });
-            } catch(e) { console.warn("Error creando en PB:", e); }
+                inv[codNuevo].sync_pendiente = false; // Se guardó con éxito en la nube
+                localStorage.setItem("pos_precision_v6", JSON.stringify(inv)); 
+                if (window.dbLocal && dbLocal.inventario) await dbLocal.inventario.put(inv[codNuevo]).catch(()=>{});
+            } catch(e) { console.warn("Queda pendiente en Sincronizador Fantasma:", e); }
         } else if (typeof db !== 'undefined') {
             db.collection("inventario").doc(String(codViejo)).delete();
-            db.collection("inventario").doc(String(codNuevo)).set(inv[codNuevo]);
+            db.collection("inventario").doc(String(codNuevo)).set(inv[codNuevo])
+              .then(() => { inv[codNuevo].sync_pendiente = false; localStorage.setItem("pos_precision_v6", JSON.stringify(inv)); });
         }
         alert("✅ Código y producto actualizados");
     } else {
@@ -2696,23 +2726,35 @@ async function guardarEdicion() {
         else delete inv[codViejo].grupo;
         
         inv[codViejo].updatedAt = Date.now();
+        inv[codViejo].sync_pendiente = true; // 🛡️ Escudo Anti-Zombies activado
+        
+        // Guardamos en local inmediatamente
+        localStorage.setItem("pos_precision_v6", JSON.stringify(inv)); 
+        if (window.dbLocal && dbLocal.inventario) await dbLocal.inventario.put(inv[codViejo]).catch(()=>{});
         
         // ☁️ POCKETBASE: Actualiza el existente
         if (typeof pb !== 'undefined') {
             try {
                 let rec = await pb.collection('inventario').getFirstListItem(`doc_id="${codViejo}"`, { requestKey: null });
                 await pb.collection('inventario').update(rec.id, { data: inv[codViejo] }, { requestKey: null });
+                inv[codViejo].sync_pendiente = false;
+                localStorage.setItem("pos_precision_v6", JSON.stringify(inv)); 
+                if (window.dbLocal && dbLocal.inventario) await dbLocal.inventario.put(inv[codViejo]).catch(()=>{});
             } catch(e) {
                 // Si por alguna razón no existía en la nube, lo crea
-                try { await pb.collection('inventario').create({ doc_id: String(codViejo), data: inv[codViejo] }, { requestKey: null }); } catch(err){}
+                try { 
+                    await pb.collection('inventario').create({ doc_id: String(codViejo), data: inv[codViejo] }, { requestKey: null }); 
+                    inv[codViejo].sync_pendiente = false;
+                    localStorage.setItem("pos_precision_v6", JSON.stringify(inv));
+                    if (window.dbLocal && dbLocal.inventario) await dbLocal.inventario.put(inv[codViejo]).catch(()=>{});
+                } catch(err){ console.warn("Queda pendiente en Sincronizador Fantasma:", err); }
             }
         } else if (typeof db !== 'undefined') {
-            db.collection("inventario").doc(String(codViejo)).set(inv[codViejo]);
+            db.collection("inventario").doc(String(codViejo)).set(inv[codViejo])
+              .then(() => { inv[codViejo].sync_pendiente = false; localStorage.setItem("pos_precision_v6", JSON.stringify(inv)); });
         }
         alert("✅ Precios guardados");
     }
-    
-    localStorage.setItem("pos_precision_v6", JSON.stringify(inv)); 
     
     let codAuditar = (codNuevo !== codViejo) ? codNuevo : codViejo;
     if (typeof registrarEnKardex === 'function') {
@@ -3561,16 +3603,30 @@ window.confirmarVenta = async function(cambioFinal = 0) {
                 itemsParaDescontar.push({ cod: String(codMaestro), can: cantVendida });
             }
 
-            // Descuento local
+            // Descuento local y CEREBRO DE DOS CUBETAS 🧠
             for (let itemA of itemsParaDescontar) {
                 let pLoc = inv[itemA.cod];
                 if (pLoc) {
                     if (!pLoc.stock) pLoc.stock = {};
                     pLoc.stock[suc] = (parseFloat(pLoc.stock[suc]) || 0) - itemA.can;
+                    
+                    // 🌟 INICIO DE INYECCIÓN: Promedio Histórico con Olvido Automático
+                    let mesHoy = (typeof getFechaLocal === 'function') 
+                        ? getFechaLocal().slice(0, 7) 
+                        : new Date().toISOString().slice(0, 7); // Da algo como "2026-09"
+                    
+                    if (pLoc.mes_registro !== mesHoy) {
+                        pLoc.ventas_mes_anterior = parseFloat(pLoc.ventas_mes_actual) || 0;
+                        pLoc.ventas_mes_actual = 0;
+                        pLoc.mes_registro = mesHoy;
+                    }
+                    
+                    pLoc.ventas_mes_actual = (parseFloat(pLoc.ventas_mes_actual) || 0) + parseFloat(itemA.can);
+                    pLoc.sync_pendiente = true; 
+                    // 🌟 FIN DE INYECCIÓN
                 }
             }
             try { localStorage.setItem("pos_precision_v6", JSON.stringify(inv)); } catch(e) {}
-
             let stockDespues = obtenerStockRealSucursal(pMaestro, suc);
             if (stockDespues === stockAntes && pOriginal.tipo !== 'kit') {
                 stockDespues = stockAntes - cantVendida;
@@ -4497,25 +4553,41 @@ function handleCompraScan(e) {
             }
 
             // 🌟 3. MOSTRAR EL BANNER SI SE DETECTA LA PROMOCIÓN
-            if (promoActiva && alertPromo) {
-                let precioNormal = parseFloat(pMaestro.pv) || 0;
-                let txtPromo = "";
-                
-                if (promoActiva.tipo === 'desc') {
-                    let pPromo = precioNormal * (1 - (parseFloat(promoActiva.desc)/100));
-                    txtPromo = `🎁 <b>¡TIENE PROMOCIÓN!</b> Descuento del <b>${promoActiva.desc}%</b>. Precio al público con promo: <b style="font-size:16px;">$${pPromo.toFixed(2)}</b>`;
-                } else if (promoActiva.tipo === 'nxm') {
-                    txtPromo = `🎁 <b>¡TIENE PROMOCIÓN!</b> Tipo 2x1: <b>LLEVA ${promoActiva.n} Y PAGA ${promoActiva.m}</b>.`;
-                }
-                
-                // Inyectamos el texto y el botón con enlace directo
-                alertPromo.innerHTML = `
-                    <div style="display:flex; justify-content:space-between; align-items:center;">
-                        <span>${txtPromo}</span>
-                        <button type="button" onclick="irEditarPromoDesdeCompras(${promoIndexReal})" style="background:#0d6efd; color:white; border:none; padding:6px 14px; border-radius:4px; font-weight:bold; cursor:pointer; box-shadow: 0 2px 4px rgba(0,0,0,0.2); transition: all 0.2s;">✏️ Editar/Eliminar Promo</button>
-                    </div>
-                `;
-                alertPromo.style.display = 'block';
+if (promoActiva && alertPromo) {
+    // 👇 NUEVA LÓGICA: Leemos la cajita c_pv en pantalla. Si está vacía, usamos la base de datos.
+    let cajitaPv = document.getElementById('c_pv');
+    let precioNormal = (cajitaPv && cajitaPv.value) ? parseFloat(cajitaPv.value) : (parseFloat(pMaestro.pv) || 0);
+    
+    let txtPromo = "";
+    
+    if (promoActiva.tipo === 'desc') {
+        let pPromo = precioNormal * (1 - (parseFloat(promoActiva.desc)/100));
+        // Le pusimos un ID al precio final (promo_precio_dinamico) para poder cambiarlo en vivo
+        txtPromo = `🎁 <b>¡TIENE PROMOCIÓN!</b> Descuento del <b>${promoActiva.desc}%</b>. Precio al público con promo: <b style="font-size:16px;" id="promo_precio_dinamico">$${pPromo.toFixed(2)}</b>`;
+    } else if (promoActiva.tipo === 'nxm') {
+        txtPromo = `🎁 <b>¡TIENE PROMOCIÓN!</b> Tipo 2x1: <b>LLEVA ${promoActiva.n} Y PAGA ${promoActiva.m}</b>.`;
+    }
+    
+    // Inyectamos el texto, el botón y la 'X' para cerrar
+    alertPromo.innerHTML = `
+        <div style="position:relative; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px; padding-right:15px;">
+            <span style="flex:1; min-width:200px;">${txtPromo}</span>
+            <button type="button" onclick="irEditarPromoDesdeCompras(${promoIndexReal})" style="background:#0d6efd; color:white; border:none; padding:6px 14px; border-radius:4px; font-weight:bold; cursor:pointer; box-shadow: 0 2px 4px rgba(0,0,0,0.2); transition: all 0.2s;">✏️ Editar/Eliminar Promo</button>
+            <span onclick="this.parentElement.parentElement.style.display='none'" style="position:absolute; top:-5px; right:-10px; font-size:24px; color:#888; cursor:pointer; font-weight:bold; line-height:1;">&times;</span>
+        </div>
+    `;
+    alertPromo.style.display = 'block';
+
+    // 🚀 MAGIA EN VIVO: Si el usuario teclea un nuevo precio en c_pv, recalculamos el banner al vuelo
+    if (cajitaPv && promoActiva.tipo === 'desc') {
+        cajitaPv.addEventListener('input', function() {
+            let nuevoPrecioManual = parseFloat(this.value) || 0;
+            let nuevoPromo = nuevoPrecioManual * (1 - (parseFloat(promoActiva.desc)/100));
+            let spanDinamico = document.getElementById('promo_precio_dinamico');
+            if (spanDinamico) spanDinamico.innerText = "$" + nuevoPromo.toFixed(2);
+        });
+    }
+
 
                 // =========================================================================
                 // ✨ ACTUALIZADOR EN VIVO (AGREGADO SEGURO - SIN RALENTIZAR EL SISTEMA)
@@ -11745,7 +11817,7 @@ window.cerrarTurnoActual = async function() {
     window.efectivoEsperadoTemporal = efEsperado; 
 
     // =======================================================================
-    // 🔍 2. EXTRACCIÓN VISUAL PARA AUDITORÍA (BLINDADA PARA MÓVILES)
+    // 🔍 2. EXTRACCIÓN VISUAL PARA AUDITORÍA (CORREGIDA)
     // =======================================================================
     let totalTar = 0, totalTrans = 0, totalCred = 0;
     let listaTar = [], listaTrans = [], listaCred = [];
@@ -11755,7 +11827,7 @@ window.cerrarTurnoActual = async function() {
     let fechaHoy = typeof getFechaLocal === 'function' ? getFechaLocal() : new Date().toISOString().split('T')[0];
     let tiempoApertura = new Date(s.fecha_apertura || s.created || Date.now()).getTime();
 
-    // 🚀 EXTRACCIÓN SEGURA DE NUBE (getList en vez de getFullList para evitar Error 400)
+    // 🚀 EXTRACCIÓN SEGURA (Corregida para abrir JSON "data")
     let ventasParaAuditoria = [];
     if (typeof pb !== 'undefined') {
         try {
@@ -11766,10 +11838,8 @@ window.cerrarTurnoActual = async function() {
             
             let items = (resNube && Array.isArray(resNube.items)) ? resNube.items : [];
             ventasParaAuditoria = items.map(r => {
-                let info = r.data ? r.data : r;
-                if (typeof info === 'string') {
-                    try { info = JSON.parse(info); } catch(e){}
-                }
+                // 🚀 AQUÍ ESTÁ EL ARREGLO: Extraer de 'data' o directo del registro
+                let info = r.data ? (typeof r.data === 'string' ? JSON.parse(r.data) : r.data) : r;
                 return info;
             }).filter(Boolean);
         } catch (e) {
@@ -11780,7 +11850,6 @@ window.cerrarTurnoActual = async function() {
         ventasParaAuditoria = typeof ventas !== 'undefined' ? ventas : [];
     }
 
-    // Contadores para el diagnóstico
     let ventasAnalizadas = 0;
     let ventasDeOtroCajero = 0;
 
@@ -11789,13 +11858,13 @@ window.cerrarTurnoActual = async function() {
         let cajeroVenta = String(item.cajero || item.usuario || "Admin").toLowerCase().trim();
         let cajeroTurnoActual = String(s.cajero || "Admin").toLowerCase().trim();
         
-        // Si el cajero es diferente, lo anotamos pero lo RECHAZAMOS
         if (cajeroVenta !== cajeroTurnoActual) {
             ventasDeOtroCajero++;
             return false; 
         }
 
         if (item.id_sesion_caja) return item.id_sesion_caja === idSesion; 
+        
         let esDeHoy = (item.fecha === fechaHoy && (item.sucursal || "Matriz") === sucTurno);
         if (!esDeHoy) return false;
         
@@ -11816,7 +11885,8 @@ window.cerrarTurnoActual = async function() {
             if (v.pagos && Array.isArray(v.pagos) && v.pagos.length > 0) {
                 v.pagos.forEach(p => {
                     let m = String(p.metodo || "").toLowerCase();
-                    let amt = parseFloat(p.montoAplicado) || 0;
+                    let amt = parseFloat(p.montoAplicado) || parseFloat(p.montoEntregado) || 0; // 🚀 SOPORTE EXTRA
+                    
                     if (m.includes("tarjeta")) { totalTar += amt; listaTar.push({ hora: v.hora, monto: amt, folio: v.id }); }
                     else if (m.includes("transferencia")) { totalTrans += amt; listaTrans.push({ hora: v.hora, monto: amt, folio: v.id }); }
                     else if (m.includes("crédito") || m.includes("credito")) { totalCred += amt; listaCred.push({ hora: v.hora, monto: amt, folio: v.id, cliente: v.nom }); }
@@ -11824,6 +11894,7 @@ window.cerrarTurnoActual = async function() {
             } else {
                 let m = String(v.metodo || "").toLowerCase();
                 let total = parseFloat(v.total) || 0;
+                
                 if (m.includes("tarjeta")) { totalTar += total; listaTar.push({ hora: v.hora, monto: total, folio: v.id }); }
                 else if (m.includes("transferencia")) { totalTrans += total; listaTrans.push({ hora: v.hora, monto: total, folio: v.id }); }
                 else if (m.includes("crédito") || m.includes("credito")) { totalCred += total; listaCred.push({ hora: v.hora, monto: total, folio: v.id, cliente: v.nom }); }
@@ -11831,7 +11902,6 @@ window.cerrarTurnoActual = async function() {
         });
     }
 
-    // 🕵️‍♂️ AVISO DE DIAGNÓSTICO (Solo si descargó tickets pero no mostró nada)
     if (ventasParaAuditoria.length > 0 && totalTar === 0 && totalTrans === 0 && totalCred === 0) {
         console.log(`Diagnóstico: Se descargaron ${ventasParaAuditoria.length} ventas de la nube. ${ventasDeOtroCajero} fueron ocultadas por pertenecer a otro cajero.`);
     }
@@ -11872,7 +11942,6 @@ window.cerrarTurnoActual = async function() {
         detalleMatematico += `\n📝 CRÉDITOS OTORGADOS: Sin movimientos\n`;
     }
 
-    // 4. Inyección en la pantalla
     let divDetalle = document.getElementById('arqueo_detalle');
     if (divDetalle) {
         divDetalle.innerText = detalleMatematico;
