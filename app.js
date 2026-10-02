@@ -2975,16 +2975,34 @@ window.renderV = function() {
             let pMaestro = inv[codMaestro] || pOriginal;
             
             // Extraemos las reglas de negocio directamente del Maestro
-            let minM = pMaestro.md || 10; 
-            
-            let precioVentaNormal = pMaestro.pv || 0;
-            if (pMaestro.pre_sucursales && pMaestro.pre_sucursales[sucursalActual] !== undefined) precioVentaNormal = pMaestro.pre_sucursales[sucursalActual];
-            let precioMayoreo = pMaestro.pm || precioVentaNormal;
+let minM = parseFloat(pMaestro.md) || 10; 
+let minM2 = parseFloat(pMaestro.md2) || 0; // NUEVO: Mínimo Mayoreo 2
 
-            let aplicaMayoreo = forceWholesale && ((x.can||1) >= minM); 
-            let subtotalNormal = (x.can||1) * precioVentaNormal;
-            let subtotalMayoreo = aplicaMayoreo ? ((x.can||1) * precioMayoreo) : subtotalNormal;
+let precioVentaNormal = parseFloat(pMaestro.pv) || 0;
+if (pMaestro.pre_sucursales && pMaestro.pre_sucursales[sucursalActual] !== undefined) precioVentaNormal = parseFloat(pMaestro.pre_sucursales[sucursalActual]);
 
+let precioMayoreo1 = parseFloat(pMaestro.pm) || precioVentaNormal;
+let precioMayoreo2 = parseFloat(pMaestro.pm2) || precioMayoreo1; // NUEVO: Precio Mayoreo 2
+
+let cantidadItems = parseFloat(x.can) || 1;
+let subtotalNormal = cantidadItems * precioVentaNormal;
+let subtotalMayoreo = subtotalNormal;
+let tipoMayoreoAplicado = "";
+
+// CASCADA DE PRECIOS: De mayor a menor
+if (forceWholesale) {
+    if (minM2 > 0 && cantidadItems >= minM2) {
+        // Alcanzó el Súper Mayoreo 2
+        subtotalMayoreo = cantidadItems * precioMayoreo2;
+        tipoMayoreoAplicado = "SÚPER MAYOREO 2";
+    } else if (cantidadItems >= minM) {
+        // Alcanzó el Mayoreo 1 Normal
+        subtotalMayoreo = cantidadItems * precioMayoreo1;
+        tipoMayoreoAplicado = "MAYOREO";
+    }
+}
+
+let aplicaMayoreo = (tipoMayoreoAplicado !== "");
             let subtotalPromo = subtotalNormal;
             let promoActiva = null;
             if(Array.isArray(promociones)) {
@@ -4554,15 +4572,37 @@ function handleCompraScan(e) {
 
             // 🌟 3. MOSTRAR EL BANNER SI SE DETECTA LA PROMOCIÓN
 if (promoActiva && alertPromo) {
-    // 👇 NUEVA LÓGICA: Leemos la cajita c_pv en pantalla. Si está vacía, usamos la base de datos.
+    // 1. Guardamos la promo en memoria para que las actualizaciones al teclear sean instantáneas
+    window.promoActivaActual = promoActiva;
+
     let cajitaPv = document.getElementById('c_pv');
-    let precioNormal = (cajitaPv && cajitaPv.value) ? parseFloat(cajitaPv.value) : (parseFloat(pMaestro.pv) || 0);
     
+    // 2. Obtenemos el precio real del producto maestro (incluyendo sucursal si aplica)
+    let precioMaestro = 0;
+    if (typeof pMaestro !== 'undefined' && pMaestro) {
+        if (pMaestro.pre_sucursales && typeof sucursalActual !== 'undefined' && pMaestro.pre_sucursales[sucursalActual] !== undefined) {
+            precioMaestro = parseFloat(pMaestro.pre_sucursales[sucursalActual]) || 0;
+        } else {
+            precioMaestro = parseFloat(pMaestro.pv) || 0;
+        }
+    }
+
+    // 3. REGLA CLAVE: Si el usuario está tecleando activamente en la casilla, usamos lo que escribe.
+    // Si apenas se está abriendo/cargando el producto, manda SIEMPRE el precio del producto maestro.
+    let usuarioEscribiendo = (document.activeElement === cajitaPv);
+    let precioNormal = (usuarioEscribiendo && cajitaPv && cajitaPv.value !== "") 
+        ? parseFloat(cajitaPv.value) 
+        : (precioMaestro > 0 ? precioMaestro : (cajitaPv && cajitaPv.value ? parseFloat(cajitaPv.value) : 0));
+
+    // Sincronizamos la casilla visual para borrar cualquier residuo del producto anterior
+    if (cajitaPv && !usuarioEscribiendo && precioMaestro > 0) {
+        cajitaPv.value = precioMaestro;
+    }
+
     let txtPromo = "";
-    
+
     if (promoActiva.tipo === 'desc') {
-        let pPromo = precioNormal * (1 - (parseFloat(promoActiva.desc)/100));
-        // Le pusimos un ID al precio final (promo_precio_dinamico) para poder cambiarlo en vivo
+        let pPromo = precioNormal * (1 - (parseFloat(promoActiva.desc) / 100));
         txtPromo = `🎁 <b>¡TIENE PROMOCIÓN!</b> Descuento del <b>${promoActiva.desc}%</b>. Precio al público con promo: <b style="font-size:16px;" id="promo_precio_dinamico">$${pPromo.toFixed(2)}</b>`;
     } else if (promoActiva.tipo === 'nxm') {
         txtPromo = `🎁 <b>¡TIENE PROMOCIÓN!</b> Tipo 2x1: <b>LLEVA ${promoActiva.n} Y PAGA ${promoActiva.m}</b>.`;
@@ -4631,7 +4671,8 @@ if (promoActiva && alertPromo) {
             document.getElementById('c_pv').value = pMaestro.pv || 0; 
             document.getElementById('c_pm').value = pMaestro.pm || 0; 
             document.getElementById('c_md').value = pMaestro.md || 10; 
-            
+            document.getElementById('c_pm2').value = pMaestro.pm2 || 0; 
+document.getElementById('c_md2').value = pMaestro.md2 || 50;
             let cReal = (pMaestro.cos || 0) * (1 + ((pMaestro.iva || 0) / 100));
             document.getElementById('c_real').value = cReal.toFixed(2);
             
@@ -4784,10 +4825,13 @@ function manualAddToList() {
     let gananciaActual = parseFloat(document.getElementById('c_gan').value) || 0; let cosInput = parseFloat(document.getElementById('c_cos').value) || 0;
     let ivaInput = parseFloat(document.getElementById('c_iva').value) || 0; let pvInput = parseFloat(document.getElementById('c_pv').value) || 0;
     let pmInput = parseFloat(document.getElementById('c_pm').value) || pvInput;  let mdInput = parseFloat(document.getElementById('c_md').value) || 10;
-
-    if(!inv[c]) inv[c] = { nom: nomInput, dep: depInput, tipo: tipoInput, gan: gananciaActual, iva: ivaInput, cos: cosInput, pv: pvInput, pm: pmInput, md: mdInput, stock: {}, sold_without_stock: {} };
-    else { inv[c].nom = nomInput; inv[c].dep = depInput; inv[c].tipo = tipoInput; inv[c].gan = gananciaActual; inv[c].iva = ivaInput; inv[c].cos = cosInput; inv[c].pv = pvInput; inv[c].pm = pmInput; inv[c].md = mdInput; }
-    
+    let pm2Input = parseFloat(document.getElementById('c_pm2').value) || 0;
+let md2Input = parseFloat(document.getElementById('c_md2').value) || 0;
+    if(!inv[c]) {
+    inv[c] = { nom: nomInput, dep: depInput, tipo: tipoInput, gan: gananciaActual, iva: ivaInput, cos: cosInput, pv: pvInput, pm: pmInput, md: mdInput, pm2: pm2Input, md2: md2Input, stock: {}, sold_without_stock: {} };
+} else { 
+    inv[c].nom = nomInput; inv[c].dep = depInput; inv[c].tipo = tipoInput; inv[c].gan = gananciaActual; inv[c].iva = ivaInput; inv[c].cos = cosInput; inv[c].pv = pvInput; inv[c].pm = pmInput; inv[c].md = mdInput; inv[c].pm2 = pm2Input; inv[c].md2 = md2Input; 
+}
     carC.push({ cod: c, nom: inv[c].nom, can: parseFloat(document.getElementById('c_cant').value) || 1, cos: parseFloat(document.getElementById('c_real').value) || cosInput, cos_base: cosInput, iva: ivaInput, desc: 0 }); 
     focusCompraIndex = carC.length - 1; renderC(); 
     document.getElementById('c_cod').value = ''; document.getElementById('c_cod').focus(); 
@@ -5154,6 +5198,9 @@ window.procesarGuardadoEInventario = async function(totalCompra, metodoNombre, m
                                     if (prod.iva !== undefined) pNube.data.iva = prod.iva;
                                     if (prod.pv !== undefined) pNube.data.pv = prod.pv;
                                     if (prod.pre_sucursales) pNube.data.pre_sucursales = prod.pre_sucursales;
+                                    // NUEVOS MAYOREOS PARA POCKETBASE
+                                    if (prod.pm2 !== undefined) pNube.data.pm2 = prod.pm2;
+                                    if (prod.md2 !== undefined) pNube.data.md2 = prod.md2;
                                     pNube.data.updatedAt = Date.now();
 
                                     await pb.collection("inventario").update(pNube.id, pNube);
@@ -12729,8 +12776,9 @@ function aplicarDescuentoMasivo() {
         input.dispatchEvent(new Event('keyup', { bubbles: true }));
     });
     
-    // Limpiamos la casilla después de aplicar para el siguiente uso
-    document.getElementById('desc_masivo').value = "";
+  // Limpiamos las casillas después de aplicar
+document.getElementById('desc_masivo').value = "";
+document.getElementById('desc_masivo_dinero').value = ""; // Agrega esta línea nueva
 }// =====================================================
 // 👻 EL SINCRONIZADOR FANTASMA (OFFLINE-FIRST) - BLINDADO 🚀
 // =====================================================
@@ -13768,3 +13816,63 @@ window.forzarSincronizacionInventario = async function() {
         }
     }
 };
+function convertirDineroAPorcentaje() {
+    let descuentoDinero = parseFloat(document.getElementById('desc_masivo_dinero').value) || 0;
+    let inputPorcentaje = document.getElementById('desc_masivo');
+
+    if (descuentoDinero === 0) {
+        inputPorcentaje.value = ""; 
+        return;
+    }
+
+    let totalCompra = 0;
+    let filas = document.querySelectorAll('#c_lista_tab tr');
+    
+    filas.forEach(fila => {
+        // ⚠️ CAMBIA EL 3 POR EL NÚMERO DE COLUMNA DONDE ESTÁ EL COSTO UNIT.
+        let inputCosto = fila.querySelector('td:nth-child(3) input'); 
+        
+        // ⚠️ CAMBIA EL 2 POR EL NÚMERO DE COLUMNA DONDE ESTÁ LA CANTIDAD DE PIEZAS
+        let inputCantidad = fila.querySelector('td:nth-child(2) input'); 
+        
+        let costo = inputCosto ? (parseFloat(inputCosto.value) || 0) : 0;
+        let cantidad = inputCantidad ? (parseFloat(inputCantidad.value) || 1) : 1;
+        
+        totalCompra += (costo * cantidad);
+    });
+
+    if (totalCompra > 0) {
+        let porcentajeEquivalente = (descuentoDinero / totalCompra) * 100;
+        inputPorcentaje.value = porcentajeEquivalente.toFixed(4);
+    }
+}
+function convertirPorcentajeADinero() {
+    let porcentaje = parseFloat(document.getElementById('desc_masivo').value) || 0;
+    let inputDinero = document.getElementById('desc_masivo_dinero');
+
+    // Si borras el porcentaje, se limpia la casilla de dinero
+    if (porcentaje === 0) {
+        inputDinero.value = ""; 
+        return;
+    }
+
+    let totalCompra = 0;
+    let filas = document.querySelectorAll('#c_lista_tab tr');
+    
+    filas.forEach(fila => {
+        // Asegúrate de usar los mismos números de columna que ajustaste antes
+        let inputCosto = fila.querySelector('td:nth-child(3) input'); 
+        let inputCantidad = fila.querySelector('td:nth-child(2) input'); 
+        
+        let costo = inputCosto ? (parseFloat(inputCosto.value) || 0) : 0;
+        let cantidad = inputCantidad ? (parseFloat(inputCantidad.value) || 1) : 1;
+        
+        totalCompra += (costo * cantidad);
+    });
+
+    if (totalCompra > 0) {
+        // Regla de tres inversa para calcular el dinero
+        let dineroEquivalente = (totalCompra * porcentaje) / 100;
+        inputDinero.value = dineroEquivalente.toFixed(2); // Se redondea a 2 decimales para moneda
+    }
+}
