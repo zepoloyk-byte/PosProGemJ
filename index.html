@@ -335,25 +335,54 @@
 
 <button id="add" class="btn-final" style="background:var(--p); grid-column: span 3; margin-top:10px;" onclick="manualAddToList()">Añadir a Lista (Enter)</button>
             </div>
-            <div style="display: flex; justify-content: flex-end; align-items: center; margin-bottom: 15px; padding: 10px; background: #f8f9fa; border-radius: 5px; border: 1px solid #ddd;">
-    <span style="margin-right: 10px; font-weight: bold; color: #333;">📉 Descuento:</span>
+            <!-- BARRA DE DESCUENTO MASIVO CON ANCHO MÁXIMO Y LÍMITE DE 100% -->
+<div style="display: flex; flex-wrap: wrap; gap: 10px; align-items: center; padding: 8px 12px; background: #f8f9fa; border-radius: 6px; border: 1px solid #dee2e6; max-width: 520px; margin-bottom: 12px;">
     
-    <!-- Casilla original de porcentaje (AHORA DETECTA EL ENTER) -->
-    <input type="number" id="desc_masivo" style="width: 80px; padding: 5px; margin-right: 10px; text-align: center; border: 1px solid #ccc; border-radius: 4px;" placeholder="% Ej. 10" onkeydown="if(event.key === 'Enter') aplicarDescuentoMasivo()">
+    <!-- Bloque 1: Porcentaje (Límite visual 75px y numérico 0 a 100) -->
+    <div style="display: flex; align-items: center; gap: 5px;">
+        <span style="font-weight: bold; color: #333; font-size: 13px; white-space: nowrap;">📉 %</span>
+        <input type="number" id="desc_masivo" min="0" max="100" step="any"
+               style="width: 75px; padding: 6px 8px; text-align: center; border: 1px solid #ccc; border-radius: 4px; font-size: 13px; font-weight: bold;" 
+               placeholder="Ej. 10" 
+               oninput="if(parseFloat(this.value) > 100) this.value = 100; if(parseFloat(this.value) < 0) this.value = 0; convertirPorcentajeADinero();" 
+               onkeydown="if(event.key === 'Enter' || event.keyCode === 13) { event.preventDefault(); aplicarDescuentoMasivo(); }">
+    </div>
     
-    <span style="margin-right: 10px; font-weight: bold; color: #333;">ó en Dinero $</span>
+    <!-- Bloque 2: Dinero (Límite visual 90px y mínimo 0) -->
+    <div style="display: flex; align-items: center; gap: 5px;">
+        <span style="font-weight: bold; color: #333; font-size: 13px; white-space: nowrap;">ó $</span>
+        <input type="number" id="desc_masivo_dinero" min="0" step="any"
+               style="width: 90px; padding: 6px 8px; text-align: center; border: 1px solid #ccc; border-radius: 4px; font-size: 13px; font-weight: bold;" 
+               placeholder="Ej. 500" 
+               oninput="if(parseFloat(this.value) < 0) this.value = 0; convertirDineroAPorcentaje();" 
+               onkeydown="if(event.key === 'Enter' || event.keyCode === 13) { event.preventDefault(); aplicarDescuentoMasivo(); }">
+    </div>
     
-    <!-- Casilla de dinero (AHORA DETECTA EL ENTER) -->
-    <input type="number" id="desc_masivo_dinero" style="width: 90px; padding: 5px; margin-right: 15px; text-align: center; border: 1px solid #ccc; border-radius: 4px;" placeholder="$ Ej. 500" oninput="convertirDineroAPorcentaje()" onkeydown="if(event.key === 'Enter') aplicarDescuentoMasivo()">
-    
-    <!-- Botón original -->
-    <button type="button" onclick="aplicarDescuentoMasivo()" style="background: #198754; color: white; border: none; padding: 6px 15px; border-radius: 4px; cursor: pointer; font-weight: bold; box-shadow: 0 2px 4px rgba(0,0,0,0.1);">Aplicar a todos</button>
+    <!-- Bloque 3: Botón compacto -->
+    <button type="button" onclick="aplicarDescuentoMasivo()" 
+            style="background: #198754; color: white; border: none; padding: 7px 14px; border-radius: 4px; cursor: pointer; font-weight: bold; font-size: 13px; white-space: nowrap;">
+        Aplicar Desc a Todo
+    </button>
+
 </div>
-            <table class="tabla-pos">
-                <thead style="background:#f8f9fa;"><tr><th style="text-align:left; color:#666;">Producto</th><th style="text-align:left; color:#666;">Cantidad</th><th style="text-align:left; color:#666;">Costo Unit.</th><th style="text-align:left; color:#666;">Desc. %</th><th style="text-align:left; color:var(--p);">Precio Vta.</th><th style="text-align:left; color:#666;">Subtotal</th><th></th></tr></thead>
-                <tbody id="c_lista_tab"></tbody>
-            </table>
-        </div>
+ <!-- TABLA CON DISTRIBUCIÓN COMPACTA Y SIN HUECOS DESIERTOS -->
+<div style="width: 100%; overflow-x: auto; -webkit-overflow-scrolling: touch; border: 1px solid #dee2e6; border-radius: 6px; background: white; margin-top: 10px;">
+    <table class="tabla-pos" style="width: 100%; min-width: 680px; table-layout: fixed; border-collapse: collapse;">
+        <thead style="background: #f8f9fa; border-bottom: 2px solid #e2e8f0;">
+            <tr>
+                <th style="padding: 10px 10px; text-align: left; width: 20%; color: #475569; font-size: 12px; white-space: nowrap;">PRODUCTO</th>
+                <th style="padding: 10px 4px; text-align: center; width: 11%; color: #475569; font-size: 12px; white-space: nowrap;">CANT.</th>
+                <th style="padding: 10px 4px; text-align: center; width: 15%; color: #475569; font-size: 12px; white-space: nowrap;">COSTO UNIT.</th>
+                <th style="padding: 10px 4px; text-align: center; width: 13%; color: #475569; font-size: 12px; white-space: nowrap;">DESC. %</th>
+                <th style="padding: 10px 4px; text-align: center; width: 16%; color: var(--p, #0056b3); font-size: 12px; white-space: nowrap;">PRECIO VTA.</th>
+                <th style="padding: 10px 6px; text-align: center; width: 13%; color: #475569; font-size: 12px; white-space: nowrap;">SUBTOTAL</th>
+                <th style="padding: 10px 4px; text-align: center; width: 12%; color: #475569; font-size: 12px; white-space: nowrap;">ACCIONES</th>
+            </tr>
+        </thead>
+        <tbody id="c_lista_tab"></tbody>
+    </table>
+</div>
+</div>
         
        
     <!-- PANEL DERECHO DE COMPRAS -->

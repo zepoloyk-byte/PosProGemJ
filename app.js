@@ -4853,20 +4853,63 @@ function renderC() {
         t += subtotalNeto; 
         let isFocused = (i === focusCompraIndex); let bgRow = isFocused ? 'background:#e0f0ff; border-left: 4px solid var(--s);' : ''; 
 
-        // 🛑 2. LE AGREGAMOS "focusCompraIndex=${i};" A LOS INPUTS PARA QUE EL SISTEMA NO OLVIDE EN QUÉ FILA ESTABAS
-        return `<tr style="${bgRow}">
-            <td>${isFocused ? '👉 ' : ''}<b>${x.nom}</b><br><small style="color:#888">${x.cod}</small></td>
-            <td><input type="number" value="${x.can}" style="width:60px; text-align:center;" onchange="carC[${i}].can=parseFloat(this.value)||1; focusCompraIndex=${i}; renderC()" ${isFocused ? 'autofocus' : ''}></td>
-            <td>$<input type="number" value="${x.cos.toFixed(2)}" style="width:80px; text-align:right;" onchange="carC[${i}].cos=parseFloat(this.value)||0; focusCompraIndex=${i}; renderC()"></td>
-            <td><input type="number" value="${x.desc || 0}" style="width:50px; text-align:center; color:var(--danger); font-weight:bold;" onchange="carC[${i}].desc=parseFloat(this.value)||0; focusCompraIndex=${i}; renderC()"> %</td>
-            <td style="min-width: 110px; background: #fdfdfd; border-radius: 5px;">
-                $<input type="number" value="${parseFloat(x.pre).toFixed(2)}" style="width:80px; text-align:right; font-weight:bold; color:var(--p); border: 1px solid #ccc; border-radius:3px;" onchange="carC[${i}].pre=parseFloat(this.value)||0; focusCompraIndex=${i}; renderC()"><br>
-                <label style="font-size:11px; color:#004085; display:flex; align-items:center; gap:3px; margin-top:5px; cursor:pointer; font-weight:bold;"><input type="checkbox" ${x.solo_sucursal ? 'checked' : ''} onchange="carC[${i}].solo_sucursal=this.checked; focusCompraIndex=${i}; renderC()">Solo esta suc.</label>
+        return `<tr style="${bgRow}; border-bottom: 1px solid #f1f5f9;">
+            <!-- 1. Producto (20% - Compacto y pegado a la cantidad) -->
+            <td style="padding: 8px 10px; vertical-align: middle; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">
+                <div style="font-weight: bold; font-size: 13px; color: #1e293b;">
+                    ${isFocused ? '👉 ' : ''}${x.nom}
+                </div>
+                <small style="color: #64748b; font-size: 11px;">${x.cod}</small>
             </td>
-            <td style="font-weight:bold; color:#333;">$${subtotalNeto.toFixed(2)} ${x.desc > 0 ? `<br><small style="color:var(--danger)">- $${descuentoEfectivo.toFixed(2)}</small>` : ''}</td>
-            <td>
-                <button title="Comprar por Caja" style="background:#17a2b8; color:white; border:none; padding:5px 8px; border-radius:5px; cursor:pointer; font-weight:bold; font-size:14px;" onclick="abrirCalculadoraCaja(${i})">📦</button>
-                <button style="background:var(--danger); color:white; border:none; padding:5px 10px; border-radius:5px; cursor:pointer;" onclick="carC.splice(${i},1); focusCompraIndex = Math.min(focusCompraIndex, carC.length - 1); renderC()">✕</button>
+
+            <!-- 2. Cantidad (11%) -->
+            <td style="padding: 8px 4px; text-align: center; vertical-align: middle;">
+                <input type="number" value="${x.can}" 
+                       style="width: 50px; text-align: center; padding: 6px 2px; border: 1px solid #cbd5e1; border-radius: 4px; font-size: 13px; font-weight: bold;" 
+                       onchange="carC[${i}].can=parseFloat(this.value)||1; focusCompraIndex=${i}; renderC()" 
+                       ${isFocused ? 'autofocus' : ''}>
+            </td>
+
+            <!-- 3. Costo Unitario (15%) -->
+            <td style="padding: 8px 4px; text-align: center; vertical-align: middle;">
+                <div style="display: inline-flex; align-items: center; background: white; border: 1px solid #cbd5e1; border-radius: 4px; padding: 3px 6px;">
+                    <span style="color: #64748b; font-size: 12px; margin-right: 3px;">$</span>
+                    <input type="number" value="${x.cos.toFixed(2)}" 
+                           style="width: 60px; text-align: right; border: none; outline: none; padding: 2px 0; font-size: 13px;" 
+                           onchange="carC[${i}].cos=parseFloat(this.value)||0; focusCompraIndex=${i}; renderC()">
+                </div>
+            </td>
+
+            <!-- 4. Descuento % (13%) -->
+            <td style="padding: 8px 4px; text-align: center; vertical-align: middle;">
+                <div style="display: inline-flex; align-items: center; background: white; border: 1px solid #cbd5e1; border-radius: 4px; padding: 3px 5px;">
+                    <input type="number" value="${x.desc || 0}" 
+                           style="width: 40px; text-align: center; border: none; outline: none; padding: 2px 0; color: var(--danger, #dc3545); font-weight: bold; font-size: 13px;" 
+                           onchange="carC[${i}].desc=parseFloat(this.value)||0; focusCompraIndex=${i}; renderC()">
+                    <span style="color: #64748b; font-size: 12px; margin-left: 2px;">%</span>
+                </div>
+            </td>
+
+            <!-- 5. Precio Venta (16%) -->
+            <td style="padding: 8px 4px; text-align: center; vertical-align: middle;">
+                <div style="display: inline-flex; align-items: center; background: white; border: 1.5px solid #93c5fd; border-radius: 4px; padding: 3px 6px;">
+                    <span style="color: var(--p, #0056b3); font-size: 12px; font-weight: bold; margin-right: 3px;">$</span>
+                    <input type="number" value="${parseFloat(x.pre).toFixed(2)}" 
+                           style="width: 62px; text-align: right; font-weight: bold; color: var(--p, #0056b3); border: none; outline: none; padding: 2px 0; font-size: 13px;" 
+                           onchange="carC[${i}].pre=parseFloat(this.value)||0; focusCompraIndex=${i}; renderC()">
+                </div>
+            </td>
+
+            <!-- 6. Subtotal (13%) -->
+            <td style="padding: 8px 6px; text-align: center; vertical-align: middle; white-space: nowrap;">
+                <span style="font-weight: 800; color: #1e293b; font-size: 13px;">$${subtotalNeto.toFixed(2)}</span>
+                ${x.desc > 0 ? `<br><small style="color: var(--danger, #dc3545); font-size: 11px;">- $${descuentoEfectivo.toFixed(2)}</small>` : ''}
+            </td>
+
+            <!-- 7. Acciones (12%) -->
+            <td style="padding: 8px 4px; text-align: center; vertical-align: middle; white-space: nowrap;">
+                <button title="Comprar por Caja" style="background: #0ea5e9; color: white; border: none; padding: 6px 8px; border-radius: 5px; cursor: pointer; font-size: 13px;" onclick="abrirCalculadoraCaja(${i})">📦</button>
+                <button title="Eliminar" style="background: #ef4444; color: white; border: none; padding: 6px 9px; border-radius: 5px; cursor: pointer; font-size: 13px; margin-left: 2px;" onclick="carC.splice(${i},1); focusCompraIndex = Math.min(focusCompraIndex, carC.length - 1); renderC()">✕</button>
             </td>
         </tr>`;
     }).join('');
@@ -8213,12 +8256,34 @@ function focoCobro(e, nextId) {
     }
 }
 function focoC(e, nextId, prevId) {
-    if(e.key === 'Enter' || e.key === 'ArrowDown') {
-        if(e.key === 'ArrowDown' && e.target.tagName === 'SELECT') return; 
-        e.preventDefault();
-        if(e.key === 'Enter' && nextId === 'add') manualAddToList(); else if (nextId !== 'add') { let n = document.getElementById(nextId); if (n) { n.focus(); if(n.select) n.select(); } }
-    } else if (e.key === 'ArrowUp' && prevId) {
-        if(e.target.tagName === 'SELECT') return; e.preventDefault(); let p = document.getElementById(prevId); if (p) { p.focus(); if(p.select) p.select(); }
+    // Detecta Enter tanto en PC como en teclados virtuales de celular
+    let isEnter = (e.key === 'Enter' || e.keyCode === 13 || e.which === 13);
+    let isDown = (e.key === 'ArrowDown' || e.keyCode === 40);
+    let isUp = (e.key === 'ArrowUp' || e.keyCode === 38);
+
+    if (isEnter || isDown) {
+        if (isDown && e.target.tagName === 'SELECT') return; 
+        e.preventDefault(); // 🛑 Detiene el salto automático del celular
+        
+        if (isEnter && nextId === 'add') {
+            if (typeof manualAddToList === 'function') {
+                manualAddToList();
+            }
+        } else if (nextId !== 'add') { 
+            let n = document.getElementById(nextId); 
+            if (n) { 
+                n.focus(); 
+                if (n.select) n.select(); 
+            } 
+        }
+    } else if (isUp && prevId) {
+        if (e.target.tagName === 'SELECT') return; 
+        e.preventDefault(); 
+        let p = document.getElementById(prevId); 
+        if (p) { 
+            p.focus(); 
+            if (p.select) p.select(); 
+        }
     }
 }
 function focoCajaEnter(e, nextId) {
