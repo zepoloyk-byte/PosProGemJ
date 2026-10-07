@@ -663,22 +663,30 @@ window.actualizarCacheVentas = function() {
     // Quitamos los Rayos X para no saturar tu consola y dejamos solo el estatus
     console.log(`⚡ CEREBRO LISTO (Sucursal: ${miSucursalBruta || 'Todas'}). Rentabilidad y alertas calculadas para ${Object.keys(tempCache).length} productos.`);
 };
-// Si usas PocketBase y quieres que las cajas se comuniquen al instante
+// Variable para frenar la saturación de cálculos
+let timerKardexSocket = null;
+
 if (typeof pb !== 'undefined') {
     pb.collection('kardex').subscribe('*', function (e) {
         if (e.action === 'create' || e.action === 'update') {
-            // Unimos el nuevo movimiento al historial RAM
+            // 1. Guardamos el movimiento en memoria al instante (operación ultraligera)
+            if (!window.historialKardex) window.historialKardex = [];
             window.historialKardex.push(e.record);
             
-            // ⚡ Recalculamos el promedio con la venta que acaba de hacer la otra computadora
-            if (typeof window.actualizarCacheVentas === 'function') {
-                window.actualizarCacheVentas();
+            // 2. 🛑 FRENO DE MANO: Cancelamos ejecuciones anteriores de la ráfaga
+            if (timerKardexSocket) clearTimeout(timerKardexSocket);
+
+            // 3. Esperamos 1.2 segundos a que termine la ráfaga para calcular todo DE UN SOLO GOLPE
+            timerKardexSocket = setTimeout(() => {
+                if (typeof window.actualizarCacheVentas === 'function') {
+                    window.actualizarCacheVentas();
+                }
                 
-                // Si tienes la pantalla del inventario abierta, se refresca sola
-                if (typeof tabActual !== 'undefined' && tabActual === 'i-tab') {
+                // Solo redibujamos el inventario si el usuario está mirando esa pestaña
+                if (typeof tabActual !== 'undefined' && tabActual === 'i-tab' && typeof filtrarInventario === 'function') {
                     filtrarInventario(true);
                 }
-            }
+            }, 1200);
         }
     }).catch(err => console.log("Error socket", err));
 }
