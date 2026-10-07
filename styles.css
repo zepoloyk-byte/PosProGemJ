@@ -756,3 +756,6 @@ tbody tr { height: auto !important; }
     left: 50% !important;
     transform: translateX(-50%) !important;
 }
+.input-pin-seguro {
+    -webkit-text-security: disc; /* Oculta los números con puntos igual que un password */
+}

@@ -97,7 +97,8 @@
         <label style="font-weight:bold; font-size:12px; color:#666">USUARIO</label>
         <select id="login_user"></select>
         <label style="font-weight:bold; font-size:12px; color:#666">PIN DE ACCESO</label>
-        <input type="password" id="login_pin" placeholder="****" onkeypress="if(event.key==='Enter') intentarLogin()" autofocus>
+      <!-- ✅ Se ve exactamente igual con puntos, pero engaña al detector de Chrome -->
+        <input type="text" inputmode="numeric" class="input-pin-seguro" autocomplete="off" id="login_pin" ...>
         <button class="btn-final" onclick="intentarLogin()" style="background:var(--p)">INGRESAR</button>
     </div>
 </div>
@@ -1077,7 +1078,8 @@
             <div><label>P. Venta</label><input type="number" id="e_pv" step="0.01" oninput="recalcGanEdicion()"></div>
             <div><label>P. Mayo</label><input type="number" id="e_pm"></div>
             <div><label>Min Mayo</label><input type="number" id="e_md"></div>
-            
+            <div><label>P. Mayo2</label><input type="number" id="e_pm2"></div>
+            <div><label>Min Mayo2</label><input type="number" id="e_md2"></div>
             <!-- 🌟 AQUÍ INYECTAMOS EL NUEVO CAMPO MAESTRO -->
             <div style="grid-column: span 2;">
                 <label style="color:var(--p); font-weight:bold;">👑 Código Maestro (Jefe)</label>

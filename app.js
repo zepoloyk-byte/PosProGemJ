@@ -1656,21 +1656,44 @@ window.onload = async () => {
         try {
             let guardados = await dbLocal.productos.toArray();
             if (guardados && guardados.length > 0) {
+                // 🛑 SINCRONIZAMOS AMBAS VARIABLES PARA QUE SEAN EL MISMO OBJETO:
                 window.inv = window.inv || {};
+                if (typeof inv !== 'undefined') {
+                    inv = window.inv;
+                }
+
                 guardados.forEach(p => {
                     let idProd = p.id || p.cod || p.doc_id;
                     window.inv[idProd] = p;
+                    if (typeof inv !== 'undefined') inv[idProd] = p;
                 });
-                console.log(`⚡ Inventario restaurado desde disco duro: ${guardados.length} productos listos.`);
+
+                // Le asignamos las 9247 claves
+                window.currentInvKeys = Object.keys(window.inv);
+                if (typeof currentInvKeys !== 'undefined') {
+                    currentInvKeys = window.currentInvKeys;
+                }
+
+                console.log(`⚡ Inventario restaurado desde disco duro: ${guardados.length} productos listos en inv y window.inv.`);
             }
         } catch (e) {
             console.warn("⚠️ Error restaurando inventario desde disco local:", e);
         }
     }
+    
 
-    renderI(); renderClientes(); renderProveedores(); renderPromos(); renderUsuarios(); actualizarContadorPausadas(); actualizarContadorRecepciones();
+    renderI(); 
+    renderClientes(); 
+    renderProveedores(); 
+    renderPromos(); 
+    renderUsuarios(); 
+    actualizarContadorPausadas(); 
+    actualizarContadorRecepciones();
     document.getElementById('login_pin').focus();
-    let hoy = getFechaLocal(); document.getElementById('pr_ini').value = hoy; document.getElementById('corte_fecha_inicio').value = hoy; document.getElementById('corte_fecha_fin').value = hoy;
+    let hoy = getFechaLocal(); 
+    document.getElementById('pr_ini').value = hoy; 
+    document.getElementById('corte_fecha_inicio').value = hoy; 
+    document.getElementById('corte_fecha_fin').value = hoy;
     renderCorte();
     if (typeof renderKardex === 'function') window.renderKardex();
 };
@@ -2652,7 +2675,8 @@ async function guardarEdicion() {
     let nuevoPv = parseFloat(document.getElementById('e_pv').value) || 0;
     let nuevoPm = parseFloat(document.getElementById('e_pm').value) || 0;
     let nuevoMd = parseFloat(document.getElementById('e_md').value) || 10;
-    
+    let nuevoPm2 = parseFloat(document.getElementById('e_pm2').value) || 0;
+    let nuevoMd2 = parseFloat(document.getElementById('e_md2').value) || 24;
     // Capturamos el Código Maestro
     let inputGrupo = document.getElementById('e_grupo');
     let nuevoGrupo = inputGrupo ? inputGrupo.value.trim() : "";
@@ -2682,7 +2706,7 @@ async function guardarEdicion() {
         inv[codNuevo] = JSON.parse(JSON.stringify(inv[codViejo])); 
         inv[codNuevo].nom = nuevoNom; inv[codNuevo].dep = nuevoDep; inv[codNuevo].tipo = nuevoTipo;
         inv[codNuevo].cos = nuevoCos; inv[codNuevo].iva = nuevoIva; inv[codNuevo].gan = nuevaGan;
-        inv[codNuevo].pv = nuevoPv; inv[codNuevo].pm = nuevoPm; inv[codNuevo].md = nuevoMd;
+        inv[codNuevo].pv = nuevoPv; inv[codNuevo].pm = nuevoPm; inv[codNuevo].md = nuevoMd; inv[codNuevo].pm2 = nuevoPm2; inv[codNuevo].md2 = nuevoMd2;
         
         if (nuevoGrupo) inv[codNuevo].grupo = nuevoGrupo;
         else delete inv[codNuevo].grupo;
@@ -2720,7 +2744,7 @@ async function guardarEdicion() {
     } else {
         inv[codViejo].nom = nuevoNom; inv[codViejo].dep = nuevoDep; inv[codViejo].tipo = nuevoTipo;
         inv[codViejo].cos = nuevoCos; inv[codViejo].iva = nuevoIva; inv[codViejo].gan = nuevaGan;
-        inv[codViejo].pv = nuevoPv; inv[codViejo].pm = nuevoPm; inv[codViejo].md = nuevoMd;
+        inv[codViejo].pv = nuevoPv; inv[codViejo].pm = nuevoPm; inv[codViejo].md = nuevoMd; inv[codViejo].pm = nuevoPm2; inv[codViejo].md2 = nuevoMd2;
         
         if (nuevoGrupo) inv[codViejo].grupo = nuevoGrupo;
         else delete inv[codViejo].grupo;
@@ -2729,7 +2753,7 @@ async function guardarEdicion() {
         inv[codViejo].sync_pendiente = true; // 🛡️ Escudo Anti-Zombies activado
         
         // Guardamos en local inmediatamente
-        localStorage.setItem("pos_precision_v6", JSON.stringify(inv)); 
+       //localStorage.setItem("pos_precision_v6", JSON.stringify(inv)); 
         if (window.dbLocal && dbLocal.inventario) await dbLocal.inventario.put(inv[codViejo]).catch(()=>{});
         
         // ☁️ POCKETBASE: Actualiza el existente
