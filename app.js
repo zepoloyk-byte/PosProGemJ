@@ -2647,9 +2647,55 @@ function abrirEditar(cod) {
     document.getElementById('e_md').value = p.md || 10; 
     document.getElementById('e_gan').value = p.gan || 0; 
     document.getElementById('e_fal').value = (p.sold_without_stock && p.sold_without_stock[sucursalActual]) || 0; 
+    
+    // 👇 ESTAS SON LAS LÍNEAS NUEVAS QUE FALTABAN 👇
+    document.getElementById('e_pm2').value = p.pm2 || 0; 
+    document.getElementById('e_md2').value = p.md2 || 24; 
+    
+    let inputGrupo = document.getElementById('e_grupo');
+    if (inputGrupo) inputGrupo.value = p.grupo || ""; 
+    
     document.getElementById('modalEditar').style.display = 'block'; 
 }
 
+// 🚀 NAVEGACIÓN RÁPIDA CON ENTER EN EDICIÓN DE PRODUCTOS
+document.addEventListener('keydown', function(e) {
+    if (e.key === 'Enter') {
+        let activo = document.activeElement;
+        
+        // Verificamos si estamos dentro de un recuadro de edición (cuyos IDs empiezan con "e_")
+        if (activo && (activo.tagName === 'INPUT' || activo.tagName === 'SELECT') && activo.id.startsWith('e_')) {
+            e.preventDefault(); // Evita que la página intente recargarse o hacer cosas raras
+            
+            // Este es el orden exacto en el que saltará el cursor
+            let ordenInputs = [
+                'e_cod', 'e_nom', 'e_dep', 'e_tipo', 
+                'e_cos', 'e_iva', 'e_gan', 
+                'e_pv', 'e_pm', 'e_md', 
+                'e_pm2', 'e_md2', 'e_grupo', 'e_fal'
+            ];
+            
+            let indiceActual = ordenInputs.indexOf(activo.id);
+            
+            if (indiceActual > -1) {
+                // Si hay un siguiente campo, saltamos a él
+                if (indiceActual < ordenInputs.length - 1) {
+                    let siguiente = document.getElementById(ordenInputs[indiceActual + 1]);
+                    if (siguiente) {
+                        siguiente.focus();
+                        // Selecciona el texto automáticamente para que si escribes algo, se reemplace fácil
+                        if(typeof siguiente.select === 'function') siguiente.select();
+                    }
+                } else {
+                    // Si presionas Enter en el ÚLTIMO campo, guarda automáticamente
+                    if (typeof guardarEdicion === 'function') {
+                        guardarEdicion();
+                    }
+                }
+            }
+        }
+    }
+});
 function recalcPrecioEdicion() {
     let costo = parseFloat(document.getElementById('e_cos').value) || 0;
     let ganancia = parseFloat(document.getElementById('e_gan').value) || 0;
@@ -2752,7 +2798,7 @@ async function guardarEdicion() {
     } else {
         inv[codViejo].nom = nuevoNom; inv[codViejo].dep = nuevoDep; inv[codViejo].tipo = nuevoTipo;
         inv[codViejo].cos = nuevoCos; inv[codViejo].iva = nuevoIva; inv[codViejo].gan = nuevaGan;
-        inv[codViejo].pv = nuevoPv; inv[codViejo].pm = nuevoPm; inv[codViejo].md = nuevoMd; inv[codViejo].pm = nuevoPm2; inv[codViejo].md2 = nuevoMd2;
+        inv[codViejo].pv = nuevoPv; inv[codViejo].pm = nuevoPm; inv[codViejo].md = nuevoMd; inv[codViejo].pm2 = nuevoPm2; inv[codViejo].md2 = nuevoMd2;
         
         if (nuevoGrupo) inv[codViejo].grupo = nuevoGrupo;
         else delete inv[codViejo].grupo;
@@ -4714,7 +4760,14 @@ document.getElementById('c_md2').value = pMaestro.md2 || 50;
                 document.getElementById('c_gan').value = pMaestro.gan || 30;
             }
 
-            setTimeout(() => { document.getElementById('c_cant').focus(); document.getElementById('c_cant').select(); }, 50); 
+            setTimeout(() => { 
+    let inpCant = document.getElementById('c_cant');
+    if (inpCant) {
+        inpCant.focus({ preventScroll: true }); 
+        inpCant.select(); 
+    }
+    window.scrollTo(0, 0);
+}, 50);
         } else {
             document.getElementById('c_nom').value = ""; 
             document.getElementById('c_dep').value = "General"; 
@@ -4727,7 +4780,11 @@ document.getElementById('c_md2').value = pMaestro.md2 || 50;
             document.getElementById('c_md').value = "10"; 
             document.getElementById('c_real').value = "0.00";
             alert("🛒 Producto no registrado.");
-            setTimeout(() => { document.getElementById('c_nom').focus(); }, 50); 
+           setTimeout(() => { 
+    let inpNom = document.getElementById('c_nom');
+    if (inpNom) inpNom.focus({ preventScroll: true }); 
+    window.scrollTo(0, 0);
+}, 50);
         }
     } 
 }
@@ -6919,13 +6976,18 @@ window.renderCorte = function() {
                             let gananciaArticulo = subtotalItem - (costoUnitario * parseFloat(String(d.can) || 1));
                             utilTicket += gananciaArticulo;
                             depsHash[d.dep || "General"] = (depsHash[d.dep || "General"] || 0) + subtotalItem; 
-                            if (!topProductosHash[d.cod]) {
-                                topProductosHash[d.cod] = { nombre: d.nom || 'Producto Desconocido', cantidad: 0, total: 0, ganancia: 0 };
-                            }
-                            let cantItem = parseFloat(d.can) || 0;
-                            topProductosHash[d.cod].cantidad += cantItem; 
-                            topProductosHash[d.cod].total += subtotalItem;
-                            topProductosHash[d.cod].ganancia += gananciaArticulo;
+                            // 🛡️ ESCUDO: Solo metemos al Top 10 los productos que coinciden EXACTAMENTE con el día de fin del filtro o HOY
+let fechaFiltroReal = fFin ? fFin : hoy;
+
+if (dStr === fechaFiltroReal) {
+    if (!topProductosHash[d.cod]) {
+        topProductosHash[d.cod] = { nombre: d.nom || 'Producto Desconocido', cantidad: 0, total: 0, ganancia: 0 };
+    }
+    let cantItem = parseFloat(d.can) || 0;
+    topProductosHash[d.cod].cantidad += cantItem; 
+    topProductosHash[d.cod].total += subtotalItem;
+    topProductosHash[d.cod].ganancia += gananciaArticulo;
+}
                         }
                     }); 
                 }
@@ -9899,78 +9961,77 @@ async function guardarConfigMP() {
 // ==========================================
 // 🚀 ORDEN DE COBRO A TERMINAL FÍSICA
 // ==========================================
-
-async function enviarCobroTerminal(montoCobro) {
-    // 1. Leemos las claves secretas desde la memoria
-    let configMP = JSON.parse(localStorage.getItem("mp_config_" + sucursalActual) || "{}");
-    
-    // Si no está activado o faltan datos, cancelamos el viaje y cobramos de forma manual
-    if (!configMP.activo || !configMP.access_token || !configMP.device_id) {
-        return false; 
-    }
-
-    // 2. ✨ EFECTO VISUAL MODERNIZADO (Mini-spinner y texto pequeño)
+async function enviarCobroTerminal(montoCobro, idTicketTemporal) {
     const elTotal = document.getElementById('m_total');
-    let lblTotalOriginal = elTotal.innerText; // Guardamos el monto original
+    let lblTotalOriginal = elTotal.innerText; 
 
-    // Reducimos el tamaño de todo el contenedor temporalmente para el estado de carga
     elTotal.style.fontSize = "16px"; 
     elTotal.style.fontWeight = "normal";
-    elTotal.style.color = "#009ee3"; // Azul Mercado Pago
-
-    // Inyectamos la estructura con el texto forzado a ser pequeño y discreto
-    elTotal.innerHTML = `
-        <div class="loader-mp"></div>
-        <span style="font-size: 13px !important; letter-spacing: 0.5px; font-weight: 500;">CONECTANDO TERMINAL...</span>
-    `;
-
-    // 3. 🌉 EL PUENTE PROXY: Envolvemos la URL para saltar el CORS de GitHub
-    const urlOriginal = `https://api.mercadopago.com/point/integration-api/devices/${configMP.device_id}/payment-intents`;
-    const url = `https://corsproxy.io/?${encodeURIComponent(urlOriginal)}`;
-    
-    // El paquete EXACTO y limpio convirtiendo los pesos a centavos (* 100)
-    const paqueteDeCobro = {
-        amount: Math.round(parseFloat(montoCobro) * 100), // <-- ¡Aquí está el truco mágico!
-        additional_info: {
-            print_on_terminal: true,
-            external_reference: "Ticket-" + Math.floor(Math.random() * 10000)
-        }
-    };
+    elTotal.style.color = "#009ee3"; 
+    elTotal.innerHTML = `<div class="loader-mp"></div><span style="font-size: 13px !important; font-weight: 500;">CONECTANDO TERMINAL...</span>`;
 
     try {
-        // 4. Disparamos la orden a la nube (a través del puente)
-        const respuesta = await fetch(url, {
+        // Hacemos la petición a NUESTRO PROPIO SERVIDOR de PocketBase
+        // Reemplaza la URL si tu dominio es diferente
+        const respuesta = await fetch("https://sexy-starling.pikapod.net/api/cobrar-mp", {
             method: "POST",
-            headers: {
-                "Authorization": `Bearer ${configMP.access_token}`,
-                "Content-Type": "application/json"
-            },
-            body: JSON.stringify(paqueteDeCobro)
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                monto: montoCobro,
+                sucursal: sucursalActual, // Le decimos qué sucursal es para que el servidor busque la terminal correcta
+                ticketId: idTicketTemporal || Math.floor(Math.random() * 10000)
+            })
         });
 
         const resultado = await respuesta.json();
 
-        if (respuesta.ok) {
-            // ¡ÉXITO! La terminal ya recibió la orden
+        if (respuesta.ok && !resultado.error) {
             elTotal.innerText = "💳 PASE TARJETA";
             alert("✅ Orden enviada. Pídele al cliente que pase o inserte su tarjeta en la terminal.");
-            return true;
+            return resultado.id; // Retornamos el ID para luego rastrear si se aprobó
         } else {
-            // Hubo un error de Mercado Pago (ej. formato, terminal ocupada)
-            console.error("Error MP:", resultado);
+            console.error("Error devuelto por nuestro servidor:", resultado);
             elTotal.innerText = lblTotalOriginal;
             elTotal.style.color = "var(--s)";
-            alert("❌ Error en la terminal: " + (resultado.message || "Revisa si está encendida."));
+            alert("❌ Error en la terminal: " + (resultado.error || "Revisa si está encendida."));
             return false;
         }
     } catch (error) {
-        // Error de red general
         console.error("Fallo de red:", error);
         elTotal.innerText = lblTotalOriginal;
         elTotal.style.color = "var(--s)";
-        alert("⚠️ Ocurrió un problema de conexión al intentar enviar el cobro a la terminal.");
+        alert("⚠️ Ocurrió un problema de conexión con el servidor.");
         return false;
     }
+}
+async function rastrearPagoTerminal(paymentIntentId, configMP) {
+    const urlOriginal = `https://api.mercadopago.com/point/integration-api/payment-intents/${paymentIntentId}`;
+    const url = `https://corsproxy.io/?${encodeURIComponent(urlOriginal)}`;
+
+    return new Promise((resolve) => {
+        // Creamos un ciclo que pregunta cada 3 segundos (3000 ms)
+        const intervalo = setInterval(async () => {
+            try {
+                let res = await fetch(url, {
+                    headers: { "Authorization": `Bearer ${configMP.access_token}` }
+                });
+                let estado = await res.json();
+
+                if (estado.state === "FINISHED") {
+                    clearInterval(intervalo); // Detenemos el reloj
+                    alert("✅ ¡Pago Aprobado!");
+                    resolve(true);
+                } else if (estado.state === "CANCELED" || estado.state === "ERROR") {
+                    clearInterval(intervalo);
+                    alert("❌ Pago cancelado o rechazado por el banco.");
+                    resolve(false);
+                }
+                // Si el estado es "OPEN", simplemente no hace nada y vuelve a preguntar en 3 seg.
+            } catch (error) {
+                console.error("Error al rastrear:", error);
+            }
+        }, 3000); // 3 segundos
+    });
 }
 // ==========================================
 // 💳 INTEGRACIÓN GETNET (SANTANDER)

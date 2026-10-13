@@ -759,3 +759,17 @@ tbody tr { height: auto !important; }
 .input-pin-seguro {
     -webkit-text-security: disc; /* Oculta los números con puntos igual que un password */
 }
+/* Agrega un margen de 20 píxeles a los lados de toda la pantalla */
+body {
+    padding-left: 20px !important;
+    padding-right: 20px !important;
+    box-sizing: border-box !important;
+}
+/* Separación entre la tabla y el panel de cobro */
+.panel-derecho { /* Cambia esto por el nombre real de tu panel */
+    margin-left: 15px !important; 
+}
+table, .tabla-ventas { /* Cambia por la clase de tu tabla */
+    margin-left: 0 !important;
+    padding-left: 5px !important;
+}
