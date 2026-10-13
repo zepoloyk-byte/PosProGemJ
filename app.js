@@ -583,85 +583,80 @@ window.configAlertasStock = JSON.parse(localStorage.getItem('pos_config_alertas'
 window.metricasVentasCache = {};
 
 // ====================================================================
-// 🧠 CACHÉ MULTIDISPOSITIVO: MOTOR INTELIGENTE DE RENTABILIDAD Y ALERTAS
-// VERSIÓN FINAL Y BLINDADA
+// 🧠 CACHÉ MULTIDISPOSITIVO: MOTOR INTELIGENTE CON ESCUDO ANTI-SATURACIÓN
 // ====================================================================
+let timerCerebroGlobal = null;
+
 window.actualizarCacheVentas = function() {
-    if (!window.historialKardex) return;
-    
-    let tempCache = {};
-    let hoy = new Date();
-    hoy.setHours(0,0,0,0); 
-    
-    // Obtenemos la sucursal actual, protegida contra emojis y espacios
-    let miSucursalBruta = typeof sucursalActual !== 'undefined' ? sucursalActual : (localStorage.getItem('sucursal_pos') || '');
-    let miSucLimpia = String(miSucursalBruta).replace(/[📍]/g, '').trim().toLowerCase();
+    // 🛑 ESCUDO BLINDADO: Si recibe 100 peticiones en menos de un segundo, 
+    // cancela las 99 anteriores y solo ejecuta la última.
+    if (timerCerebroGlobal) clearTimeout(timerCerebroGlobal);
 
-    // Recorremos el disco duro local (IndexedDB)
-    window.historialKardex.forEach(mov => {
-        let sucMovLimpia = String(mov.sucursal || '').replace(/[📍]/g, '').trim().toLowerCase();
+    timerCerebroGlobal = setTimeout(() => {
+        if (!window.historialKardex) return;
         
-        // 🛑 FILTRO DE SUCURSAL: Si la venta es de otra tienda, la ignoramos.
-        if (miSucLimpia && sucMovLimpia && sucMovLimpia !== miSucLimpia && miSucLimpia !== "todas") {
-            return; 
+        let tempCache = {};
+        let hoy = new Date();
+        hoy.setHours(0,0,0,0); 
+        
+        let miSucursalBruta = typeof sucursalActual !== 'undefined' ? sucursalActual : (localStorage.getItem('sucursal_pos') || '');
+        let miSucLimpia = String(miSucursalBruta).replace(/[📍]/g, '').trim().toLowerCase();
+
+        window.historialKardex.forEach(mov => {
+            let sucMovLimpia = String(mov.sucursal || '').replace(/[📍]/g, '').trim().toLowerCase();
+            
+            if (miSucLimpia && sucMovLimpia && sucMovLimpia !== miSucLimpia && miSucLimpia !== "todas") {
+                return; 
+            }
+
+            let tipoMov = String(mov.tipo || 'VENTA').toUpperCase().trim();
+            
+            if (tipoMov === "VENTA" || tipoMov === "ENVÍO (SALIDA)" || tipoMov === "ENVIO (SALIDA)" || tipoMov === "TRANSFERENCIA (SALIDA)") {
+                let codBruto = mov.codigo || mov.cod || mov.id_producto || '';
+                let cod = String(codBruto).trim();
+                
+                if (!cod || cod === 'undefined') return;
+
+                let cant = Math.abs(parseFloat(mov.cantidad || mov.can || mov.cant || 0));
+                
+                let fechaObj = new Date(mov.fecha || mov.created);
+                if (isNaN(fechaObj.getTime()) || fechaObj.getFullYear() < 2020) { 
+                    fechaObj = new Date(); 
+                }
+                fechaObj.setHours(0,0,0,0);
+                
+                if (!tempCache[cod]) {
+                    tempCache[cod] = { totalVendidas: 0, primeraVenta: fechaObj };
+                }
+                
+                tempCache[cod].totalVendidas += cant;
+                
+                if (fechaObj < tempCache[cod].primeraVenta) {
+                    tempCache[cod].primeraVenta = fechaObj;
+                }
+            }
+        });
+        
+        for (let cod in tempCache) {
+            let datos = tempCache[cod];
+            let diffTiempo = Math.abs(hoy - datos.primeraVenta);
+            let diasTranscurridos = Math.ceil(diffTiempo / (1000 * 60 * 60 * 24));
+            
+            if (diasTranscurridos === 0) diasTranscurridos = 1; 
+            if (diasTranscurridos > 365) diasTranscurridos = 365;
+            
+            datos.promedioDiario = datos.totalVendidas / diasTranscurridos;
+        }
+        
+        window.metricasVentasCache = tempCache;
+        console.log(`⚡ CEREBRO LISTO (Sucursal: ${miSucursalBruta || 'Todas'}). Rentabilidad y alertas calculadas para ${Object.keys(tempCache).length} productos.`);
+        
+        // Redibujar la tabla de inventario automáticamente con los colores correctos
+        if (typeof tabActual !== 'undefined' && tabActual === 'i-tab' && typeof filtrarInventario === 'function') {
+            filtrarInventario(true);
         }
 
-        let tipoMov = String(mov.tipo || 'VENTA').toUpperCase().trim();
-        
-        // Sumamos Ventas y todo tipo de salidas hacia otras sucursales
-        if (tipoMov === "VENTA" || tipoMov === "ENVÍO (SALIDA)" || tipoMov === "ENVIO (SALIDA)" || tipoMov === "TRANSFERENCIA (SALIDA)") {
-            // Buscamos el código en sus diferentes presentaciones
-            let codBruto = mov.codigo || mov.cod || mov.id_producto || '';
-            let cod = String(codBruto).trim();
-            
-            if (!cod || cod === 'undefined') return;
-
-            // 🎯 LECTURA EXACTA DE CANTIDAD (Convertimos el negativo a positivo con Math.abs)
-            let cant = Math.abs(parseFloat(mov.cantidad || mov.can || mov.cant || 0));
-            
-            // 🛡️ TRADUCTOR INFALIBLE DE FECHAS
-            let fechaObj = new Date(mov.fecha || mov.created);
-            if (isNaN(fechaObj.getTime()) || fechaObj.getFullYear() < 2020) { 
-                fechaObj = new Date(); 
-            }
-            fechaObj.setHours(0,0,0,0);
-            
-            // Si el producto no existe en el cerebro temporal, lo creamos
-            if (!tempCache[cod]) {
-                tempCache[cod] = { totalVendidas: 0, primeraVenta: fechaObj };
-            }
-            
-            // Sumamos la venta al acumulado histórico
-            tempCache[cod].totalVendidas += cant;
-            
-            // Ajustamos la fecha más antigua si es necesario
-            if (fechaObj < tempCache[cod].primeraVenta) {
-                tempCache[cod].primeraVenta = fechaObj;
-            }
-        }
-    });
-    
-    // 🧮 MATEMÁTICAS PURAS: Cálculo del promedio de ventas
-    for (let cod in tempCache) {
-        let datos = tempCache[cod];
-        let diffTiempo = Math.abs(hoy - datos.primeraVenta);
-        let diasTranscurridos = Math.ceil(diffTiempo / (1000 * 60 * 60 * 24));
-        
-        // Limitamos el rango de días para evitar promedios microscópicos o infinitos
-        // Evitamos división entre cero si es su primer día de ventas
-        if (diasTranscurridos === 0) diasTranscurridos = 1; 
-        
-        // Si el producto tiene años de antigüedad, promediamos su rendimiento en base a un año comercial tope
-        if (diasTranscurridos > 365) diasTranscurridos = 365;
-        
-        datos.promedioDiario = datos.totalVendidas / diasTranscurridos;
-    }
-    
-    // Inyectamos la inteligencia a la memoria global RAM
-    window.metricasVentasCache = tempCache;
-    
-    // Quitamos los Rayos X para no saturar tu consola y dejamos solo el estatus
-    console.log(`⚡ CEREBRO LISTO (Sucursal: ${miSucursalBruta || 'Todas'}). Rentabilidad y alertas calculadas para ${Object.keys(tempCache).length} productos.`);
+    }, 800); // ⏱️ Espera casi 1 segundo agrupando peticiones antes de procesar
 };
 // Variable para frenar la saturación de cálculos
 let timerKardexSocket = null;
@@ -690,15 +685,7 @@ if (typeof pb !== 'undefined') {
         }
     }).catch(err => console.log("Error socket", err));
 }
-// Modifica tu función cargarKardexLocal para que llame al caché cuando termine:
-window.cargarKardexLocal = async function() {
-    if (window.dbLocal && dbLocal.kardex) {
-        try {
-            window.historialKardex = await dbLocal.kardex.toArray();
-            window.actualizarCacheVentas(); // 👈 Creamos el caché inmediatamente
-        } catch(e) { console.warn("Error leyendo Kardex", e); }
-    }
-};
+
 
 
 // ====================================================================
@@ -10004,17 +9991,15 @@ async function enviarCobroTerminal(montoCobro, idTicketTemporal) {
         return false;
     }
 }
-async function rastrearPagoTerminal(paymentIntentId, configMP) {
-    const urlOriginal = `https://api.mercadopago.com/point/integration-api/payment-intents/${paymentIntentId}`;
-    const url = `https://corsproxy.io/?${encodeURIComponent(urlOriginal)}`;
+async function rastrearPagoTerminal(paymentIntentId, sucursal) {
+    // Apuntamos directamente a nuestro nuevo túnel seguro en PocketBase
+    const url = `https://sexy-starling.pikapod.net/api/estado-mp/${sucursal}/${paymentIntentId}`;
 
     return new Promise((resolve) => {
-        // Creamos un ciclo que pregunta cada 3 segundos (3000 ms)
+        // Creamos un ciclo que pregunta cada 3 segundos
         const intervalo = setInterval(async () => {
             try {
-                let res = await fetch(url, {
-                    headers: { "Authorization": `Bearer ${configMP.access_token}` }
-                });
+                let res = await fetch(url);
                 let estado = await res.json();
 
                 if (estado.state === "FINISHED") {
@@ -10026,11 +10011,11 @@ async function rastrearPagoTerminal(paymentIntentId, configMP) {
                     alert("❌ Pago cancelado o rechazado por el banco.");
                     resolve(false);
                 }
-                // Si el estado es "OPEN", simplemente no hace nada y vuelve a preguntar en 3 seg.
+                // Si el estado es "OPEN", simplemente vuelve a preguntar en 3 seg.
             } catch (error) {
                 console.error("Error al rastrear:", error);
             }
-        }, 3000); // 3 segundos
+        }, 3000); 
     });
 }
 // ==========================================
