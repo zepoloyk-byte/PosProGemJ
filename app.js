@@ -13,26 +13,7 @@ window.dbLocal.version(2).stores({
 const pb = new PocketBase('https://sexy-starling.pikapod.net');
 pb.autoCancellation(false);
 
-// ====================================================================
-// 🛡️ SELLO GLOBAL MULTI-EMPRESA (INTERCEPTOR DE POCKETBASE)
-// ====================================================================
-pb.beforeSend = function (url, options) {
-    // Verificamos si hay un usuario logueado y si tiene su gafete de negocio
-    if (pb.authStore.isValid && pb.authStore.model && pb.authStore.model.negocio_id) {
-        // Solo sellamos cuando se está guardando (POST) o actualizando (PATCH) información
-        if (options.method === 'POST' || options.method === 'PATCH') {
-            try {
-                let datosPayload = JSON.parse(options.body);
-                // Le estampamos el ID del negocio automáticamente antes de que suba a la nube
-                datosPayload.negocio_id = pb.authStore.model.negocio_id;
-                options.body = JSON.stringify(datosPayload);
-            } catch (e) {
-                // Si el cuerpo no es JSON, lo dejamos pasar intacto
-            }
-        }
-    }
-    return { url, options };
-};
+
 // ====================================================================
 // === 2. ADAPTADOR POCKETBASE (MOTOR BLINDADO ANTI-RESET Y ANTI-CLONES) ===
 // ====================================================================
