@@ -14,6 +14,26 @@ const pb = new PocketBase('https://sexy-starling.pikapod.net');
 pb.autoCancellation(false);
 
 // ====================================================================
+// 🛡️ SELLO GLOBAL MULTI-EMPRESA (INTERCEPTOR DE POCKETBASE)
+// ====================================================================
+pb.beforeSend = function (url, options) {
+    // Verificamos si hay un usuario logueado y si tiene su gafete de negocio
+    if (pb.authStore.isValid && pb.authStore.model && pb.authStore.model.negocio_id) {
+        // Solo sellamos cuando se está guardando (POST) o actualizando (PATCH) información
+        if (options.method === 'POST' || options.method === 'PATCH') {
+            try {
+                let datosPayload = JSON.parse(options.body);
+                // Le estampamos el ID del negocio automáticamente antes de que suba a la nube
+                datosPayload.negocio_id = pb.authStore.model.negocio_id;
+                options.body = JSON.stringify(datosPayload);
+            } catch (e) {
+                // Si el cuerpo no es JSON, lo dejamos pasar intacto
+            }
+        }
+    }
+    return { url, options };
+};
+// ====================================================================
 // === 2. ADAPTADOR POCKETBASE (MOTOR BLINDADO ANTI-RESET Y ANTI-CLONES) ===
 // ====================================================================
 // ====================================================================
@@ -6954,26 +6974,32 @@ window.renderCorte = function() {
         }
 
         // ==========================================
-        // 🌟 1. FILTRO DE VENTAS (TU LÓGICA BLINDADA)
+        // 🌟 1. FILTRO DE VENTAS (FECHAS ESTRICTAS Y ANTI-NAN)
         // ==========================================
         let filteredVentas = todasLasVentas.filter(v => { 
             let vSuc = String(v.sucursal || "Matriz").replace(/📍/g, '').trim();
             let vCaj = String(v.cajero || "").trim();
+            let vFecha = v.fecha || hoy; 
+
+            // 🛑 REGLA DE ORO: Si la venta NO está entre las fechas seleccionadas, SE DESCARTA siempre.
+            if (fInicio && vFecha < fInicio) return false;
+            if (fFin && vFecha > fFin) return false;
 
             if (sesionActiva && !esFiltroHistorico) {
-                return (v.id_sesion_caja === sesionActiva.id || v.fecha === hoy) && 
+                return (v.id_sesion_caja === sesionActiva.id || vFecha === hoy) && 
                        (!fCajero || vCaj === fCajero) && 
                        (!fSuc || vSuc === fSuc);
             }
-            let vFecha = v.fecha || hoy; 
-            return (vFecha >= fInicio && vFecha <= fFin) && 
-                   (!fCajero || vCaj === fCajero) && 
-                   (!fSuc || vSuc === fSuc); 
+            
+            return (!fCajero || vCaj === fCajero) && (!fSuc || vSuc === fSuc); 
         });
         
         filteredVentas.forEach(v => {
             if(!v.anulada) {
+                // 🛡️ ESCUDO 1: Sanear Total del Ticket
                 let tVentaTicket = parseFloat(v.total) || 0; 
+                if (Number.isNaN(tVentaTicket)) tVentaTicket = 0;
+
                 let dStr = v.fecha || hoy; 
                 let nomCajero = v.cajero || 'Desconocido';
                 let esAbono = (v.metodo || '').toLowerCase().includes('abono');
@@ -6995,7 +7021,10 @@ window.renderCorte = function() {
 
                 if (v.pagos && Array.isArray(v.pagos) && v.pagos.length > 0) { 
                     v.pagos.forEach(p => { 
+                        // 🛡️ ESCUDO 2: Sanear Pagos Múltiples
                         let m = parseFloat(p.montoAplicado) || 0; 
+                        if (Number.isNaN(m)) m = 0;
+
                         if(p.metodo === 'Efectivo') ef += m; else if(p.metodo === 'Tarjeta') ta += m; else if(p.metodo === 'Transferencia') trans += m; else if(p.metodo === 'Crédito') cr += m; 
                     }); 
                 } else { 
@@ -7010,38 +7039,58 @@ window.renderCorte = function() {
                     listaItemsTicket.forEach(d => { 
                         if(d.can > 0) { 
                             let costoUnitario = parseFloat(d.costo) || parseFloat(d.cos) || 0;
+                            if (Number.isNaN(costoUnitario)) costoUnitario = 0;
+
                             if (costoUnitario === 0 && typeof inv !== 'undefined' && inv[d.cod]) {
                                 let pCat = inv[d.cod];
                                 let costoBase = parseFloat(pCat.cos_promedio !== undefined ? pCat.cos_promedio : (pCat.cos || 0));
+                                if (Number.isNaN(costoBase)) costoBase = 0;
                                 let ivaProd = parseFloat(pCat.iva) || 0;
+                                if (Number.isNaN(ivaProd)) ivaProd = 0;
                                 costoUnitario = costoBase * (1 + (ivaProd / 100));
                             }
+                            
                             let subtotalItem = parseFloat(d.subtotal) || 0;
+                            if (Number.isNaN(subtotalItem)) subtotalItem = 0;
+
                             if (subtotalItem === 0) {
                                 let precioVenta = parseFloat(d.pv) || 0;
+                                if (Number.isNaN(precioVenta)) precioVenta = 0;
+
                                 if (precioVenta === 0 && typeof inv !== 'undefined' && inv[d.cod]) {
                                     precioVenta = parseFloat(inv[d.cod].pv) || 0;
+                                    if (Number.isNaN(precioVenta)) precioVenta = 0;
                                 }
                                 subtotalItem = parseFloat(d.can || 1) * precioVenta;
                             }
+                            
+                            // 🛡️ ESCUDO 3: Sanear cálculo final de la ganancia
                             let gananciaArticulo = subtotalItem - (costoUnitario * parseFloat(String(d.can) || 1));
+                            if (Number.isNaN(gananciaArticulo)) gananciaArticulo = 0;
+
                             utilTicket += gananciaArticulo;
                             depsHash[d.dep || "General"] = (depsHash[d.dep || "General"] || 0) + subtotalItem; 
-                            // 🛡️ ESCUDO: Solo metemos al Top 10 los productos que coinciden EXACTAMENTE con el día de fin del filtro o HOY
-let fechaFiltroReal = fFin ? fFin : hoy;
+                            
+                            let fechaFiltroReal = fFin ? fFin : hoy;
 
-if (dStr === fechaFiltroReal) {
-    if (!topProductosHash[d.cod]) {
-        topProductosHash[d.cod] = { nombre: d.nom || 'Producto Desconocido', cantidad: 0, total: 0, ganancia: 0 };
-    }
-    let cantItem = parseFloat(d.can) || 0;
-    topProductosHash[d.cod].cantidad += cantItem; 
-    topProductosHash[d.cod].total += subtotalItem;
-    topProductosHash[d.cod].ganancia += gananciaArticulo;
-}
+                            if (dStr === fechaFiltroReal) {
+                                if (!topProductosHash[d.cod]) {
+                                    topProductosHash[d.cod] = { nombre: d.nom || 'Producto Desconocido', cantidad: 0, total: 0, ganancia: 0 };
+                                }
+                                let cantItem = parseFloat(d.can) || 0;
+                                if (Number.isNaN(cantItem)) cantItem = 0;
+
+                                topProductosHash[d.cod].cantidad += cantItem; 
+                                topProductosHash[d.cod].total += subtotalItem;
+                                topProductosHash[d.cod].ganancia += gananciaArticulo;
+                            }
                         }
                     }); 
                 }
+                
+                // 🛡️ ESCUDO 4: Evitar utilidades en blanco (NaN)
+                if (Number.isNaN(utilTicket)) utilTicket = 0;
+                
                 tUtilidad += utilTicket; 
                 utilPorDia[dStr] = (utilPorDia[dStr] || 0) + utilTicket;
             }
@@ -7061,7 +7110,7 @@ if (dStr === fechaFiltroReal) {
         let listaIngresosExtra = []; 
 
         // ==========================================
-        // 🌟 2. FILTRO DE MOVIMIENTOS (TU LÓGICA BLINDADA)
+        // 🌟 2. FILTRO DE MOVIMIENTOS 
         // ==========================================
         todosLosMovs.forEach(m => {
             let mFecha = m.fecha || hoy; 
@@ -7069,7 +7118,11 @@ if (dStr === fechaFiltroReal) {
             let mCaj = String(m.cajero || "").trim();
 
             if(mFecha >= fInicio && mFecha <= fFin && (!fCajero || mCaj === fCajero) && (!fSuc || mSuc === fSuc)) { 
-                let montoM = parseFloat(m.monto) || 0; let mMotivo = (m.motivo || '').toLowerCase();
+                // 🛡️ ESCUDO 5: Sanear Movimientos
+                let montoM = parseFloat(m.monto) || 0; 
+                if (Number.isNaN(montoM)) montoM = 0;
+
+                let mMotivo = (m.motivo || '').toLowerCase();
                 
                 if(m.tipo === 'Ingreso') { 
                     ing_efectivo += montoM; flujo_ing_otros += montoM; 
@@ -7089,28 +7142,36 @@ if (dStr === fechaFiltroReal) {
         });
 
         // ==========================================
-        // 🌟 3. FILTRO DE COMPRAS (TU LÓGICA BLINDADA)
+        // 🌟 3. FILTRO DE COMPRAS 
         // ==========================================
         let comprasEfectivoTotal = 0;
         let filteredCompras = todasLasCompras.filter(c => {
             if (c.anulada) return false;
             let cSuc = String(c.sucursal || "Matriz").replace(/📍/g, '').trim();
             let cCaj = String(c.cajero || "").trim();
+            let cFecha = c.fecha || hoy;
+
+            // REGLA FECHA COMPRAS
+            if (fInicio && cFecha < fInicio) return false;
+            if (fFin && cFecha > fFin) return false;
 
             if (sesionActiva && !esFiltroHistorico) {
-                return (c.id_sesion_caja === sesionActiva.id || c.fecha === hoy) && (!fCajero || cCaj === fCajero) && (!fSuc || cSuc === fSuc);
+                return (c.id_sesion_caja === sesionActiva.id || cFecha === hoy) && (!fCajero || cCaj === fCajero) && (!fSuc || cSuc === fSuc);
             }
-            let cFecha = c.fecha || hoy;
-            return cFecha >= fInicio && cFecha <= fFin && (!fCajero || cCaj === fCajero) && (!fSuc || cSuc === fSuc);
+            return (!fCajero || cCaj === fCajero) && (!fSuc || cSuc === fSuc);
         });
 
         filteredCompras.forEach(c => {
             let mMetodo = String(c.metodo || '').toLowerCase();
+            // 🛡️ ESCUDO 6: Sanear Compras
             let totalC = parseFloat(c.total) || 0;
+            if (Number.isNaN(totalC)) totalC = 0;
+
             if (mMetodo.includes('efectivo')) comprasEfectivoTotal += totalC;
         });
 
         let efectivoEnCaja = ef + ing_efectivo - ret_efectivo - comprasEfectivoTotal;
+        if (Number.isNaN(efectivoEnCaja)) efectivoEnCaja = 0;
         
         currentCorteData = {
             fondoInicial: 0, ventasTotales: tVentas, gananciaNeta: tUtilidad, numVentas: numVentas,     
@@ -7119,17 +7180,25 @@ if (dStr === fechaFiltroReal) {
             esperado: efectivoEnCaja, cajeroCorte: fCajero || "Todos", fechaInicio: fInicio, fechaFin: fFin
         };
 
-        // 📊 INYECCIÓN DE TOTALES EN PANTALLA
-        if(document.getElementById('kpi_ventas')) document.getElementById('kpi_ventas').innerText = "$" + tVentas.toLocaleString('es-MX', {minimumFractionDigits: 2});
-        if(document.getElementById('kpi_ganancia')) document.getElementById('kpi_ganancia').innerText = "$" + tUtilidad.toLocaleString('es-MX', {minimumFractionDigits: 2});
+        // 🛡️ ESCUDOS FINALES: Para la inyección en pantalla
+        if (Number.isNaN(tVentas)) tVentas = 0;
+        if (Number.isNaN(tUtilidad)) tUtilidad = 0;
+        
+        // 📊 INYECCIÓN DE TOTALES EN PANTALLA (CON FIX DE DECIMALES EXACTOS)
+        if(document.getElementById('kpi_ventas')) document.getElementById('kpi_ventas').innerText = "\$" + tVentas.toLocaleString('es-MX', {minimumFractionDigits: 2, maximumFractionDigits: 2});
+        if(document.getElementById('kpi_ganancia')) document.getElementById('kpi_ganancia').innerText = "\$" + tUtilidad.toLocaleString('es-MX', {minimumFractionDigits: 2, maximumFractionDigits: 2});
         if(document.getElementById('kpi_no_ventas')) document.getElementById('kpi_no_ventas').innerText = numVentas;
-        if(document.getElementById('kpi_ticket_prom')) document.getElementById('kpi_ticket_prom').innerText = "$" + (numVentas > 0 ? (tVentas / numVentas) : 0).toLocaleString('es-MX', {minimumFractionDigits: 2});
-        if(document.getElementById('kpi_margen')) document.getElementById('kpi_margen').innerText = (tVentas > 0 ? ((tUtilidad / tVentas) * 100) : 0).toFixed(2) + "%";
-        if(document.getElementById('r_efectivo')) document.getElementById('r_efectivo').innerText = "$"+efectivoEnCaja.toFixed(2); 
-        if(document.getElementById('r_tarjeta')) document.getElementById('r_tarjeta').innerText = "$"+ta.toFixed(2); 
-        if(document.getElementById('r_transferencia')) document.getElementById('r_transferencia').innerText = "$"+trans.toFixed(2); 
-        if(document.getElementById('r_credito')) document.getElementById('r_credito').innerText = "$"+cr.toFixed(2); 
-        if(document.getElementById('r_total')) document.getElementById('r_total').innerText = "$"+(ef + ta + trans).toFixed(2); 
+        if(document.getElementById('kpi_ticket_prom')) document.getElementById('kpi_ticket_prom').innerText = "\$" + (numVentas > 0 ? (tVentas / numVentas) : 0).toLocaleString('es-MX', {minimumFractionDigits: 2, maximumFractionDigits: 2});
+        
+        let margenUtilidad = (tVentas > 0) ? ((tUtilidad / tVentas) * 100) : 0;
+        if (Number.isNaN(margenUtilidad)) margenUtilidad = 0;
+        if(document.getElementById('kpi_margen')) document.getElementById('kpi_margen').innerText = margenUtilidad.toFixed(2) + "%";
+        
+        if(document.getElementById('r_efectivo')) document.getElementById('r_efectivo').innerText = "\$"+efectivoEnCaja.toFixed(2); 
+        if(document.getElementById('r_tarjeta')) document.getElementById('r_tarjeta').innerText = "\$"+ta.toFixed(2); 
+        if(document.getElementById('r_transferencia')) document.getElementById('r_transferencia').innerText = "\$"+trans.toFixed(2); 
+        if(document.getElementById('r_credito')) document.getElementById('r_credito').innerText = "\$"+cr.toFixed(2); 
+        if(document.getElementById('r_total')) document.getElementById('r_total').innerText = "\$"+(ef + ta + trans).toFixed(2); 
 
         // 🚀 LÍMITE VISUAL (250 FILAS MÁXIMO PARA QUE NO SE CONGELE)
         let contVentas = document.getElementById('r_lista_ventas');
@@ -7173,13 +7242,13 @@ if (dStr === fechaFiltroReal) {
         if(document.getElementById('kpi_tabla_cajeros')) document.getElementById('kpi_tabla_cajeros').innerHTML = htmlCajerosKpi || '<tr><td colspan="4" style="text-align:center;">Vacio</td></tr>';
 
         if(document.getElementById('flujo_in_efectivo')) {
-            document.getElementById('flujo_in_efectivo').innerText = "$" + ef.toFixed(2); 
-            document.getElementById('flujo_in_digital').innerText = "$" + (ta + trans).toFixed(2); 
-            document.getElementById('flujo_in_otros').innerText = "$" + flujo_ing_otros.toFixed(2); 
-            document.getElementById('flujo_in_total').innerText = "$" + (ef + ta + trans + flujo_ing_otros).toFixed(2);
-            document.getElementById('flujo_out_compras').innerText = "$" + (flujo_out_compras + comprasEfectivoTotal).toFixed(2); 
-            document.getElementById('flujo_out_otros').innerText = "$" + flujo_out_otros.toFixed(2); 
-            document.getElementById('flujo_out_total').innerText = "$" + (flujo_out_compras + comprasEfectivoTotal + flujo_out_otros).toFixed(2);
+            document.getElementById('flujo_in_efectivo').innerText = "\$" + ef.toFixed(2); 
+            document.getElementById('flujo_in_digital').innerText = "\$" + (ta + trans).toFixed(2); 
+            document.getElementById('flujo_in_otros').innerText = "\$" + flujo_ing_otros.toFixed(2); 
+            document.getElementById('flujo_in_total').innerText = "\$" + (ef + ta + trans + flujo_ing_otros).toFixed(2);
+            document.getElementById('flujo_out_compras').innerText = "\$" + (flujo_out_compras + comprasEfectivoTotal).toFixed(2); 
+            document.getElementById('flujo_out_otros').innerText = "\$" + flujo_out_otros.toFixed(2); 
+            document.getElementById('flujo_out_total').innerText = "\$" + (flujo_out_compras + comprasEfectivoTotal + flujo_out_otros).toFixed(2);
         }
 
         if (typeof dibujarTopProductos === 'function') window.dibujarTopProductos(topProductosHash);
@@ -10610,9 +10679,6 @@ function calcularCajaFisicaReal(nombreCajero) {
     return saldo;
 }
 
-// ======================================================================
-// 🎛️ CONTROLADORES DEL PAGO MIXTO MULTI-CAJAS
-// ======================================================================
 
 // ======================================================================
 // 🎛️ CONTROLADORES DEL PAGO MIXTO MULTI-CAJAS
